@@ -15,6 +15,7 @@ import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
 
 const TIMEOUT = 30;
+const LIST_SERVICES_ALL_CACHE_KEY = '__all__';
 
 function getContract() {
   return new Contract(config.contract.id);
@@ -112,7 +113,86 @@ async function simulateRead(operation) {
 }
 
 
-export async function listServices(category) {
+function getListServicesCacheKey(category) {
+  return category || LIST_SERVICES_ALL_CACHE_KEY;
+}
+
+export function createListServicesCache(fetchServices, options = {}) {
+  const {
+    ttlMs = config.cache.listServicesTtlMs,
+    now = () => Date.now(),
+    log = logger,
+  } = options;
+  const cache = new Map();
+  let version = 0;
+
+  function deleteIfCurrent(key, promise) {
+    if (cache.get(key)?.promise === promise) {
+      cache.delete(key);
+    }
+  }
+
+  async function cachedListServices(category) {
+    const key = getListServicesCacheKey(category);
+    const cached = cache.get(key);
+    const currentTime = now();
+
+    if (cached?.value && cached.expiresAt > currentTime) {
+      log.debug({ category, ttlMs }, 'listServices cache hit');
+      return cached.value;
+    }
+
+    if (cached?.promise) {
+      log.debug({ category }, 'listServices cache awaiting in-flight request');
+      return cached.promise;
+    }
+
+    log.debug({ category, ttlMs }, 'listServices cache miss');
+    const requestVersion = version;
+    let promise;
+    promise = fetchServices(category)
+      .then((services) => {
+        const safeTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 0;
+        if (safeTtlMs === 0 || requestVersion !== version) {
+          deleteIfCurrent(key, promise);
+          return services;
+        }
+
+        cache.set(key, {
+          value: services,
+          expiresAt: now() + safeTtlMs,
+          promise: null,
+        });
+        return services;
+      })
+      .catch((err) => {
+        deleteIfCurrent(key, promise);
+        throw err;
+      });
+
+    cache.set(key, {
+      value: cached?.value,
+      expiresAt: cached?.expiresAt ?? 0,
+      promise,
+    });
+
+    return promise;
+  }
+
+  cachedListServices.clear = () => {
+    version += 1;
+    cache.clear();
+  };
+  cachedListServices.delete = (category) => {
+    version += 1;
+    return cache.delete(getListServicesCacheKey(category));
+  };
+  cachedListServices.size = () => cache.size;
+
+  return cachedListServices;
+}
+
+async function fetchServicesFromContract(category) {
   try {
     const contract = getContract();
 
@@ -144,6 +224,16 @@ export async function listServices(category) {
     logger.error({ err }, 'listServices failed');
     throw err;
   }
+}
+
+const cachedListServices = createListServicesCache(fetchServicesFromContract);
+
+export async function listServices(category) {
+  return cachedListServices(category);
+}
+
+export function clearListServicesCache() {
+  cachedListServices.clear();
 }
 
 export async function getService(id) {
@@ -193,6 +283,7 @@ export async function updateReputation(id, positive) {
       nativeToScVal(positive, { type: 'bool' })
     );
     await simulateAndSubmit(op);
+    clearListServicesCache();
     const updated = await getService(id);
     return updated?.reputation ?? 0;
   } catch (err) {
@@ -224,6 +315,7 @@ export async function registerServiceOnChain(
     );
 
     const result = await simulateAndSubmit(op);
+    clearListServicesCache();
     const retval = result.returnValue;
     return retval ? Number(scValToNative(retval)) : null;
   } catch (err) {

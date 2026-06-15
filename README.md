@@ -131,6 +131,10 @@ cp .env.example .env
 npm install
 ```
 
+The backend caches `list_services` reads briefly to reduce duplicate Soroban RPC
+simulations when `/api/services` and `/api/stats` are polled together. Tune the
+TTL with `LIST_SERVICES_CACHE_TTL_MS` in `.env` if needed; the default is 5000 ms.
+
 ### 4. Run seed script
 
 ```sh

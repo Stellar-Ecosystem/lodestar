@@ -33,6 +33,10 @@ const config = Object.freeze({
     agentsId: process.env.AGENTS_CONTRACT_ID ?? null,
   },
 
+  cache: {
+    listServicesTtlMs: parseInt(process.env.LIST_SERVICES_CACHE_TTL_MS ?? '5000', 10),
+  },
+
   server: {
     address: process.env.SERVER_STELLAR_ADDRESS,
     secret: process.env.SERVER_STELLAR_SECRET,
