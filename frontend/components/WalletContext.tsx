@@ -36,9 +36,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setStatus('connected');
       const bal = await getBalance(addr);
       setBalance(bal);
-    } catch {
+    } catch (error: any) {
       setStatus('not-connected');
-      throw new Error('Failed to connect wallet');
+      throw error;
     }
   }, []);
 

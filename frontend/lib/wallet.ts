@@ -8,6 +8,21 @@ import { Networks } from '@creit-tech/stellar-wallets-kit/types';
 export { Networks as WalletNetworks };
 export { FREIGHTER_ID, ALBEDO_ID, XBULL_ID, LOBSTR_ID };
 
+export enum WalletErrorType {
+  WALLET_NOT_FOUND = 'WALLET_NOT_FOUND',
+  UNSUPPORTED_BROWSER = 'UNSUPPORTED_BROWSER',
+  USER_REJECTED = 'USER_REJECTED',
+  CONNECTION_FAILED = 'CONNECTION_FAILED',
+  UNKNOWN = 'UNKNOWN'
+}
+
+export class WalletError extends Error {
+  constructor(public type: WalletErrorType, message: string, public rawError?: any) {
+    super(message);
+    this.name = 'WalletError';
+  }
+}
+
 export interface WalletOption {
   id: string;
   name: string;
@@ -37,10 +52,41 @@ export function initKit() {
 }
 
 export async function connectWithWallet(walletId: string): Promise<string> {
-  initKit();
-  StellarWalletsKit.setWallet(walletId);
-  const { address } = await StellarWalletsKit.fetchAddress();
-  return address;
+  try {
+    if (typeof window === 'undefined') {
+      throw new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'Window is not defined. Are you running on the server?');
+    }
+    
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    if (isMobile && walletId === FREIGHTER_ID) {
+      console.error(JSON.stringify({ event: 'unsupported_browser', walletId }));
+      throw new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'This browser does not support Stellar wallet extensions.');
+    }
+
+    initKit();
+    StellarWalletsKit.setWallet(walletId);
+    const { address } = await StellarWalletsKit.fetchAddress();
+    return address;
+  } catch (error: any) {
+    if (error instanceof WalletError) {
+      throw error;
+    }
+
+    const errorMessage = error?.message?.toLowerCase() || String(error).toLowerCase();
+    
+    if (errorMessage.includes('not installed') || errorMessage.includes('not found') || errorMessage.includes('is not available')) {
+      console.error(JSON.stringify({ event: 'wallet_not_found', walletId, message: error?.message }));
+      throw new WalletError(WalletErrorType.WALLET_NOT_FOUND, 'Please install a supported Stellar wallet such as Freighter to continue.', error);
+    }
+    
+    if (errorMessage.includes('reject') || errorMessage.includes('cancel') || errorMessage.includes('decline') || errorMessage.includes('user rejected')) {
+      console.error(JSON.stringify({ event: 'wallet_connection_rejected', walletId, message: error?.message }));
+      throw new WalletError(WalletErrorType.USER_REJECTED, 'Wallet connection was cancelled.', error);
+    }
+    
+    console.error(JSON.stringify({ event: 'wallet_connection_failed', walletId, message: error?.message }));
+    throw new WalletError(WalletErrorType.CONNECTION_FAILED, 'Unable to connect wallet. Please try again.', error);
+  }
 }
 
 export async function kitSignTransaction(xdr: string): Promise<string> {

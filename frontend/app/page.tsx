@@ -38,7 +38,7 @@ export default function HomePage() {
         />
         <FeatureBlock
           title="For Agents"
-          description="Query the registry by category, sort by reputation, and pay with x402 — all without a single hardcoded URL. Full autonomy from discovery to payment."
+          description="Query the registry by category, search by service name, sort by reputation, and pay with x402 — all without a single hardcoded URL. Full autonomy from discovery to payment."
         />
         <FeatureBlock
           title="On Stellar"

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import ServiceCard from '@/components/ServiceCard';
 import { fetchServices } from '@/lib/contract';
+import { filterServices, sortServices } from '@/lib/registry';
 import type { ServiceEntry, Category, SortOption } from '@/lib/types';
 
 const CATEGORIES: { label: string; value: Category | 'all' }[] = [
@@ -21,19 +22,12 @@ const SORTS: { label: string; value: SortOption }[] = [
   { label: 'Lowest Price', value: 'price' },
 ];
 
-function sortServices(services: ServiceEntry[], sort: SortOption): ServiceEntry[] {
-  return [...services].sort((a, b) => {
-    if (sort === 'reputation') return b.reputation - a.reputation;
-    if (sort === 'price')      return parseFloat(a.price_usdc) - parseFloat(b.price_usdc);
-    return b.registered_at - a.registered_at;
-  });
-}
-
 export default function RegistryPage() {
   const [services, setServices]     = useState<ServiceEntry[]>([]);
   const [loading, setLoading]       = useState(true);
   const [activeCategory, setActive] = useState<Category | 'all'>('all');
   const [sort, setSort]             = useState<SortOption>('newest');
+  const [query, setQuery]           = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -55,6 +49,7 @@ export default function RegistryPage() {
   }, [load]);
 
   const sorted = sortServices(services, sort);
+  const filtered = filterServices(sorted, query);
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-12">
@@ -63,19 +58,28 @@ export default function RegistryPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold">Service Registry</h1>
           <span className="badge bg-primary text-white mono">
-            {services.length}
+            {filtered.length}
           </span>
         </div>
 
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as SortOption)}
-          className="border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
-        >
-          {SORTS.map((s) => (
-            <option key={s.value} value={s.value}>{s.label}</option>
-          ))}
-        </select>
+        <div className="flex items-center gap-3 flex-wrap">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by service name or description"
+            className="w-full sm:w-80 border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortOption)}
+            className="border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            {SORTS.map((s) => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* Category tabs */}
@@ -102,18 +106,20 @@ export default function RegistryPage() {
             <div key={i} className="card p-6 h-64 animate-pulse bg-border/40" />
           ))}
         </div>
-      ) : sorted.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="text-center py-24 text-secondary">
           <p className="text-base font-medium">No services found</p>
           <p className="text-sm mt-2">
-            {activeCategory !== 'all'
-              ? `No active services in the "${activeCategory}" category.`
-              : 'The registry is empty. Be the first to register a service.'}
+            {query.trim()
+              ? `No services match "${query.trim()}". Try a different name or description keyword.`
+              : activeCategory !== 'all'
+                ? `No active services in the "${activeCategory}" category.`
+                : 'The registry is empty. Be the first to register a service.'}
           </p>
         </div>
       ) : (
         <div className="grid sm:grid-cols-2 gap-5">
-          {sorted.map((svc) => (
+          {filtered.map((svc) => (
             <ServiceCard key={svc.id} service={svc} />
           ))}
         </div>

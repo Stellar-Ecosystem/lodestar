@@ -11,8 +11,18 @@ const router = Router();
 
 router.get('/services', async (req, res) => {
   try {
-    const { category } = req.query;
-    const services = await listServices(category || undefined);
+    const { category, q } = req.query;
+    let services = await listServices(category || undefined);
+
+    if (q && typeof q === 'string' && q.trim()) {
+      const query = q.trim().toLowerCase();
+      services = services.filter(
+        (s) =>
+          (s.name && s.name.toLowerCase().includes(query)) ||
+          (s.description && s.description.toLowerCase().includes(query))
+      );
+    }
+
     res.json({ services, count: services.length });
   } catch (err) {
     logger.error({ err }, 'GET /api/services failed');

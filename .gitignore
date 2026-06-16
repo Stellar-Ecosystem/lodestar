@@ -11,6 +11,7 @@ target/
 dist/
 .next/
 out/
+*.tsbuildinfo
 
 # Logs
 *.log

@@ -28,6 +28,7 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
+    "supertest": "^7.2.2",
     "vitest": "^1.6.1"
   }
 }

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useWallet } from './WalletContext';
-import { WALLET_OPTIONS } from '@/lib/wallet';
+import { WALLET_OPTIONS, WalletErrorType } from '@/lib/wallet';
 
 interface Props {
   onClose: () => void;
@@ -12,15 +12,23 @@ export default function WalletPickerModal({ onClose }: Props) {
   const { connect } = useWallet();
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [errorType, setErrorType] = useState<WalletErrorType | null>(null);
 
   async function handleSelect(walletId: string) {
     setLoading(walletId);
     setError('');
+    setErrorType(null);
     try {
       await connect(walletId);
       onClose();
-    } catch {
-      setError('Could not connect. Make sure the wallet extension is installed.');
+    } catch (e: any) {
+      if (e?.type) {
+        setError(e.message);
+        setErrorType(e.type as WalletErrorType);
+      } else {
+        setError('Unable to connect wallet. Please try again.');
+        setErrorType(WalletErrorType.CONNECTION_FAILED);
+      }
     } finally {
       setLoading(null);
     }
@@ -62,22 +70,42 @@ export default function WalletPickerModal({ onClose }: Props) {
         </div>
 
         {error && (
-          <p className="mt-4 text-xs text-error bg-error/5 border border-error/20 rounded-lg px-3 py-2">
-            {error}
-          </p>
+          <div className="mt-4">
+            <p className="text-xs text-error bg-error/5 border border-error/20 rounded-lg px-3 py-2 mb-3">
+              {error}
+            </p>
+            <div className="flex justify-center gap-3">
+              {errorType === WalletErrorType.WALLET_NOT_FOUND && (
+                <a
+                  href="https://www.freighter.app"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-primary text-xs py-1.5 px-3"
+                >
+                  Install Freighter
+                </a>
+              )}
+              {errorType === WalletErrorType.UNSUPPORTED_BROWSER && (
+                <a
+                  href="https://stellar.org/learn/intro-to-stellar"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-primary text-xs py-1.5 px-3"
+                >
+                  Learn More
+                </a>
+              )}
+              {(errorType === WalletErrorType.USER_REJECTED || errorType === WalletErrorType.CONNECTION_FAILED) && (
+                <button
+                  onClick={() => setError('')}
+                  className="btn-primary text-xs py-1.5 px-3"
+                >
+                  Retry Connection
+                </button>
+              )}
+            </div>
+          </div>
         )}
-
-        <p className="mt-4 text-xs text-secondary text-center">
-          Don&apos;t have a wallet?{' '}
-          <a
-            href="https://www.freighter.app"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-accent hover:underline"
-          >
-            Install Freighter
-          </a>
-        </p>
       </div>
     </div>
   );
