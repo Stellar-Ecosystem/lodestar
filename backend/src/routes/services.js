@@ -8,17 +8,22 @@ import { recordPaymentOnChain } from '../lib/contract.js';
 
 const router = Router();
 
-// Activity feed — in-memory store for demo purposes
-const activityFeed = [];
+// Activity feed lives in its own dependency-free module so the feed and
+// pagination logic stay unit-testable in isolation.
+export {
+  recordActivity,
+  getActivityFeed,
+  parseActivityPagination,
+  ACTIVITY_MAX_ENTRIES,
+  ACTIVITY_DEFAULT_LIMIT,
+  ACTIVITY_MAX_LIMIT,
+} from '../lib/activityFeed.js';
 
-export function recordActivity(entry) {
-  activityFeed.unshift(entry);
-  if (activityFeed.length > 50) activityFeed.pop();
-}
-
-export function getActivityFeed() {
-  return activityFeed;
-}
+import {
+  recordActivity,
+  getActivityFeed,
+  parseActivityPagination,
+} from '../lib/activityFeed.js';
 
 const facilitator = new HTTPFacilitatorClient({ url: config.x402.facilitatorUrl });
 const stellarScheme = new ExactStellarScheme();
@@ -162,8 +167,23 @@ router.get('/search', async (req, res) => {
   }
 });
 
-router.get('/activity', (_req, res) => {
-  res.json({ activity: getActivityFeed() });
+router.get('/activity', (req, res) => {
+  const { limit, offset, errors } = parseActivityPagination(req.query);
+  if (errors.length > 0) {
+    logger.warn({ query: req.query, errors }, 'Invalid activity pagination params');
+    return res.status(400).json({ error: errors.join('; '), code: 'INVALID_PAGINATION' });
+  }
+
+  const feed = getActivityFeed();
+  const total = feed.length;
+  const items = feed.slice(offset, offset + limit);
+  const hasMore = offset + items.length < total;
+
+  logger.info({ limit, offset, total, returned: items.length }, 'Activity feed served');
+  res.json({
+    activity: items,
+    pagination: { total, limit, offset, hasMore },
+  });
 });
 
 export default router;
