@@ -20,6 +20,14 @@ app.use('/api', demoRouter);
 app.use('/demo', servicesRouter);
 
 app.use((err, _req, res, _next) => {
+  if (err.type === 'entity.too.large') {
+    logger.warn({ expected: config.jsonBodyLimit }, 'Request body too large');
+    return res.status(413).json({
+      error: `Request body too large. Maximum size is ${config.jsonBodyLimit}.`,
+      code: 'PAYLOAD_TOO_LARGE',
+    });
+  }
+
   logger.error({ err }, 'Unhandled error');
   res.status(500).json({
     error: 'Internal server error',

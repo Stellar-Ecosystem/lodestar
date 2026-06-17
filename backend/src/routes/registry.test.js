@@ -172,3 +172,45 @@ describe('GET /api/services', () => {
     expect(res.body.count).toBe(2);
   });
 });
+
+describe('POST /api/reputation/:id — request body size limit', () => {
+  let app;
+
+  beforeAll(async () => {
+    const router = (await import('./registry.js')).default;
+    app = express();
+    app.use(express.json({ limit: '100' }));
+    app.use('/api', router);
+    app.use((err, _req, res, _next) => {
+      if (err.type === 'entity.too.large') {
+        return res.status(413).json({
+          error: `Request body too large. Maximum size is 100.`,
+          code: 'PAYLOAD_TOO_LARGE',
+        });
+      }
+      res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
+    });
+  });
+
+  it('should return 413 when JSON body exceeds size limit', async () => {
+    const oversized = { positive: 'x'.repeat(200) };
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send(oversized);
+
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({
+      error: 'Request body too large. Maximum size is 100.',
+      code: 'PAYLOAD_TOO_LARGE',
+    });
+  });
+
+  it('should accept payload within size limit (not 413)', async () => {
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true });
+
+    expect(res.status).not.toBe(413);
+  });
+});
