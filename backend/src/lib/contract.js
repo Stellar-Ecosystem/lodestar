@@ -13,6 +13,7 @@ const {
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
+import { ContractError } from './ContractError.js';
 
 const TIMEOUT = 30;
 
@@ -49,7 +50,7 @@ async function simulateAndSubmit(operation) {
   const simResult = await server.simulateTransaction(tx);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Simulation failed: ${simResult.error}`);
+    throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
   const preparedTx = rpc.assembleTransaction(tx, simResult).build();
@@ -57,7 +58,7 @@ async function simulateAndSubmit(operation) {
 
   const sendResult = await server.sendTransaction(preparedTx);
   if (sendResult.status === 'ERROR') {
-    throw new Error(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`);
+    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
   }
 
   let getResult;
@@ -77,11 +78,11 @@ async function simulateAndSubmit(operation) {
   }
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new Error(`Transaction not confirmed after polling: ${sendResult.hash}`);
+    throw new ContractError(`Transaction not confirmed after polling: ${sendResult.hash}`, 'TRANSACTION_TIMEOUT');
   }
 
   if (getResult.status === 'FAILED') {
-    throw new Error(`Transaction failed on-chain: ${sendResult.hash}`);
+    throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
   }
 
   return getResult;
@@ -105,7 +106,7 @@ async function simulateRead(operation) {
   const simResult = await server.simulateTransaction(tx);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Simulation failed: ${simResult.error}`);
+    throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
   return simResult.result?.retval;

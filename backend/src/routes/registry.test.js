@@ -140,6 +140,26 @@ describe('GET /api/services', () => {
     expect(res.body).toEqual({ error: 'Failed to fetch services', code: 'FETCH_ERROR' });
   });
 
+  it('should return 400 when contract call throws ContractError SIMULATION_FAILED', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockListServices.mockRejectedValueOnce(new ContractError('Simulation failed', 'SIMULATION_FAILED'));
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Simulation failed', code: 'SIMULATION_FAILED' });
+  });
+
+  it('should return 504 when contract call throws ContractError TRANSACTION_TIMEOUT', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockListServices.mockRejectedValueOnce(new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT'));
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(504);
+    expect(res.body).toEqual({ error: 'Transaction timeout', code: 'TRANSACTION_TIMEOUT' });
+  });
+
   it('should support both category and q params together', async () => {
     const services = [
       makeService({ id: 1, name: 'Weather API', category: 'data' }),

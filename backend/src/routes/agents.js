@@ -16,6 +16,7 @@ import {
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
 import logger from '../lib/logger.js';
+import { handleContractError } from '../lib/ContractError.js';
 
 const router = Router();
 
@@ -37,7 +38,7 @@ router.get('/agents', requireAgentsContract, async (req, res) => {
     res.json({ agents, count: agents.length });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents failed');
-    res.status(500).json({ error: 'Failed to fetch agents', code: 'FETCH_ERROR' });
+    return handleContractError(err, res, 'Failed to fetch agents', 'FETCH_ERROR');
   }
 });
 
@@ -48,7 +49,7 @@ router.get('/agents/count', requireAgentsContract, async (_req, res) => {
     res.json({ count });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/count failed');
-    res.status(500).json({ error: 'Failed to fetch count', code: 'FETCH_ERROR' });
+    return handleContractError(err, res, 'Failed to fetch count', 'FETCH_ERROR');
   }
 });
 
@@ -74,7 +75,7 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
     res.json({ totalAgents, avgScore, topAgent, totalVolume: totalVolumeUsdc });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/stats failed');
-    res.status(500).json({ error: 'Failed to fetch stats', code: 'FETCH_ERROR' });
+    return handleContractError(err, res, 'Failed to fetch stats', 'FETCH_ERROR');
   }
 });
 
@@ -92,7 +93,7 @@ router.get('/agents/:address', requireAgentsContract, async (req, res) => {
     res.json({ agent, policy });
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address failed');
-    res.status(500).json({ error: 'Failed to fetch agent', code: 'FETCH_ERROR' });
+    return handleContractError(err, res, 'Failed to fetch agent', 'FETCH_ERROR');
   }
 });
 
@@ -107,7 +108,7 @@ router.get('/agents/:address/policy', requireAgentsContract, async (req, res) =>
     res.json(policy);
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/policy failed');
-    res.status(500).json({ error: 'Failed to fetch policy', code: 'FETCH_ERROR' });
+    return handleContractError(err, res, 'Failed to fetch policy', 'FETCH_ERROR');
   }
 });
 
@@ -118,7 +119,7 @@ router.get('/agents/:address/score', requireAgentsContract, async (req, res) => 
     res.json({ score });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/:address/score failed');
-    res.status(500).json({ error: 'Failed to fetch score', code: 'FETCH_ERROR' });
+    return handleContractError(err, res, 'Failed to fetch score', 'FETCH_ERROR');
   }
 });
 
@@ -134,7 +135,7 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
     res.json({ eligible, score, required: minScore });
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/eligible failed');
-    res.status(500).json({ error: 'Failed to check eligibility', code: 'FETCH_ERROR' });
+    return handleContractError(err, res, 'Failed to check eligibility', 'FETCH_ERROR');
   }
 });
 
@@ -195,7 +196,7 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
     res.json({ allowed: true, reason: 'OK' });
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/can-spend failed');
-    res.status(500).json({ error: 'Check failed', code: 'CHECK_ERROR' });
+    return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
   }
 });
 
@@ -225,7 +226,7 @@ router.post('/agents/register', requireAgentsContract, async (req, res) => {
     if (err.message?.includes('already registered')) {
       return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS' });
     }
-    res.status(500).json({ error: 'Registration failed', code: 'REGISTER_ERROR' });
+    return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
   }
 });
 
@@ -250,7 +251,7 @@ router.post('/agents/:address/payment', requireAgentsContract, async (req, res) 
     res.json({ success: true, newScore });
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'POST /api/agents/:address/payment failed');
-    res.status(500).json({ error: 'Failed to record payment', code: 'RECORD_ERROR' });
+    return handleContractError(err, res, 'Failed to record payment', 'RECORD_ERROR');
   }
 });
 
@@ -263,7 +264,7 @@ router.get('/agents/:address/check', requireAgentsContract, async (req, res) => 
     res.json({ allowed, agentAddress: address, amountStroops: amount.toString() });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/:address/check failed');
-    res.status(500).json({ error: 'Check failed', code: 'CHECK_ERROR' });
+    return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
   }
 });
 
@@ -279,7 +280,7 @@ router.post('/agents/:address/flag', requireAgentsContract, ownerAuth, async (re
     res.json({ success: true });
   } catch (err) {
     logger.error({ err }, 'POST /agents/:address/flag failed');
-    res.status(500).json({ error: 'Flagging failed', code: 'FLAG_ERROR' });
+    return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
   }
 });
 
@@ -290,7 +291,7 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
     res.json({ success: true });
   } catch (err) {
     logger.error({ err }, 'POST /agents/:address/deactivate failed');
-    res.status(500).json({ error: 'Deactivation failed', code: 'DEACTIVATE_ERROR' });
+    return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
   }
 });
 
@@ -305,7 +306,7 @@ router.post('/agents/:address/policy', requireAgentsContract, ownerAuth, async (
     res.json({ success: true });
   } catch (err) {
     logger.error({ err }, 'POST /agents/:address/policy failed');
-    res.status(500).json({ error: 'Policy update failed', code: 'POLICY_ERROR' });
+    return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });
 
