@@ -15,9 +15,12 @@ import {
 } from '../lib/contract.js';
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
+import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
 
 const router = Router();
+
+router.use('/agents/:address', validateAgentAddressParam);
 
 function requireAgentsContract(_req, res, next) {
   if (!config.contract.agentsId) {
@@ -207,7 +210,7 @@ router.post('/agents/register', requireAgentsContract, async (req, res) => {
     if (!agentAddress || typeof agentAddress !== 'string') {
       return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
     }
-    if (!/^G[A-Z2-7]{55}$/.test(agentAddress)) {
+    if (!isValidStellarAddress(agentAddress)) {
       return res.status(400).json({ error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
     }
     if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 64) {
