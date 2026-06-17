@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "node scripts/seed.js",
-    "seed-agents": "node scripts/seed-agents.js"
+    "seed-agents": "node scripts/seed-agents.js",
+    "update-endpoints": "node scripts/update-endpoints.js"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^15.0.1",
