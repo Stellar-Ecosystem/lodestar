@@ -23,6 +23,10 @@ export function usdcToStroops(value) {
 
 export function stroopsToUsdc(stroops, fractionDigits = 2) {
   const value = BigInt(stroops);
+  if (value < 0n) {
+    throw new Error('Invalid stroops amount');
+  }
+
   const whole = value / STROOPS_PER_USDC;
   const fraction = value % STROOPS_PER_USDC;
 
@@ -33,4 +37,3 @@ export function stroopsToUsdc(stroops, fractionDigits = 2) {
   const scaled = fraction.toString().padStart(7, '0').slice(0, fractionDigits);
   return `${whole}.${scaled.padEnd(fractionDigits, '0')}`;
 }
-

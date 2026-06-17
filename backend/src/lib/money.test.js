@@ -29,4 +29,8 @@ describe('stroopsToUsdc', () => {
       '123456789012345.1234567'
     );
   });
+
+  it('rejects negative stroops', () => {
+    expect(() => stroopsToUsdc(-1n)).toThrow('Invalid stroops amount');
+  });
 });

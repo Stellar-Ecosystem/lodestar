@@ -97,10 +97,14 @@ router.get('/weather', async (req, res) => {
     });
 
     if (agentAddress && config.contract.agentsId) {
-      const priceStroops = usdcToStroops(config.x402.weatherPrice);
-      recordPaymentOnChain(agentAddress, priceStroops, true).catch((err) =>
-        logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
-      );
+      try {
+        const priceStroops = usdcToStroops(config.x402.weatherPrice);
+        recordPaymentOnChain(agentAddress, priceStroops, true).catch((err) =>
+          logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
+        );
+      } catch (err) {
+        logger.error({ err, price: config.x402.weatherPrice }, 'Invalid weather price config');
+      }
     }
 
     logger.info({ lat, lon }, 'Weather request fulfilled');
@@ -155,10 +159,14 @@ router.get('/search', async (req, res) => {
     });
 
     if (searchAgentAddress && config.contract.agentsId) {
-      const priceStroops = usdcToStroops(config.x402.searchPrice);
-      recordPaymentOnChain(searchAgentAddress, priceStroops, true).catch((err) =>
-        logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
-      );
+      try {
+        const priceStroops = usdcToStroops(config.x402.searchPrice);
+        recordPaymentOnChain(searchAgentAddress, priceStroops, true).catch((err) =>
+          logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
+        );
+      } catch (err) {
+        logger.error({ err, price: config.x402.searchPrice }, 'Invalid search price config');
+      }
     }
 
     logger.info({ q }, 'Search request fulfilled');
