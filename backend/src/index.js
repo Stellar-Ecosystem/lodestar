@@ -10,6 +10,12 @@ import agentsRouter from "./routes/agents.js";
 
 const app = express();
 
+if (!config.contract.agentsId) {
+  logger.warn(
+    'AGENTS_CONTRACT_ID is not set; agent credit scoring routes will return AGENTS_NOT_CONFIGURED until the agents contract is deployed'
+  );
+}
+
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: config.jsonBodyLimit }));
 
