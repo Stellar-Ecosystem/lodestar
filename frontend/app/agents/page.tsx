@@ -44,6 +44,11 @@ export default function AgentsPage() {
       if (seq !== requestSeq.current) return;
       if (agentsResult.status === 'rejected') throw agentsResult.reason;
       const data = agentsResult.value;
+      const maxPage = data.total > 0 ? Math.max(0, Math.ceil(data.total / pageSize) - 1) : 0;
+      if (page > maxPage) {
+        setPage(maxPage);
+        return;
+      }
       setAgents(data.agents);
       setTotal(data.total);
       if (statsResult.status === 'fulfilled') setStats(statsResult.value);
@@ -163,7 +168,15 @@ export default function AgentsPage() {
             <p className="text-secondary text-xs mt-1">
               Deploy the agents contract and set <span className="mono">AGENTS_CONTRACT_ID</span> in your .env
             </p>
-          ) : null}
+          ) : (
+            <button
+              onClick={load}
+              aria-label="Retry"
+              className="mt-3 px-4 py-2 text-sm rounded-lg border border-border bg-background hover:bg-border/40 transition-colors"
+            >
+              Retry
+            </button>
+          )}
         </div>
       )}
 

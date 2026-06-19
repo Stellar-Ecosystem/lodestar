@@ -44,8 +44,30 @@ const MOCK_STATS: AgentStats = {
   totalVolume: '0',
 };
 
-// Set up fetchAgents to behave like the real server-side implementation:
-// it returns agents for the requested page from a virtual list of `total` agents.
+const mockAgent: AgentEntry = {
+  address: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUV',
+  name: 'Demo Agent',
+  description: 'Handles demo requests',
+  owner: 'GOWNER',
+  score: 820,
+  total_payments: 10,
+  successful_payments: 9,
+  failed_payments: 1,
+  total_volume_stroops: '10000000',
+  registered_at: 12345,
+  last_active: 12350,
+  active: true,
+  flagged: false,
+  flag_reason: '',
+};
+
+const mockStats: AgentStats = {
+  totalAgents: 1,
+  avgScore: 820,
+  topAgent: mockAgent,
+  totalVolume: '1.00',
+};
+
 function setupMockFetchAgents(total: number) {
   (fetchAgents as jest.Mock).mockImplementation((page = 0, pageSize = PAGE_SIZE) => {
     const start = page * pageSize;
@@ -155,7 +177,6 @@ describe('AgentsPage pagination', () => {
   it('calls fetchAgents with page=0 when sort changes', async () => {
     await renderWithTotal(PAGE_SIZE + 3);
 
-    // Go to page 2
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     await waitFor(() => {
       expect(screen.getByText('2 / 2')).toBeInTheDocument();
@@ -165,7 +186,6 @@ describe('AgentsPage pagination', () => {
     (fetchAgentStats as jest.Mock).mockResolvedValue(MOCK_STATS);
     setupMockFetchAgents(PAGE_SIZE + 3);
 
-    // Change sort — must reset to page 0
     fireEvent.change(screen.getByRole('combobox', { name: 'Sort agents' }), {
       target: { value: 'payments' },
     });
@@ -199,5 +219,32 @@ describe('AgentsPage pagination', () => {
         screen.getByText(`Showing ${PAGE_SIZE + 1}–${total} of ${total}`)
       ).toBeInTheDocument();
     });
+  });
+});
+
+describe('AgentsPage retry state', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('lets users retry after the agents request fails', async () => {
+    (fetchAgents as jest.Mock)
+      .mockRejectedValueOnce(new Error('Network disconnected'))
+      .mockResolvedValueOnce({ agents: [mockAgent], total: 1, page: 0, pageSize: PAGE_SIZE });
+    (fetchAgentStats as jest.Mock).mockResolvedValue(mockStats);
+
+    render(<AgentsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Network disconnected')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => {
+      expect(screen.queryAllByText('Demo Agent').length).toBeGreaterThan(0);
+    });
+    expect(fetchAgents).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('Network disconnected')).not.toBeInTheDocument();
   });
 });

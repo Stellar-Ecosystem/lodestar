@@ -540,7 +540,7 @@ export async function updatePolicyOnChain(
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(maxPerTxStroops), { type: 'i128' }),
       nativeToScVal(BigInt(maxPerDayStroops), { type: 'i128' }),
-      nativeToScVal(allowedCategories.map((c) => nativeToScVal(c, { type: 'string' }))),
+      nativeToScVal(allowedCategories, { type: 'string' }),
       nativeToScVal(minScoreToEarn, { type: 'i32' }),
       nativeToScVal(caller, { type: 'address' })
     );
