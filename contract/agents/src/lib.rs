@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, vec,
-    Address, Env, String, Vec,
+    contract, contractimpl, contracttype, vec,
+    Address, Env, IntoVal, String, Symbol, Vec,
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -22,6 +22,23 @@ pub enum DataKey {
     AgentIds,
     Agent(Address),
     Policy(Address),
+    RegistryContract,
+}
+
+// ServiceEntry shape (mirrors the registry contract) for cross-contract calls
+#[contracttype]
+#[derive(Clone)]
+pub struct ServiceEntry {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub endpoint: String,
+    pub price_usdc: String,
+    pub category: String,
+    pub provider: Address,
+    pub reputation: i32,
+    pub active: bool,
+    pub registered_at: u64,
 }
 
 // ── Data types ───────────────────────────────────────────────────────────────
@@ -62,6 +79,19 @@ pub struct LodestarAgents;
 
 #[contractimpl]
 impl LodestarAgents {
+    // Init — stores the registry contract address for cross-contract verification
+    pub fn init(env: Env, registry_contract: Address) {
+        if env.storage().persistent().has(&DataKey::RegistryContract) {
+            panic!("already initialized");
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::RegistryContract, &registry_contract);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::RegistryContract, MAX_TTL, MAX_TTL);
+    }
+
     // Register a new agent
     pub fn register_agent(
         env: Env,
@@ -232,12 +262,32 @@ impl LodestarAgents {
     }
 
     // Record a payment outcome — updates score, stats, and daily spend
+    // Only the service provider (caller) may record a payment for their service.
     pub fn record_payment(
         env: Env,
         agent_address: Address,
+        service_id: u64,
         amount_stroops: i128,
         success: bool,
+        caller: Address,
     ) {
+        caller.require_auth();
+
+        // Cross-contract check: caller must be the service's registered provider
+        let registry_contract: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RegistryContract)
+            .expect("registry contract not set — call init() first");
+        let service: ServiceEntry = env.invoke_contract(
+            &registry_contract,
+            &Symbol::new(&env, "get_service"),
+            vec![&env, service_id.into_val(&env)],
+        );
+        if service.provider != caller {
+            panic!("unauthorized: caller is not the service provider");
+        }
+
         let agent_key = DataKey::Agent(agent_address.clone());
         let mut agent: AgentEntry = env
             .storage()

@@ -408,16 +408,19 @@ export async function registerAgentOnChain(agentAddress, name, description) {
   }
 }
 
-export async function recordPaymentOnChain(agentAddress, amountStroops, success) {
+export async function recordPaymentOnChain(agentAddress, serviceId, amountStroops, success) {
   try {
     const contract = getAgentsContract();
     const agentAddr = Address.fromString(agentAddress);
+    const callerAddr = Address.fromString(getServerKeypair().publicKey());
 
     const op = contract.call(
       'record_payment',
       nativeToScVal(agentAddr, { type: 'address' }),
+      nativeToScVal(BigInt(serviceId), { type: 'u64' }),
       nativeToScVal(BigInt(amountStroops), { type: 'i128' }),
-      nativeToScVal(success, { type: 'bool' })
+      nativeToScVal(success, { type: 'bool' }),
+      nativeToScVal(callerAddr, { type: 'address' })
     );
 
     await simulateAndSubmit(op);

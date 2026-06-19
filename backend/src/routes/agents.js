@@ -15,6 +15,8 @@ import {
 } from '../lib/contract.js';
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
+import { hmacAuth } from '../middleware/hmacAuth.js';
+import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
 import { handleContractError } from '../lib/ContractError.js';
@@ -234,30 +236,39 @@ router.post('/agents/register', requireAgentsContract, async (req, res) => {
   }
 });
 
-// POST /api/agents/:address/payment — Body: { amountUsdc, success, serviceId? }
-router.post('/agents/:address/payment', requireAgentsContract, async (req, res) => {
-  try {
-    const { address } = req.params;
-    const { amountUsdc, success } = req.body;
+// POST /api/agents/:address/payment — Body: { amountUsdc, success, serviceId }
+router.post(
+  '/agents/:address/payment',
+  requireAgentsContract,
+  hmacAuth,
+  paymentRateLimiter(10, 60_000),
+  async (req, res) => {
+    try {
+      const { address } = req.params;
+      const { amountUsdc, success, serviceId } = req.body;
 
-    if (typeof amountUsdc !== 'string' && typeof amountUsdc !== 'number') {
-      return res.status(400).json({ error: '`amountUsdc` is required', code: 'INVALID_BODY' });
-    }
-    if (typeof success !== 'boolean') {
-      return res.status(400).json({ error: '`success` must be boolean', code: 'INVALID_BODY' });
-    }
+      if (typeof amountUsdc !== 'string' && typeof amountUsdc !== 'number') {
+        return res.status(400).json({ error: '`amountUsdc` is required', code: 'INVALID_BODY' });
+      }
+      if (typeof success !== 'boolean') {
+        return res.status(400).json({ error: '`success` must be boolean', code: 'INVALID_BODY' });
+      }
+      if (!serviceId || typeof serviceId !== 'number') {
+        return res.status(400).json({ error: '`serviceId` is required', code: 'INVALID_BODY' });
+      }
 
-    const amountStroops = BigInt(Math.round(parseFloat(String(amountUsdc)) * 10_000_000));
-    await recordPaymentOnChain(address, amountStroops, success);
-    const agent = await getAgent(address);
-    const newScore = agent?.score ?? 0;
-    logger.info({ address, amountUsdc, success, newScore }, 'Payment recorded on-chain');
-    res.json({ success: true, newScore });
-  } catch (err) {
-    logger.error({ err, address: req.params.address }, 'POST /api/agents/:address/payment failed');
-    return handleContractError(err, res, 'Failed to record payment', 'RECORD_ERROR');
+      const amountStroops = BigInt(Math.round(parseFloat(String(amountUsdc)) * 10_000_000));
+      await recordPaymentOnChain(address, serviceId, amountStroops, success);
+      const agent = await getAgent(address);
+      const newScore = agent?.score ?? 0;
+      logger.info({ address, serviceId, amountUsdc, success, newScore }, 'Payment recorded on-chain');
+      res.json({ success: true, newScore });
+    } catch (err) {
+      logger.error({ err, address: req.params.address }, 'POST /api/agents/:address/payment failed');
+      return handleContractError(err, res, 'Failed to record payment', 'RECORD_ERROR');
+    }
   }
-});
+);
 
 // GET /api/agents/:address/check?amount=1000000 (legacy stroops endpoint)
 router.get('/agents/:address/check', requireAgentsContract, async (req, res) => {

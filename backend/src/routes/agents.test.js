@@ -1,4 +1,5 @@
-import { vi, describe, it, expect, beforeAll } from 'vitest';
+import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import crypto from 'crypto';
 import express from 'express';
 import request from 'supertest';
 
@@ -9,6 +10,7 @@ const mockGetAgentScore = vi.fn();
 const mockGetAgentCount = vi.fn();
 const mockIsAgentEligible = vi.fn();
 const mockCheckSpendingAllowed = vi.fn();
+const mockRecordPaymentOnChain = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
   listAgents: (...args) => mockListAgents(...args),
@@ -19,7 +21,7 @@ vi.mock('../lib/contract.js', () => ({
   isAgentEligible: (...args) => mockIsAgentEligible(...args),
   checkSpendingAllowed: (...args) => mockCheckSpendingAllowed(...args),
   registerAgentOnChain: vi.fn(),
-  recordPaymentOnChain: vi.fn(),
+  recordPaymentOnChain: (...args) => mockRecordPaymentOnChain(...args),
   flagAgentOnChain: vi.fn(),
   deactivateAgentOnChain: vi.fn(),
   updatePolicyOnChain: vi.fn(),
@@ -28,7 +30,7 @@ vi.mock('../lib/contract.js', () => ({
 vi.mock('../config.js', () => ({
   default: {
     contract: { agentsId: 'mock_agents_id' },
-    server: { address: 'mock', secret: 'mock' },
+    server: { address: 'mock', secret: 'hmac_test_secret' },
     stellar: { network: 'testnet', rpcUrl: 'https://mock', networkPassphrase: 'mock', usdcContractId: 'mock' },
     x402: { facilitatorUrl: 'https://mock', searchPrice: '0.001', weatherPrice: '0.001' },
     braveApiKey: '',
@@ -59,6 +61,13 @@ vi.mock('../middleware/addressValidator.js', () => ({
   isValidStellarAddress: () => true,
 }));
 
+function signBody(body) {
+  return crypto
+    .createHmac('sha256', 'hmac_test_secret')
+    .update(JSON.stringify(body))
+    .digest('hex');
+}
+
 let app;
 
 beforeAll(async () => {
@@ -66,6 +75,10 @@ beforeAll(async () => {
   app = express();
   app.use(express.json());
   app.use('/api', router);
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
 });
 
 function makeAgent(overrides = {}) {
@@ -177,5 +190,84 @@ describe('GET /api/agents/:address/score', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.score).toBe(85);
+  });
+});
+
+describe('POST /api/agents/:address/payment (HMAC + rate limit)', () => {
+  const agentAddress = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+  const validBody = { amountUsdc: '0.001', success: true, serviceId: 1 };
+
+  it('should return 401 when X-Lodestar-Signature is missing', async () => {
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .send(validBody);
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('HMAC_MISSING');
+    expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('should return 401 when X-Lodestar-Signature is invalid', async () => {
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', 'wrong_signature')
+      .send(validBody);
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('HMAC_INVALID');
+    expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 when serviceId is missing', async () => {
+    const signature = signBody({ amountUsdc: '0.001', success: true });
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', signature)
+      .send({ amountUsdc: '0.001', success: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+  });
+
+  it('should succeed with valid HMAC signature', async () => {
+    mockRecordPaymentOnChain.mockResolvedValueOnce(true);
+    mockGetAgent.mockResolvedValueOnce({ score: 110 });
+
+    const signature = signBody(validBody);
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', signature)
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.newScore).toBe(110);
+    expect(mockRecordPaymentOnChain).toHaveBeenCalledWith(
+      agentAddress, 1, expect.any(BigInt), true
+    );
+  });
+
+  it('should return 429 when rate limit is exceeded', async () => {
+    const body = { amountUsdc: '0.001', success: true, serviceId: 2 };
+    const signature = signBody(body);
+
+    // Fire 11 requests (limit is 10)
+    for (let i = 0; i < 10; i++) {
+      mockRecordPaymentOnChain.mockResolvedValueOnce(true);
+      mockGetAgent.mockResolvedValueOnce({ score: 100 });
+      await request(app)
+        .post(`/api/agents/${agentAddress}/payment`)
+        .set('X-Lodestar-Signature', signature)
+        .send(body);
+    }
+
+    // 11th request should be rate-limited
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', signature)
+      .send(body);
+
+    expect(res.status).toBe(429);
+    expect(res.body.code).toBe('RATE_LIMITED');
   });
 });

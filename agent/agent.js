@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import pino from 'pino';
 import pkg from '@stellar/stellar-sdk';
 const { Keypair } = pkg;
@@ -16,6 +17,7 @@ for (const key of required) {
 const AGENT_SECRET     = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL          = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL = process.env.LODESTAR_API_URL;
+const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
 const AGENT_NAME       = process.env.AGENT_NAME ?? 'LodestarAgent';
 const AGENT_DESC       = process.env.AGENT_DESC ?? 'Autonomous x402 agent powered by Lodestar service discovery';
 const MAX_PER_TX       = process.env.AGENT_MAX_PER_TX ?? '0.001';
@@ -98,12 +100,20 @@ async function checkSpend(amountUsdc, category) {
   }
 }
 
-async function recordOutcome(amountUsdc, success) {
+async function recordOutcome(amountUsdc, success, serviceId) {
   try {
+    const body = JSON.stringify({ amountUsdc, success, serviceId });
+    const headers = { 'Content-Type': 'application/json' };
+    if (LODESTAR_HMAC_SECRET) {
+      headers['X-Lodestar-Signature'] = crypto
+        .createHmac('sha256', LODESTAR_HMAC_SECRET)
+        .update(body)
+        .digest('hex');
+    }
     const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/payment`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amountUsdc, success }),
+      headers,
+      body,
     });
     if (res.ok) {
       const data = await res.json();
@@ -203,13 +213,13 @@ async function runTask(category, buildUrl, scoringEnabled) {
     response = await httpClient.fetch(endpointUrl);
   } catch (err) {
     logger.error({ err }, `${tag()} x402 payment failed`);
-    if (scoringEnabled) await recordOutcome(best.price_usdc, false);
+    if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
     return;
   }
 
   if (!response.ok) {
     logger.error({ status: response.status }, `${tag()} Service error after payment`);
-    if (scoringEnabled) await recordOutcome(best.price_usdc, false);
+    if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
     return;
   }
 
@@ -219,7 +229,7 @@ async function runTask(category, buildUrl, scoringEnabled) {
   const data = await response.json();
   logger.info({ data }, `${tag()} Paid $${best.price_usdc} USDC — data received`);
 
-  if (scoringEnabled) await recordOutcome(best.price_usdc, true);
+  if (scoringEnabled) await recordOutcome(best.price_usdc, true, best.id);
 
   await submitReputation(best.id, true);
   logger.info(`${tag()} Submitted positive reputation for "${best.name}"`);
