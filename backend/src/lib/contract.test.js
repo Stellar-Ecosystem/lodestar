@@ -16,7 +16,8 @@ vi.mock('../config.js', () => ({
 }));
 
 import * as contractLib from './contract.js';
-import { mapAgent, mapPolicy } from './contract.js';
+
+const { mapAgent, mapPolicy } = contractLib;
 
 describe('registerServiceOnChain duplicate checks', () => {
   let listServicesSpy;
@@ -46,6 +47,25 @@ describe('registerServiceOnChain duplicate checks', () => {
     ]);
 
     expect(await contractLib.activeServiceExists('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'https://test.example.com')).toBe(false);
+  });
+
+  it('throws when duplicate active service exists during registration', async () => {
+    const provider = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const endpoint = 'https://test.example.com';
+    const warnSpy = vi.spyOn(contractLib, 'logger', 'get').mockReturnValue({ warn: vi.fn(), error: vi.fn(), info: vi.fn() });
+    const listServiceSpy = vi.spyOn(contractLib, 'listServices').mockResolvedValueOnce([
+      { provider, endpoint, active: true },
+    ]);
+
+    await expect(
+      contractLib.registerServiceOnChain('Service', 'Description', endpoint, '0.001', 'test')
+    ).rejects.toThrow('Active service with same provider and endpoint already exists');
+
+    expect(listServiceSpy).toHaveBeenCalled();
+    expect(warnSpy().warn).toHaveBeenCalledWith(
+      { provider, endpoint },
+      'Duplicate active service registration blocked'
+    );
   });
 });
 
