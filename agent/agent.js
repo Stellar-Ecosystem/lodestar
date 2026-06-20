@@ -63,6 +63,9 @@ const EVENTS = Object.freeze({
 
 let currentScore = null;
 
+/**
+ * Builds the shared structured logging context for every agent event.
+ */
 function agentContext(fields = {}) {
   const base = {
     agentName: AGENT_NAME,
@@ -76,20 +79,32 @@ function agentContext(fields = {}) {
   return { ...base, ...fields };
 }
 
+/**
+ * Calculates elapsed wall-clock time for task and run summaries.
+ */
 function elapsedMs(startedAt) {
   return Date.now() - startedAt;
 }
 
+/**
+ * Safely normalizes string or numeric USDC values for log fields.
+ */
 function usdcNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * Converts Stellar stroops into decimal USDC for human-readable policy logs.
+ */
 function stroopsToUsdc(value) {
   if (value === undefined || value === null) return undefined;
   return Number(BigInt(value)) / 10_000_000;
 }
 
+/**
+ * Finds or creates the agent registration and loads its current score.
+ */
 async function ensureRegistered() {
   try {
     const res = await fetch(LODESTAR_API_URL + '/api/agents/' + AGENT_ADDRESS);
@@ -177,6 +192,9 @@ async function ensureRegistered() {
   return false;
 }
 
+/**
+ * Asks the policy API whether a planned service payment is allowed.
+ */
 async function checkSpend(amountUsdc, category) {
   try {
     const res = await fetch(
@@ -190,6 +208,9 @@ async function checkSpend(amountUsdc, category) {
   }
 }
 
+/**
+ * Records a payment outcome so the agent score can be updated consistently.
+ */
 async function recordOutcome(amountUsdc, success, serviceId) {
   try {
     const body = JSON.stringify({ amountUsdc, success, serviceId });
@@ -246,6 +267,9 @@ async function recordOutcome(amountUsdc, success, serviceId) {
 
 // -- x402 client --------------------------------------------------------------
 
+/**
+ * Creates an x402-aware HTTP client for the configured Stellar network.
+ */
 function buildHttpClient() {
   const signer = createEd25519Signer(AGENT_SECRET, `stellar:${STELLAR_NETWORK}`);
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
@@ -275,6 +299,9 @@ function buildHttpClient() {
 
 // -- Registry helpers ---------------------------------------------------------
 
+/**
+ * Fetches available services in the requested category from the registry API.
+ */
 async function fetchServices(category) {
   const res = await fetch(LODESTAR_API_URL + '/api/services?category=' + encodeURIComponent(category));
   if (!res.ok) throw new Error('Registry fetch failed: ' + res.status);
@@ -282,6 +309,9 @@ async function fetchServices(category) {
   return body.services ?? [];
 }
 
+/**
+ * Submits a reputation vote for the selected service without blocking the run.
+ */
 async function submitReputation(id, positive) {
   await fetch(LODESTAR_API_URL + '/api/reputation/' + id, {
     method: 'POST',
@@ -292,6 +322,9 @@ async function submitReputation(id, positive) {
 
 // -- Agent task ---------------------------------------------------------------
 
+/**
+ * Runs one paid service task and returns a structured result summary.
+ */
 async function runTask(category, buildUrl, scoringEnabled) {
   const startedAt = Date.now();
   logger.info(agentContext({ event: EVENTS.TASK_START, category }), 'Starting agent task');
@@ -501,6 +534,9 @@ async function runTask(category, buildUrl, scoringEnabled) {
 
 // -- Main ---------------------------------------------------------------------
 
+/**
+ * Coordinates registration, service execution, and final run summary logging.
+ */
 async function main() {
   const runStartedAt = Date.now();
   logger.info(
