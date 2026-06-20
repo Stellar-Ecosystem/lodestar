@@ -23,7 +23,7 @@ const SORTS: { label: string; value: SortOption }[] = [
   { label: 'Lowest Price', value: 'price' },
 ];
 
-const PAGE_SIZE = 12;
+export const PAGE_SIZE = 12;
 
 export default function RegistryPage() {
   const [services, setServices]     = useState<ServiceEntry[]>([]);
