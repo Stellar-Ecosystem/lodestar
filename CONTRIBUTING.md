@@ -60,7 +60,7 @@ node --check agent.js
 The CI workflow runs on pushes to `main` and on pull requests. It checks:
 
 - both Soroban contracts build and run their Rust tests
-- backend JavaScript syntax and Vitest coverage
+- backend JavaScript syntax and Vitest tests
 - frontend TypeScript, Jest tests, and Next.js build
 - demo agent syntax
 - contract ABI compatibility against the latest git tag when a release tag exists
