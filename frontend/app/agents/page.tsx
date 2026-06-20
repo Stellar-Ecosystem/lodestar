@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState } from 'react';
+import useSWR from 'swr';
 import Link from 'next/link';
-import type { AgentEntry, AgentStats, AgentSortOption } from '@/lib/types';
+import type { AgentsResponse, AgentStats, AgentSortOption } from '@/lib/types';
 import { fetchAgents, fetchAgentStats } from '@/lib/contract';
 import AgentCard from '@/components/AgentCard';
 import AgentCardSkeleton from '@/components/AgentCardSkeleton';
@@ -18,60 +19,50 @@ export const PAGE_SIZE = 12;
 const PAGE_SIZE_OPTIONS = [6, 12, 24] as const;
 
 export default function AgentsPage() {
-  const [agents, setAgents] = useState<AgentEntry[]>([]);
-  const [total, setTotal] = useState(0);
-  const [stats, setStats] = useState<AgentStats | null>(null);
   const [sort, setSort] = useState<AgentSortOption>('score');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const initialLoad = useRef(true);
-  const requestSeq = useRef(0);
 
-  const load = useCallback(async () => {
-    const seq = ++requestSeq.current;
-    if (initialLoad.current) {
-      setLoading(true);
-    } else {
-      setRefreshing(true);
-    }
-    try {
-      const [agentsResult, statsResult] = await Promise.allSettled([
-        fetchAgents(page, pageSize, sort),
-        fetchAgentStats(),
-      ]);
-      if (seq !== requestSeq.current) return;
-      if (agentsResult.status === 'rejected') throw agentsResult.reason;
-      const data = agentsResult.value;
-      const maxPage = data.total > 0 ? Math.max(0, Math.ceil(data.total / pageSize) - 1) : 0;
-      if (page > maxPage) {
-        setPage(maxPage);
-        return;
-      }
-      setAgents(data.agents);
-      setTotal(data.total);
-      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
-      setError(null);
-      initialLoad.current = false;
-    } catch (err: unknown) {
-      if (seq !== requestSeq.current) return;
-      const msg = err instanceof Error ? err.message : 'Failed to load';
-      setError(msg);
-    } finally {
-      if (seq === requestSeq.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    }
-  }, [page, pageSize, sort]);
+  // SWR replaces the manual setInterval poll: it dedupes concurrent requests,
+  // revalidates every 30s, and only re-renders when the returned data changes.
+  // keepPreviousData keeps the old page visible (dimmed) while a refresh is in flight.
+  const {
+    data,
+    error: agentsError,
+    isLoading,
+    isValidating,
+    mutate,
+  } = useSWR<AgentsResponse>(
+    ['agents', page, pageSize, sort],
+    () => fetchAgents(page, pageSize, sort),
+    { refreshInterval: 30_000, revalidateOnFocus: false, keepPreviousData: true }
+  );
 
+  // Stats failure is intentionally tolerated (the original code used
+  // Promise.allSettled and only set stats on success) — a stats error must not
+  // block the agent grid. We still expose mutateStats so Retry revalidates both.
+  const { data: stats = null, mutate: mutateStats } = useSWR<AgentStats>(
+    'agent-stats',
+    () => fetchAgentStats(),
+    { refreshInterval: 30_000, revalidateOnFocus: false, keepPreviousData: true }
+  );
+
+  const agents = data?.agents ?? [];
+  const total = data?.total ?? 0;
+  const loading = isLoading && !data;
+  const refreshing = isValidating && !isLoading;
+  const error = agentsError
+    ? agentsError instanceof Error
+      ? agentsError.message
+      : 'Failed to load'
+    : null;
+
+  // Clamp the page if the dataset shrank (e.g. agents removed between polls).
   useEffect(() => {
-    load();
-    const interval = setInterval(load, 30_000);
-    return () => clearInterval(interval);
-  }, [load]);
+    if (!data) return;
+    const maxPage = data.total > 0 ? Math.max(0, Math.ceil(data.total / pageSize) - 1) : 0;
+    if (page > maxPage) setPage(maxPage);
+  }, [data, page, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const pageStart = page * pageSize;
@@ -171,7 +162,7 @@ export default function AgentsPage() {
             </p>
           ) : (
             <button
-              onClick={load}
+              onClick={() => { mutate(); mutateStats(); }}
               aria-label="Retry"
               className="mt-3 px-4 py-2 text-sm rounded-lg border border-border bg-background hover:bg-border/40 transition-colors"
             >

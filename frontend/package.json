@@ -17,7 +17,8 @@
     "@stellar/stellar-sdk": "^13.0.0",
     "next": "14.2.5",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "swr": "^2.4.1"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.0",
@@ -31,6 +32,7 @@
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
     "postcss": "^8.4.40",
-    "tailwindcss": "^3.4.6"
+    "tailwindcss": "^3.4.6",
+    "typescript": "6.0.3"
   }
 }

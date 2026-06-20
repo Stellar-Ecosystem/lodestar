@@ -1,7 +1,18 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { SWRConfig } from 'swr';
 import AgentsPage, { PAGE_SIZE } from '../app/agents/page';
 import type { AgentEntry, AgentStats } from '@/lib/types';
+
+// Wrap in a fresh SWR cache per render so cached data never leaks between tests,
+// and disable deduping so each test's mock fetch is actually invoked.
+function renderPage() {
+  return render(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <AgentsPage />
+    </SWRConfig>
+  );
+}
 
 jest.mock('@/lib/contract', () => ({
   fetchAgents: jest.fn(),
@@ -17,32 +28,6 @@ jest.mock('next/link', () => {
 });
 
 import { fetchAgents, fetchAgentStats } from '@/lib/contract';
-
-function makeAgent(i: number): AgentEntry {
-  return {
-    address: `ADDR${i}`,
-    name: `Agent ${i}`,
-    description: `desc ${i}`,
-    owner: `OWNER${i}`,
-    score: 1000 - i,
-    total_payments: 10 - (i % 10),
-    successful_payments: 10 - (i % 10),
-    failed_payments: 0,
-    total_volume_stroops: '0',
-    registered_at: 1000 - i,
-    last_active: 1000 - i,
-    active: true,
-    flagged: false,
-    flag_reason: '',
-  };
-}
-
-const MOCK_STATS: AgentStats = {
-  totalAgents: 25,
-  avgScore: 500,
-  topAgent: null,
-  totalVolume: '0',
-};
 
 const mockAgent: AgentEntry = {
   address: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUV',
@@ -68,10 +53,6 @@ const mockStats: AgentStats = {
   totalVolume: '1.00',
 };
 
-
-  });
-});
-
 describe('AgentsPage retry state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -83,7 +64,7 @@ describe('AgentsPage retry state', () => {
       .mockResolvedValueOnce({ agents: [mockAgent], total: 1, page: 0, pageSize: PAGE_SIZE });
     (fetchAgentStats as jest.Mock).mockResolvedValue(mockStats);
 
-    render(<AgentsPage />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('Network disconnected')).toBeInTheDocument();
