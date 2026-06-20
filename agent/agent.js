@@ -16,6 +16,7 @@ for (const key of required) {
 
 const AGENT_SECRET = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL = process.env.STELLAR_RPC_URL;
+const STELLAR_NETWORK = process.env.STELLAR_NETWORK ?? 'testnet';
 const LODESTAR_API_URL = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
 const AGENT_NAME = process.env.AGENT_NAME ?? 'LodestarAgent';
@@ -35,6 +36,7 @@ const logger = pino({
 
 const EVENTS = Object.freeze({
   AGENT_START: 'agent_start',
+  AGENT_ADDRESS_LOADED: 'agent_address_loaded',
   AGENT_REGISTERED: 'agent_registered',
   AGENT_REGISTRATION_STARTED: 'agent_registration_started',
   AGENT_REGISTRATION_FAILED: 'agent_registration_failed',
@@ -47,8 +49,10 @@ const EVENTS = Object.freeze({
   SPEND_CHECK_BLOCKED: 'spend_check_blocked',
   PAYMENT_STARTED: 'payment_started',
   PAYMENT_SUCCESS: 'payment_success',
+  PAYMENT_RESPONSE_PARSE_FAILED: 'payment_response_parse_failed',
   PAYMENT_FAILED: 'payment_failed',
   SCORE_UPDATED: 'score_updated',
+  SCORE_UPDATE_FAILED: 'score_update_failed',
   REPUTATION_SUBMITTED: 'reputation_submitted',
   AGENT_SUMMARY: 'agent_summary',
   AGENT_COMPLETE: 'agent_complete',
@@ -137,7 +141,10 @@ async function ensureRegistered() {
       });
 
       if (regRes.ok) {
-        currentScore = 100;
+        const regData = await regRes.json().catch(() => ({}));
+        const registeredAgent = regData.agent ?? regData;
+        const registeredScore = Number(registeredAgent.score);
+        currentScore = Number.isFinite(registeredScore) ? registeredScore : 100;
         logger.info(
           agentContext({
             event: EVENTS.AGENT_REGISTERED,
@@ -224,7 +231,7 @@ async function recordOutcome(amountUsdc, success, serviceId) {
   } catch (err) {
     logger.warn(
       agentContext({
-        event: EVENTS.SCORE_UPDATED,
+        event: EVENTS.SCORE_UPDATE_FAILED,
         amountUsdc: usdcNumber(amountUsdc),
         serviceId,
         success,
@@ -240,7 +247,7 @@ async function recordOutcome(amountUsdc, success, serviceId) {
 // -- x402 client --------------------------------------------------------------
 
 function buildHttpClient() {
-  const signer = createEd25519Signer(AGENT_SECRET, 'stellar:testnet');
+  const signer = createEd25519Signer(AGENT_SECRET, `stellar:${STELLAR_NETWORK}`);
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
@@ -424,12 +431,32 @@ async function runTask(category, buildUrl, scoringEnabled) {
   }
 
   const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
-  const data = await response.json();
+  let data = null;
+  let parseError = null;
+  try {
+    data = await response.json();
+  } catch (err) {
+    parseError = err;
+  }
   const scoreBefore = currentScore;
   if (scoringEnabled) await recordOutcome(priceUsdc, true, best.id);
 
   await submitReputation(best.id, true);
   const taskDurationMs = elapsedMs(startedAt);
+
+  if (parseError) {
+    logger.warn(
+      agentContext({
+        event: EVENTS.PAYMENT_RESPONSE_PARSE_FAILED,
+        category,
+        serviceId: best.id,
+        serviceName: best.name,
+        txHash,
+        error: parseError.message,
+      }),
+      'Payment response body was not valid JSON'
+    );
+  }
 
   logger.info(
     agentContext({
@@ -442,7 +469,8 @@ async function runTask(category, buildUrl, scoringEnabled) {
       scoreBefore,
       scoreAfter: currentScore,
       taskDurationMs,
-      data,
+      responseJsonParsed: parseError === null,
+      responseKeys: data && typeof data === 'object' && !Array.isArray(data) ? Object.keys(data) : undefined,
     }),
     'Payment completed and data received'
   );
@@ -479,7 +507,7 @@ async function main() {
     agentContext({ event: EVENTS.AGENT_START, logLevel: LOG_LEVEL }),
     'Lodestar Agent starting'
   );
-  logger.info(agentContext({ event: EVENTS.AGENT_START }), 'Agent address loaded');
+  logger.info(agentContext({ event: EVENTS.AGENT_ADDRESS_LOADED }), 'Agent address loaded');
 
   const scoringEnabled = await ensureRegistered();
   const startingScore = currentScore;
@@ -510,7 +538,6 @@ async function main() {
       finalScore,
       scoreDelta,
       runDurationMs,
-      results,
     }),
     'Agent run summary'
   );
