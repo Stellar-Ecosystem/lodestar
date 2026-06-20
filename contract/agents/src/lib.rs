@@ -404,6 +404,35 @@ impl LodestarAgents {
         result
     }
 
+    // List a single page of agents in registration order (avoids O(n) reads for large sets)
+    pub fn list_agents_page(env: Env, page: u32, page_size: u32) -> Vec<AgentEntry> {
+        let ids_key = DataKey::AgentIds;
+        let ids: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or_else(|| vec![&env]);
+
+        let mut result: Vec<AgentEntry> = vec![&env];
+        let total = ids.len() as usize;
+        let start = (page as usize).saturating_mul(page_size as usize);
+        if start >= total {
+            return result;
+        }
+        let end = (start + page_size as usize).min(total);
+        for i in start..end {
+            let addr = ids.get(i as u32).unwrap();
+            if let Some(agent) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
+            {
+                result.push_back(agent);
+            }
+        }
+        result
+    }
+
     // Get total agent count
     pub fn get_agent_count(env: Env) -> u64 {
         env.storage()

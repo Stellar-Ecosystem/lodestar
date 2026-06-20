@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  listAgents,
+  listAgentsPage,
   getAgent,
   getAgentPolicy,
   getAgentScore,
@@ -17,6 +17,7 @@ import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
 import { hmacAuth } from '../middleware/hmacAuth.js';
 import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
+import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
 import { handleContractError } from '../lib/ContractError.js';
@@ -30,6 +31,39 @@ import {
 
 const router = Router();
 
+// In-memory cache: avoids fetching all agents from Soroban on every paginated request.
+// TTL matches the frontend's 30s auto-refresh interval.
+let agentsCache = null;
+let agentsCacheTime = 0;
+const AGENTS_CACHE_TTL = 30_000;
+
+const CACHE_BATCH_SIZE = 50;
+
+async function getCachedAgents() {
+  const now = Date.now();
+  if (agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) return agentsCache;
+
+  const total = await getAgentCount();
+  const pages = Math.ceil(total / CACHE_BATCH_SIZE);
+  const results = [];
+  for (let i = 0; i < pages; i++) {
+    const batch = await listAgentsPage(i, CACHE_BATCH_SIZE);
+    results.push(...batch);
+  }
+
+  agentsCache = results;
+  agentsCacheTime = now;
+  return agentsCache;
+}
+
+function sortAgents(agents, sort) {
+  return [...agents].sort((a, b) => {
+    if (sort === 'score') return b.score - a.score;
+    if (sort === 'payments') return b.total_payments - a.total_payments;
+    return b.registered_at - a.registered_at;
+  });
+}
+
 function requireAgentsContract(_req, res, next) {
   if (!config.contract.agentsId) {
     return res.status(503).json({
@@ -40,12 +74,23 @@ function requireAgentsContract(_req, res, next) {
   next();
 }
 
-// GET /api/agents — list all agents
+// GET /api/agents — paginated + sorted list
 router.get('/agents', requireAgentsContract, async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit ?? '50', 10), 100);
-    const agents = await listAgents(limit);
-    res.json({ agents, count: agents.length });
+    const parsedPage = Number.parseInt(String(req.query.page ?? '0'), 10);
+    const parsedPageSize = Number.parseInt(String(req.query.pageSize ?? '12'), 10);
+    const page = Number.isFinite(parsedPage) ? Math.max(0, parsedPage) : 0;
+    const pageSize = Number.isFinite(parsedPageSize) ? Math.min(100, Math.max(1, parsedPageSize)) : 12;
+    const sort = ['score', 'payments', 'newest'].includes(req.query.sort)
+      ? req.query.sort
+      : 'score';
+
+    const allAgents = await getCachedAgents();
+    const sorted = sortAgents(allAgents, sort);
+    const total = sorted.length;
+    const agents = sorted.slice(page * pageSize, (page + 1) * pageSize);
+
+    res.json({ agents, total, page, pageSize });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents failed');
     return handleContractError(err, res, 'Failed to fetch agents', 'FETCH_ERROR');
@@ -66,7 +111,7 @@ router.get('/agents/count', requireAgentsContract, async (_req, res) => {
 // GET /api/agents/stats
 router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
   try {
-    const agents = await listAgents(100);
+    const agents = await getCachedAgents();
     const totalAgents = agents.length;
 
     if (totalAgents === 0) {
@@ -214,7 +259,7 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
 });
 
 // POST /api/agents/register — Body: { agentAddress, name, description }
-router.post('/agents/register', requireAgentsContract, async (req, res) => {
+router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
   try {
     const { agentAddress, name, description } = req.body;
 
@@ -232,6 +277,7 @@ router.post('/agents/register', requireAgentsContract, async (req, res) => {
     }
 
     const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
+    agentsCache = null; // invalidate so next request reflects the new agent
     logger.info({ agentAddress, name }, 'Agent registered on-chain');
     res.status(201).json({ success: true, agentCount: count, agentAddress });
   } catch (err) {
@@ -250,7 +296,7 @@ router.post(
   '/agents/:address/payment',
   requireAgentsContract,
   hmacAuth,
-  paymentRateLimiter(10, 60_000),
+  paymentRateLimiter(config.rateLimit.payment.max, config.rateLimit.payment.windowMs),
   async (req, res) => {
     const { address } = req.params;
 

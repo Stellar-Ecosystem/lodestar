@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import ServiceCard from '@/components/ServiceCard';
+import ServiceCardSkeleton from '@/components/ServiceCardSkeleton';
 import { fetchServices } from '@/lib/contract';
 import { filterServices, sortServices } from '@/lib/registry';
 import type { ServiceEntry, Category, SortOption } from '@/lib/types';
@@ -137,7 +138,7 @@ export default function RegistryPage() {
       {loading ? (
         <div className="grid sm:grid-cols-2 gap-5">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="card p-6 h-64 animate-pulse bg-border/40" />
+            <ServiceCardSkeleton key={i} />
           ))}
         </div>
       ) : filtered.length === 0 ? (

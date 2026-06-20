@@ -109,9 +109,13 @@ export interface SpendingPolicy {
   last_reset_ledger: number;
 }
 
+export type AgentSortOption = 'score' | 'payments' | 'newest';
+
 export interface AgentsResponse {
   agents: AgentEntry[];
-  count: number;
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface AgentRegisterRequest {

@@ -8,6 +8,7 @@ import {
 import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
+import { writeRateLimiter } from "../middleware/rateLimiter.js";
 
 const router = Router();
 
@@ -115,7 +116,7 @@ router.get("/stats", async (req, res) => {
   }
 });
 
-router.post("/reputation/:id", async (req, res) => {
+router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   let id;
   try {
     id = parseInt(req.params.id, 10);

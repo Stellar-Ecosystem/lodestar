@@ -36,10 +36,22 @@ vi.mock('../config.js', () => ({
     braveApiKey: '',
     corsOrigin: ['http://localhost:3000'],
     jsonBodyLimit: '100kb',
+    rateLimit: {
+      windowMs: 60_000,
+      max: 20,
+      payment: { windowMs: 60_000, max: 10 },
+    },
     nodeEnv: 'test',
     port: 3001,
     logLevel: 'silent',
   },
+}));
+
+// The generic write rate limiter is exercised in isolation in
+// middleware/rateLimiter.test.js; here it's a pass-through so route logic and
+// the per-agent payment limiter can be tested without IP-based throttling.
+vi.mock('../middleware/rateLimiter.js', () => ({
+  writeRateLimiter: () => (_req, _res, next) => next(),
 }));
 
 vi.mock('../lib/logger.js', () => ({

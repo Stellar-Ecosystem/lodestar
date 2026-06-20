@@ -10,6 +10,11 @@ import agentsRouter from "./routes/agents.js";
 
 const app = express();
 
+// Trust the configured number of proxy hops so req.ip reflects the real client
+// (via X-Forwarded-For) behind a reverse proxy — required for correct IP-based
+// rate limiting. Defaults to false (no proxy) to avoid X-Forwarded-For spoofing.
+app.set("trust proxy", config.trustProxy);
+
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: config.jsonBodyLimit }));
 

@@ -26,8 +26,8 @@ export default function CreditScoreDemo() {
 
   const load = useCallback(async () => {
     try {
-      const data = await fetchAgents(10);
-      setAgents(data.agents.slice(0, 3));
+      const data = await fetchAgents(0, 3, 'score');
+      setAgents(data.agents);
     } catch {
       setUnavailable(true);
     } finally {

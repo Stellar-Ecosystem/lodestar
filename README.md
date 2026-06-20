@@ -231,6 +231,46 @@ cd backend && npm run seed-agents
 
 ---
 
+## Agent Leaderboard
+
+The `/agents` page (`frontend/app/agents/page.tsx`) is a paginated leaderboard of all registered agents, sorted by score, activity, or registration date.
+
+### The Problem
+
+The original implementation called `fetchAgents(100)` on every page load, which triggered a single Soroban contract call that read up to 100 persistent storage entries at once. All 100 agent records were then sent over the wire to the browser, stored in component state, and rendered in a single pass. At small scale this worked, but it had two concrete failure modes:
+
+- **Soroban compute limits**: A single `list_agents(100)` simulation reads 100 persistent storage entries in one call, which approaches Soroban's per-transaction compute budget as agent count grows (the same issue that affected `list_services` and was fixed in PR #109 with `list_services_page`).
+- **Unnecessary data transfer**: The browser downloaded the full agent list on every 30-second refresh cycle, regardless of how many agents the user was actually viewing.
+
+### How It Was Fixed
+
+The fix spans three layers:
+
+**1. Soroban contract** (`contract/agents/src/lib.rs`): Added `list_agents_page(page, page_size)` — reads only `page_size` entries from a specific offset in the `AgentIds` vec, keeping each simulation well within compute limits regardless of total agent count.
+
+**2. Backend** (`backend/src/routes/agents.js`): The `GET /api/agents` route now accepts `?page=N&pageSize=M&sort=score|payments|newest`. An in-memory cache holds the full sorted agent list for 30 seconds (matching the frontend refresh interval), so Soroban is queried at most once per 30s no matter how many page changes the user makes. The route sorts from the cache and returns only the requested slice. The `/api/agents/stats` endpoint shares the same cache. When a new agent registers, the cache is invalidated immediately.
+
+**3. Frontend** (`frontend/app/agents/page.tsx`): `fetchAgents(page, pageSize, sort)` replaces the old `fetchAgents(100)`. Changing page, page size, or sort triggers a new API call — the browser never holds more than one page of agent data in memory. A `refreshing` state dims the grid during transitions instead of re-showing the skeleton, keeping navigation feel fast.
+
+### UI Features
+
+- **Page size selector**: choose 6, 12, or 24 agents per page directly from the header
+- **Prev / Next controls** with "Showing X–Y of Z" counter
+- **Sort by** Highest Score, Most Active, or Newest — resets to page 1 automatically on change
+- **Skeleton loading** on first load; opacity transition on page/sort changes
+- **Live refresh** every 30 seconds without losing current page or sort
+
+### Running the Tests
+
+```sh
+cd frontend
+npm test
+```
+
+The test suite (`__tests__/AgentsPage.test.tsx`) mocks `fetchAgents` to behave like the real server-side implementation — returning only the requested page from a virtual list of N agents — and verifies first-page limits, Prev/Next state, sort-reset behavior, and "Showing X–Y of Z" accuracy across pages.
+
+---
+
 ## Hackathon: Stellar Hacks Agentic AI 2026
 
 Lodestar addresses all three brief requirements:

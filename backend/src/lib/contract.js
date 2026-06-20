@@ -319,6 +319,25 @@ export async function listAgents(limit = 50) {
   }
 }
 
+export async function listAgentsPage(page = 0, pageSize = 20) {
+  try {
+    const contract = getAgentsContract();
+    const op = contract.call(
+      'list_agents_page',
+      nativeToScVal(page, { type: 'u32' }),
+      nativeToScVal(pageSize, { type: 'u32' })
+    );
+    const retval = await simulateRead(op);
+    if (!retval) return [];
+    const vec = scValToNative(retval);
+    if (!Array.isArray(vec)) return [];
+    return vec.map(mapAgent);
+  } catch (err) {
+    logger.error({ err, page, pageSize }, 'listAgentsPage failed');
+    throw err;
+  }
+}
+
 export async function getAgent(agentAddress) {
   try {
     const contract = getAgentsContract();
@@ -462,5 +481,77 @@ export async function checkSpendingAllowed(agentAddress, amountStroops) {
   } catch (err) {
     logger.error({ err, agentAddress }, 'checkSpendingAllowed failed');
     return false;
+  }
+}
+
+export async function flagAgentOnChain(agentAddress, reason, callerAddress) {
+  try {
+    const contract = getAgentsContract();
+    const keypair = getServerKeypair();
+    const caller = Address.fromString(callerAddress ?? keypair.publicKey());
+
+    const op = contract.call(
+      'flag_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(reason, { type: 'string' }),
+      nativeToScVal(caller, { type: 'address' })
+    );
+
+    await simulateAndSubmit(op);
+    return true;
+  } catch (err) {
+    logger.error({ err, agentAddress, reason }, 'flagAgentOnChain failed');
+    throw err;
+  }
+}
+
+export async function deactivateAgentOnChain(agentAddress, callerAddress) {
+  try {
+    const contract = getAgentsContract();
+    const keypair = getServerKeypair();
+    const caller = Address.fromString(callerAddress ?? keypair.publicKey());
+
+    const op = contract.call(
+      'deactivate_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(caller, { type: 'address' })
+    );
+
+    await simulateAndSubmit(op);
+    return true;
+  } catch (err) {
+    logger.error({ err, agentAddress }, 'deactivateAgentOnChain failed');
+    throw err;
+  }
+}
+
+export async function updatePolicyOnChain(
+  agentAddress,
+  maxPerTxStroops,
+  maxPerDayStroops,
+  allowedCategories,
+  minScoreToEarn,
+  callerAddress
+) {
+  try {
+    const contract = getAgentsContract();
+    const keypair = getServerKeypair();
+    const caller = Address.fromString(callerAddress ?? keypair.publicKey());
+
+    const op = contract.call(
+      'update_policy',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(BigInt(maxPerTxStroops), { type: 'i128' }),
+      nativeToScVal(BigInt(maxPerDayStroops), { type: 'i128' }),
+      nativeToScVal(allowedCategories, { type: 'string' }),
+      nativeToScVal(minScoreToEarn, { type: 'i32' }),
+      nativeToScVal(caller, { type: 'address' })
+    );
+
+    await simulateAndSubmit(op);
+    return true;
+  } catch (err) {
+    logger.error({ err, agentAddress }, 'updatePolicyOnChain failed');
+    throw err;
   }
 }

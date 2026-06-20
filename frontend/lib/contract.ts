@@ -10,6 +10,7 @@ import type {
   AgentsResponse,
   AgentEligibilityResponse,
   AgentSpendCheckResponse,
+  AgentSortOption,
 } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
@@ -142,8 +143,14 @@ export async function registerService(
 
 // ── Agent Credit Scoring ──────────────────────────────────────────────────────
 
-export async function fetchAgents(limit = 50): Promise<{ agents: AgentEntry[]; count: number }> {
-  return apiFetch<AgentsResponse>(`/api/agents?limit=${limit}`);
+export async function fetchAgents(
+  page = 0,
+  pageSize = 12,
+  sort: AgentSortOption = 'score'
+): Promise<AgentsResponse> {
+  return apiFetch<AgentsResponse>(
+    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`
+  );
 }
 
 export async function fetchAgent(

@@ -19,6 +19,12 @@ vi.mock('../lib/logger.js', () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
+// Rate limiting is verified in isolation in middleware/rateLimiter.test.js;
+// here it's a pass-through so route behavior can be tested without throttling.
+vi.mock('../middleware/rateLimiter.js', () => ({
+  writeRateLimiter: () => (_req, _res, next) => next(),
+}));
+
 let app;
 
 beforeAll(async () => {
