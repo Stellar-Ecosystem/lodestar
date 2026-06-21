@@ -68,6 +68,7 @@ router.post('/demo-run', async (req, res) => {
     const demoRunId = randomUUID();
     const endpoint = new URL(endpointUrl);
     endpoint.searchParams.set('demoRunId', demoRunId);
+    endpoint.searchParams.set('serviceId', String(serviceId));
     endpointUrl = endpoint.toString();
 
     const httpClient = buildHttpClient();

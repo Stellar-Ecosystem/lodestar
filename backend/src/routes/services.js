@@ -8,6 +8,8 @@ import { recordPaymentOnChain } from '../lib/contract.js';
 import { usdcToStroops } from '../lib/money.js';
 
 const router = Router();
+const DEFAULT_WEATHER_SERVICE_ID = 1;
+const DEFAULT_SEARCH_SERVICE_ID = 2;
 
 // Activity feed lives in its own dependency-free module so the feed and
 // pagination logic stay unit-testable in isolation.
@@ -25,6 +27,11 @@ import {
   getActivityFeed,
   parseActivityPagination,
 } from '../lib/activityFeed.js';
+
+function parseServiceId(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? fallback), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 const facilitator = new HTTPFacilitatorClient({ url: config.x402.facilitatorUrl });
 const stellarScheme = new ExactStellarScheme();
@@ -98,8 +105,9 @@ router.get('/weather', async (req, res) => {
 
     if (agentAddress && config.contract.agentsId) {
       try {
+        const serviceId = parseServiceId(req.query.serviceId, DEFAULT_WEATHER_SERVICE_ID);
         const priceStroops = usdcToStroops(config.x402.weatherPrice);
-        recordPaymentOnChain(agentAddress, priceStroops, true).catch((err) =>
+        recordPaymentOnChain(agentAddress, serviceId, priceStroops, true).catch((err) =>
           logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
         );
       } catch (err) {
@@ -160,8 +168,9 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       try {
+        const serviceId = parseServiceId(req.query.serviceId, DEFAULT_SEARCH_SERVICE_ID);
         const priceStroops = usdcToStroops(config.x402.searchPrice);
-        recordPaymentOnChain(searchAgentAddress, priceStroops, true).catch((err) =>
+        recordPaymentOnChain(searchAgentAddress, serviceId, priceStroops, true).catch((err) =>
           logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
         );
       } catch (err) {

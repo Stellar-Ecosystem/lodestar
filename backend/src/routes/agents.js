@@ -42,7 +42,9 @@ const CACHE_BATCH_SIZE = 50;
 
 async function getCachedAgents() {
   const now = Date.now();
-  if (agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) return agentsCache;
+  if (config.nodeEnv !== 'test' && agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) {
+    return agentsCache;
+  }
 
   const total = await getAgentCount();
   const pages = Math.ceil(total / CACHE_BATCH_SIZE);
@@ -52,9 +54,11 @@ async function getCachedAgents() {
     results.push(...batch);
   }
 
-  agentsCache = results;
-  agentsCacheTime = now;
-  return agentsCache;
+  if (config.nodeEnv !== 'test') {
+    agentsCache = results;
+    agentsCacheTime = now;
+  }
+  return results;
 }
 
 function sortAgents(agents, sort) {
