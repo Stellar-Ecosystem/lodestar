@@ -23,6 +23,9 @@ async function loadConfig(overrides = {}) {
     'PAYMENT_RATE_LIMIT_WINDOW_MS',
     'PAYMENT_RATE_LIMIT_MAX',
     'TRUST_PROXY',
+    'DEMO_RUN_POLL_MAX_WAIT_MS',
+    'DEMO_RUN_POLL_INITIAL_DELAY_MS',
+    'DEMO_RUN_POLL_MAX_DELAY_MS',
   ]) {
     if (!(key in overrides)) delete process.env[key];
   }
@@ -63,6 +66,50 @@ describe('config rate-limit env validation', () => {
     const config = await loadConfig({ RATE_LIMIT_MAX: '0', PAYMENT_RATE_LIMIT_MAX: '-3' });
     expect(config.rateLimit.max).toBe(20);
     expect(config.rateLimit.payment.max).toBe(10);
+  });
+});
+
+describe('config demoRun polling env validation', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+  });
+
+  it('uses safe defaults when demo-run poll vars are unset', async () => {
+    const config = await loadConfig();
+    expect(config.demoRun.pollMaxWaitMs).toBe(8000);
+    expect(config.demoRun.pollInitialDelayMs).toBe(250);
+    expect(config.demoRun.pollMaxDelayMs).toBe(2000);
+  });
+
+  it('honors valid positive-integer overrides', async () => {
+    const config = await loadConfig({
+      DEMO_RUN_POLL_MAX_WAIT_MS: '5000',
+      DEMO_RUN_POLL_INITIAL_DELAY_MS: '100',
+      DEMO_RUN_POLL_MAX_DELAY_MS: '1000',
+    });
+    expect(config.demoRun.pollMaxWaitMs).toBe(5000);
+    expect(config.demoRun.pollInitialDelayMs).toBe(100);
+    expect(config.demoRun.pollMaxDelayMs).toBe(1000);
+  });
+
+  it('falls back and warns on non-numeric values', async () => {
+    const config = await loadConfig({ DEMO_RUN_POLL_MAX_WAIT_MS: 'abc' });
+    expect(config.demoRun.pollMaxWaitMs).toBe(8000);
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it('falls back on zero or negative values', async () => {
+    const config = await loadConfig({
+      DEMO_RUN_POLL_INITIAL_DELAY_MS: '0',
+      DEMO_RUN_POLL_MAX_DELAY_MS: '-1',
+    });
+    expect(config.demoRun.pollInitialDelayMs).toBe(250);
+    expect(config.demoRun.pollMaxDelayMs).toBe(2000);
   });
 });
 

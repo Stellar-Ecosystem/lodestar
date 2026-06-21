@@ -5,6 +5,7 @@ import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import config from '../config.js';
 import logger from '../lib/logger.js';
 import { getService } from '../lib/contract.js';
+import { waitForActivityTxHash } from '../lib/waitForActivityTxHash.js';
 import { recordActivity, getActivityFeed } from './services.js';
 
 const router = Router();
@@ -64,6 +65,7 @@ router.post('/demo-run', async (req, res) => {
     }
 
     const httpClient = buildHttpClient();
+    const activityCountBefore = getActivityFeed().length;
 
     const { response } = await httpClient.fetchWithTx(endpointUrl);
 
@@ -73,18 +75,16 @@ router.post('/demo-run', async (req, res) => {
 
     const data = await response.json();
 
-    // Poll activity feed for up to 8 seconds to get the tx hash
-    // after x402 middleware completes async settlement
-    let txHash = '';
-    const activityCountBefore = getActivityFeed().length;
-    for (let i = 0; i < 16; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      const feed = getActivityFeed();
-      const newest = feed[0];
-      if (feed.length > activityCountBefore && newest?.txHash) {
-        txHash = newest.txHash;
-        break;
-      }
+    const txHash = await waitForActivityTxHash(
+      getActivityFeed,
+      activityCountBefore,
+      config.demoRun,
+    );
+    if (!txHash) {
+      logger.warn(
+        { serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs },
+        'Activity txHash not found before poll timeout',
+      );
     }
 
     recordActivity({
