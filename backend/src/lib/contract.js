@@ -228,6 +228,25 @@ export async function updateReputation(id, positive) {
   }
 }
 
+export async function deactivateServiceOnChain(id) {
+  try {
+    const contract = getContract();
+    const keypair = getServerKeypair();
+    const providerAddress = Address.fromString(keypair.publicKey());
+
+    const op = contract.call(
+      'deactivate_service',
+      nativeToScVal(providerAddress, { type: 'address' }),
+      nativeToScVal(BigInt(id), { type: 'u64' })
+    );
+
+    await simulateAndSubmit(op);
+  } catch (err) {
+    logger.error({ err, id }, 'deactivateServiceOnChain failed');
+    throw err;
+  }
+}
+
 export async function registerServiceOnChain(
   name,
   description,

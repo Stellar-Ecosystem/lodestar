@@ -4,6 +4,7 @@ import {
   getService,
   getServiceCount,
   updateReputation,
+  deactivateServiceOnChain,
 } from "../lib/contract.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
@@ -138,6 +139,31 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   } catch (err) {
     logger.error({ err, id }, "POST /api/reputation/:id failed");
     res.status(500).json({ error: "Failed to update reputation", code: "UPDATE_ERROR" });
+  }
+});
+
+router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => {
+  let id;
+  try {
+    id = parseInt(req.params.id, 10);
+    if (isNaN(id) || id < 1) {
+      return res.status(400).json({ error: "Invalid service ID", code: "INVALID_ID" });
+    }
+
+    const service = await getService(id);
+    if (!service) {
+      return res.status(404).json({ error: "Service not found", code: "NOT_FOUND" });
+    }
+    if (!service.active) {
+      return res.status(409).json({ error: "Service is already deactivated", code: "ALREADY_DEACTIVATED" });
+    }
+
+    await deactivateServiceOnChain(id);
+    logger.info({ id }, "Service deactivated");
+    res.json({ success: true, id });
+  } catch (err) {
+    logger.error({ err, id }, "POST /api/services/:id/deactivate failed");
+    res.status(500).json({ error: "Failed to deactivate service", code: "DEACTIVATE_ERROR" });
   }
 });
 
