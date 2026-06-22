@@ -23,6 +23,8 @@ const AGENT_DESC       = process.env.AGENT_DESC ?? 'Autonomous x402 agent powere
 const MAX_PER_TX       = process.env.AGENT_MAX_PER_TX ?? '0.001';
 const MAX_PER_DAY      = process.env.AGENT_MAX_PER_DAY ?? '1.00';
 const ALLOWED_CATS     = (process.env.AGENT_ALLOWED_CATEGORIES ?? '').split(',').filter(Boolean);
+const MIN_SERVICE_REPUTATION = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
+const MAX_SERVICE_CANDIDATES = 3;
 
 const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
 const AGENT_ADDRESS = agentKeypair.publicKey();
@@ -177,6 +179,29 @@ async function submitReputation(id, positive) {
   }).catch(() => {});
 }
 
+// ── Service selection ─────────────────────────────────────────────────────────
+
+function selectServiceCandidates(services) {
+  const eligible = services.filter((s) => s.reputation >= MIN_SERVICE_REPUTATION);
+  if (!eligible.length) return services.slice(0, MAX_SERVICE_CANDIDATES); // fallback: ignore threshold
+
+  const sorted = [...eligible].sort((a, b) => b.reputation - a.reputation);
+  const candidates = sorted.slice(0, MAX_SERVICE_CANDIDATES);
+
+  // Weighted random pick from candidates (weight = max(1, reputation) to avoid zero weights)
+  const weights = candidates.map((s) => Math.max(1, s.reputation));
+  const total = weights.reduce((sum, w) => sum + w, 0);
+  let rand = Math.random() * total;
+  let chosen = candidates[0];
+  for (let i = 0; i < candidates.length; i++) {
+    rand -= weights[i];
+    if (rand <= 0) { chosen = candidates[i]; break; }
+  }
+
+  // Return chosen first, rest as fallbacks in reputation order (excluding chosen)
+  return [chosen, ...candidates.filter((c) => c !== chosen)];
+}
+
 // ── Agent task ────────────────────────────────────────────────────────────────
 
 async function runTask(category, buildUrl, scoringEnabled) {
@@ -191,48 +216,62 @@ async function runTask(category, buildUrl, scoringEnabled) {
   }
 
   logger.info(`${tag()} Step 2: Found ${services.length} service(s)`);
-  const best = [...services].sort((a, b) => b.reputation - a.reputation)[0];
-  logger.info(`${tag()} Step 3: Selected "${best.name}" — $${best.price_usdc} USDC`);
-
-  // Spending policy check
-  if (scoringEnabled) {
-    const check = await checkSpend(best.price_usdc, category);
-    if (!check.allowed) {
-      logger.warn(`${tag()} Payment blocked by spending policy: ${check.reason}`);
-      return;
-    }
-    logger.info(`${tag()} Spending policy check passed`);
-  }
-
-  const endpointUrl = buildUrl(best.endpoint);
-  logger.info(`${tag()} Step 4: Sending x402 payment on Stellar…`);
+  const candidates = selectServiceCandidates(services);
+  logger.info(`${tag()} Step 3: Selected "${candidates[0].name}" (rep: ${candidates[0].reputation}) — $${candidates[0].price_usdc} USDC${candidates.length > 1 ? ` | ${candidates.length - 1} fallback(s) available` : ''}`);
 
   const httpClient = buildHttpClient();
-  let response;
-  try {
-    response = await httpClient.fetch(endpointUrl);
-  } catch (err) {
-    logger.error({ err }, `${tag()} x402 payment failed`);
-    if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
-    return;
+  let succeeded = false;
+
+  for (const svc of candidates) {
+    if (svc !== candidates[0]) {
+      logger.info(`${tag()} Falling back to "${svc.name}" (rep: ${svc.reputation})`);
+    }
+
+    // Spending policy check per candidate (price may differ)
+    if (scoringEnabled) {
+      const check = await checkSpend(svc.price_usdc, category);
+      if (!check.allowed) {
+        logger.warn(`${tag()} Payment blocked for "${svc.name}": ${check.reason}`);
+        continue;
+      }
+    }
+
+    const endpointUrl = buildUrl(svc.endpoint);
+    logger.info(`${tag()} Step 4: Sending x402 payment to "${svc.name}"…`);
+
+    let response;
+    try {
+      response = await httpClient.fetch(endpointUrl);
+    } catch (err) {
+      logger.warn({ err }, `${tag()} x402 payment to "${svc.name}" failed — trying next candidate`);
+      if (scoringEnabled) await recordOutcome(svc.price_usdc, false, svc.id);
+      await submitReputation(svc.id, false);
+      continue;
+    }
+
+    if (!response.ok) {
+      logger.warn({ status: response.status }, `${tag()} Service error from "${svc.name}" — trying next candidate`);
+      if (scoringEnabled) await recordOutcome(svc.price_usdc, false, svc.id);
+      await submitReputation(svc.id, false);
+      continue;
+    }
+
+    const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
+    logger.info(`${tag()} Step 5: Payment confirmed — tx: ${txHash}`);
+
+    const data = await response.json();
+    logger.info({ data }, `${tag()} Paid $${svc.price_usdc} USDC to "${svc.name}" — data received`);
+
+    if (scoringEnabled) await recordOutcome(svc.price_usdc, true, svc.id);
+    await submitReputation(svc.id, true);
+    logger.info(`${tag()} Submitted positive reputation for "${svc.name}"`);
+    succeeded = true;
+    break;
   }
 
-  if (!response.ok) {
-    logger.error({ status: response.status }, `${tag()} Service error after payment`);
-    if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
-    return;
+  if (!succeeded) {
+    logger.error(`${tag()} All ${candidates.length} service candidate(s) failed for category "${category}"`);
   }
-
-  const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
-  logger.info(`${tag()} Step 5: Payment confirmed — tx: ${txHash}`);
-
-  const data = await response.json();
-  logger.info({ data }, `${tag()} Paid $${best.price_usdc} USDC — data received`);
-
-  if (scoringEnabled) await recordOutcome(best.price_usdc, true, best.id);
-
-  await submitReputation(best.id, true);
-  logger.info(`${tag()} Submitted positive reputation for "${best.name}"`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
