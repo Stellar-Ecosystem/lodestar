@@ -32,6 +32,11 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
+// ── Retry configuration for x402 payment failures ─────────────────────────────
+
+const MAX_PAYMENT_RETRIES = 3;
+const PAYMENT_RETRY_BASE_MS = 1000;
+
 // ── Credit scoring helpers ────────────────────────────────────────────────────
 
 let currentScore = null;
@@ -146,15 +151,38 @@ function buildHttpClient() {
       probe.status === 402 ? await probe.json().catch(() => undefined) : undefined
     );
 
-    // Step 3: build and sign the payment payload
-    const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
+    let lastError;
+    for (let attempt = 1; attempt <= MAX_PAYMENT_RETRIES; attempt++) {
+      try {
+        // Step 3: build and sign the payment payload
+        const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
 
-    // Step 4: encode as header and retry
-    const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
-    return fetch(url, {
-      ...init,
-      headers: { ...(init.headers ?? {}), ...paymentHeaders },
-    });
+        // Step 4: encode as header and retry
+        const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+        const paid = await fetch(url, {
+          ...init,
+          headers: { ...(init.headers ?? {}), ...paymentHeaders },
+        });
+
+        // If the server still returns 402, treat it as a transient settlement failure
+        // and retry with backoff.
+        if (paid.status === 402) {
+          lastError = new Error(`x402 settlement rejected with 402 (attempt ${attempt}/${MAX_PAYMENT_RETRIES})`);
+        } else {
+          return paid;
+        }
+      } catch (err) {
+        lastError = err;
+      }
+
+      if (attempt < MAX_PAYMENT_RETRIES) {
+        const delay = PAYMENT_RETRY_BASE_MS * attempt;
+        logger.warn({ attempt, delay, url }, `${tag()} x402 payment attempt ${attempt} failed, retrying after ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+
+    throw new Error(`x402 payment failed after ${MAX_PAYMENT_RETRIES} attempts: ${lastError?.message ?? 'unknown error'}`);
   };
 
   return httpClient;

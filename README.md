@@ -64,7 +64,7 @@ Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. 
 2. Pick the top result (highest reputation, lowest price, or newest)
 3. Make an HTTP request to the endpoint — receive a `402 Payment Required` response
 4. Build and sign an x402 payment transaction on Stellar using the agent's keypair
-5. Retry the request with the payment header — receive the data
+5. Retry the request with the payment header — if the service still responds with `402` (transient settlement failure), the agent retries up to **3 times** with exponential backoff (1s, 2s) before recording a failed payment — receive the data
 6. Optionally call `update_reputation` to improve the service's score for future agents
 
 ---
