@@ -17,6 +17,12 @@ import logger from './logger.js';
 
 const TIMEOUT = 30;
 
+// In-memory cache for listServices — avoids an RPC simulation call on every
+// paginated request. TTL matches the frontend's 30s auto-refresh interval.
+// Cache key: "<category|''>:<page>:<pageSize>"
+const SERVICES_CACHE_TTL = 30_000;
+const _servicesCache = new Map(); // key → { data, time }
+
 function getContract() {
   return new Contract(config.contract.id);
 }
@@ -113,7 +119,18 @@ async function simulateRead(operation) {
 }
 
 
+export function invalidateServicesCache() {
+  _servicesCache.clear();
+}
+
 export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
+  const cacheKey = `${category ?? ''}:${page}:${pageSize}`;
+  const now = Date.now();
+  const cached = _servicesCache.get(cacheKey);
+  if (cached && now - cached.time < SERVICES_CACHE_TTL) {
+    return cached.data;
+  }
+
   try {
     const contract = getContract();
 
@@ -133,7 +150,7 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
     const vec = scValToNative(retval);
     if (!Array.isArray(vec)) return [];
 
-    return vec.map((item) => ({
+    const data = vec.map((item) => ({
       id: Number(item.id),
       name: item.name,
       description: item.description,
@@ -145,6 +162,9 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
       active: item.active,
       registered_at: Number(item.registered_at),
     }));
+
+    _servicesCache.set(cacheKey, { data, time: now });
+    return data;
   } catch (err) {
     logger.error({ err }, 'listServices failed');
     throw err;
@@ -251,6 +271,7 @@ export async function registerServiceOnChain(
     );
 
     const result = await simulateAndSubmit(op);
+    invalidateServicesCache();
     const retval = result.returnValue;
     return retval ? Number(scValToNative(retval)) : null;
   } catch (err) {
