@@ -28,6 +28,7 @@ import {
   markComplete,
   markFailed,
 } from '../lib/idempotency.js';
+import { stroopsToUsdc, usdcToStroops } from '../lib/money.js';
 
 const router = Router();
 
@@ -41,7 +42,9 @@ const CACHE_BATCH_SIZE = 50;
 
 async function getCachedAgents() {
   const now = Date.now();
-  if (agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) return agentsCache;
+  if (config.nodeEnv !== 'test' && agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) {
+    return agentsCache;
+  }
 
   const total = await getAgentCount();
   const pages = Math.ceil(total / CACHE_BATCH_SIZE);
@@ -51,9 +54,11 @@ async function getCachedAgents() {
     results.push(...batch);
   }
 
-  agentsCache = results;
-  agentsCacheTime = now;
-  return agentsCache;
+  if (config.nodeEnv !== 'test') {
+    agentsCache = results;
+    agentsCacheTime = now;
+  }
+  return results;
 }
 
 function sortAgents(agents, sort) {
@@ -125,7 +130,7 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
       (sum, a) => sum + BigInt(a.total_volume_stroops),
       0n
     );
-    const totalVolumeUsdc = (Number(totalVolumeStroops) / 10_000_000).toFixed(2);
+    const totalVolumeUsdc = stroopsToUsdc(totalVolumeStroops, 2);
 
     res.json({ totalAgents, avgScore, topAgent, totalVolume: totalVolumeUsdc });
   } catch (err) {
@@ -203,7 +208,15 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
     const { address } = req.params;
     const amountUsdc = req.query.amount ?? '0';
     const category = req.query.category ?? '';
-    const amountStroops = BigInt(Math.round(parseFloat(amountUsdc) * 10_000_000));
+    let amountStroops;
+    try {
+      amountStroops = usdcToStroops(amountUsdc);
+    } catch {
+      return res.status(400).json({
+        error: 'Invalid `amount` query parameter',
+        code: 'INVALID_AMOUNT',
+      });
+    }
 
     const [allowed, policy, agent] = await Promise.all([
       checkSpendingAllowed(address, amountStroops),
@@ -239,13 +252,13 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
       if (amountStroops > maxTx) {
         return res.json({
           allowed: false,
-          reason: `Amount exceeds per-transaction limit of $${(Number(maxTx) / 10_000_000).toFixed(4)} USDC`,
+          reason: `Amount exceeds per-transaction limit of $${stroopsToUsdc(maxTx, 4)} USDC`,
         });
       }
       if (dailySpent + amountStroops > maxDay) {
         return res.json({
           allowed: false,
-          reason: `Daily spending limit of $${(Number(maxDay) / 10_000_000).toFixed(4)} USDC reached`,
+          reason: `Daily spending limit of $${stroopsToUsdc(maxDay, 4)} USDC reached`,
         });
       }
       return res.json({ allowed: false, reason: 'Spending policy violation' });
@@ -353,11 +366,20 @@ router.post(
       return res.status(400).json({ error: '`serviceId` is required', code: 'INVALID_BODY' });
     }
 
+    let amountStroops;
+    try {
+      amountStroops = usdcToStroops(amountUsdc);
+    } catch {
+      return res.status(400).json({
+        error: 'Invalid `amountUsdc` value',
+        code: 'INVALID_BODY',
+      });
+    }
+
     // ── 5. Reserve the key before touching the chain ──────────────────────────
     markPending(scopedKey);
 
     try {
-      const amountStroops = BigInt(Math.round(parseFloat(String(amountUsdc)) * 10_000_000));
       await recordPaymentOnChain(address, serviceId, amountStroops, success);
       const agent = await getAgent(address);
       const newScore = agent?.score ?? 0;
