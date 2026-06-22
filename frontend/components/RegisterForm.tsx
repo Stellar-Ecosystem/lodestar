@@ -47,6 +47,7 @@ export default function RegisterForm({ walletAddress }: Props) {
   const [form, setForm]     = useState<FormState>(EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [txStatus, setTxStatus] = useState('');
   const [result, setResult] = useState<{ txHash: string } | null>(null);
   const [submitError, setSubmitError] = useState('');
 
@@ -63,15 +64,17 @@ export default function RegisterForm({ walletAddress }: Props) {
       return;
     }
     setSubmitting(true);
+    setTxStatus('');
     setSubmitError('');
     try {
-      const res = await registerService(form as RegisterFormData, walletAddress);
+      const res = await registerService(form as RegisterFormData, walletAddress, setTxStatus);
       setResult(res);
       setForm(EMPTY);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Registration failed');
     } finally {
       setSubmitting(false);
+      setTxStatus('');
     }
   }
 
@@ -183,7 +186,7 @@ export default function RegisterForm({ walletAddress }: Props) {
         disabled={submitting}
         className="btn-primary w-full py-3 disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {submitting ? 'Registering…' : 'Register Service'}
+        {submitting ? (txStatus || 'Registering…') : 'Register Service'}
       </button>
     </form>
   );
