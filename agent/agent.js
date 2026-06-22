@@ -23,6 +23,8 @@ const AGENT_DESC       = process.env.AGENT_DESC ?? 'Autonomous x402 agent powere
 const MAX_PER_TX       = process.env.AGENT_MAX_PER_TX ?? '0.001';
 const MAX_PER_DAY      = process.env.AGENT_MAX_PER_DAY ?? '1.00';
 const ALLOWED_CATS     = (process.env.AGENT_ALLOWED_CATEGORIES ?? '').split(',').filter(Boolean);
+const PRICE_TOLERANCE_PCT = parseFloat(process.env.AGENT_PRICE_TOLERANCE_PERCENT ?? '0');
+const STELLAR_TOKEN_DECIMALS = 7; // ExactStellarScheme uses 7 decimal places for USDC
 
 const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
 const AGENT_ADDRESS = agentKeypair.publicKey();
@@ -135,7 +137,8 @@ function buildHttpClient() {
   const httpClient = new x402HTTPClient(x402);
 
   // Implement fetch manually — x402HTTPClient.fetch() was removed in this version
-  httpClient.fetch = async (url, init = {}) => {
+  // opts.maxPriceUsdc: if set, throws with err.code='PRICE_MISMATCH' if 402 demands more
+  httpClient.fetch = async (url, init = {}, opts = {}) => {
     // Step 1: probe the endpoint
     const probe = await fetch(url, init);
     if (probe.status !== 402) return probe;
@@ -143,13 +146,32 @@ function buildHttpClient() {
     // Step 2: decode the 402 payment-required header
     const paymentRequired = httpClient.getPaymentRequiredResponse(
       (name) => probe.headers.get(name),
-      probe.status === 402 ? await probe.json().catch(() => undefined) : undefined
+      await probe.json().catch(() => undefined)
     );
 
-    // Step 3: build and sign the payment payload
+    // Step 3: verify demanded price against registered price (closes TOCTOU gap)
+    if (opts.maxPriceUsdc != null && paymentRequired.accepts?.length > 0) {
+      const rawAmount = paymentRequired.accepts[0].maxAmountRequired;
+      if (rawAmount != null) {
+        const factor = Math.pow(10, STELLAR_TOKEN_DECIMALS);
+        const demandedUsdc = Number(rawAmount) / factor;
+        const maxAllowed = parseFloat(opts.maxPriceUsdc) * (1 + PRICE_TOLERANCE_PCT / 100);
+        if (demandedUsdc > maxAllowed) {
+          const err = new Error(
+            `Price mismatch: service demands ${demandedUsdc} USDC, registered price is ${opts.maxPriceUsdc} USDC`
+          );
+          err.code = 'PRICE_MISMATCH';
+          err.demandedUsdc = demandedUsdc;
+          err.registeredUsdc = opts.maxPriceUsdc;
+          throw err;
+        }
+      }
+    }
+
+    // Step 4: build and sign the payment payload
     const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
 
-    // Step 4: encode as header and retry
+    // Step 5: encode as header and retry
     const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
     return fetch(url, {
       ...init,
@@ -210,8 +232,17 @@ async function runTask(category, buildUrl, scoringEnabled) {
   const httpClient = buildHttpClient();
   let response;
   try {
-    response = await httpClient.fetch(endpointUrl);
+    response = await httpClient.fetch(endpointUrl, {}, { maxPriceUsdc: best.price_usdc });
   } catch (err) {
+    if (err.code === 'PRICE_MISMATCH') {
+      logger.warn(
+        { registeredPrice: err.registeredUsdc, demandedPrice: err.demandedUsdc, serviceId: best.id },
+        `${tag()} Payment aborted — service demands $${err.demandedUsdc} USDC but registry shows $${err.registeredUsdc} USDC`
+      );
+      if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
+      await submitReputation(best.id, false);
+      return;
+    }
     logger.error({ err }, `${tag()} x402 payment failed`);
     if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
     return;
