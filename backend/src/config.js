@@ -107,6 +107,13 @@ const config = Object.freeze({
     pollInitialDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_INITIAL_DELAY_MS, 250, 'DEMO_RUN_POLL_INITIAL_DELAY_MS'),
     pollMaxDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_DELAY_MS, 2_000, 'DEMO_RUN_POLL_MAX_DELAY_MS'),
   },
+
+  // Exponential-backoff settings for getTransaction polling in simulateAndSubmit.
+  txPoll: {
+    initialDelayMs: parsePositiveInt(process.env.TX_POLL_INITIAL_DELAY_MS, 1_500, 'TX_POLL_INITIAL_DELAY_MS'),
+    maxDelayMs: parsePositiveInt(process.env.TX_POLL_MAX_DELAY_MS, 10_000, 'TX_POLL_MAX_DELAY_MS'),
+    maxWaitMs: parsePositiveInt(process.env.TX_POLL_MAX_WAIT_MS, 60_000, 'TX_POLL_MAX_WAIT_MS'),
+  },
 });
 
 export default config;

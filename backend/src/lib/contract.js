@@ -61,8 +61,15 @@ async function simulateAndSubmit(operation) {
     throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
   }
 
+  const pollInitialMs = config.txPoll?.initialDelayMs ?? 1_500;
+  const pollMaxMs = config.txPoll?.maxDelayMs ?? 10_000;
+  const pollTimeoutMs = config.txPoll?.maxWaitMs ?? 60_000;
+
   let getResult;
-  for (let i = 0; i < 20; i++) {
+  let delay = pollInitialMs;
+  const deadline = Date.now() + pollTimeoutMs;
+
+  while (Date.now() < deadline) {
     try {
       getResult = await server.getTransaction(sendResult.hash);
       if (getResult.status !== 'NOT_FOUND') break;
@@ -74,7 +81,10 @@ async function simulateAndSubmit(operation) {
       }
       throw parseErr;
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(delay, remaining)));
+    delay = Math.min(delay * 2, pollMaxMs);
   }
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
