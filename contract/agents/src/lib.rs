@@ -59,6 +59,7 @@ pub struct AgentEntry {
     pub active: bool,
     pub flagged: bool,
     pub flag_reason: String,
+    pub is_demo: bool,
 }
 
 #[contracttype]
@@ -99,6 +100,7 @@ impl LodestarAgents {
         name: String,
         description: String,
         owner: Address,
+        is_demo: bool,
     ) -> u64 {
         owner.require_auth();
 
@@ -124,6 +126,7 @@ impl LodestarAgents {
             active: true,
             flagged: false,
             flag_reason: String::from_str(&env, ""),
+            is_demo,
         };
 
         env.storage().persistent().set(&key, &entry);

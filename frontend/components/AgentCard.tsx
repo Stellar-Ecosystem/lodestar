@@ -24,12 +24,19 @@ export default function AgentCard({ agent }: Props) {
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
-          <Link
-            href={`/agents/${agent.address}`}
-            className="font-semibold text-base leading-snug hover:text-accent transition-colors truncate block"
-          >
-            {agent.name}
-          </Link>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Link
+              href={`/agents/${agent.address}`}
+              className="font-semibold text-base leading-snug hover:text-accent transition-colors truncate"
+            >
+              {agent.name}
+            </Link>
+            {agent.is_demo && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
+                Demo
+              </span>
+            )}
+          </div>
           <a
             href={`${EXPLORER_URL}/account/${agent.address}`}
             target="_blank"

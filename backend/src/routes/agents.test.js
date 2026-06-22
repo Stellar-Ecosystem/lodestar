@@ -4,6 +4,7 @@ import express from 'express';
 import request from 'supertest';
 
 const mockListAgents = vi.fn();
+const mockListAgentsPage = vi.fn();
 const mockGetAgent = vi.fn();
 const mockGetAgentPolicy = vi.fn();
 const mockGetAgentScore = vi.fn();
@@ -14,6 +15,7 @@ const mockRecordPaymentOnChain = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
   listAgents: (...args) => mockListAgents(...args),
+  listAgentsPage: (...args) => mockListAgentsPage(...args),
   getAgent: (...args) => mockGetAgent(...args),
   getAgentPolicy: (...args) => mockGetAgentPolicy(...args),
   getAgentScore: (...args) => mockGetAgentScore(...args),
@@ -113,6 +115,7 @@ function makeAgent(overrides = {}) {
     active: true,
     flagged: false,
     flag_reason: '',
+    is_demo: false,
     ...overrides,
   };
 }
@@ -120,17 +123,50 @@ function makeAgent(overrides = {}) {
 describe('GET /api/agents', () => {
   it('should return list of agents', async () => {
     const agents = [makeAgent({ address: 'GA1' }), makeAgent({ address: 'GA2' })];
-    mockListAgents.mockResolvedValueOnce(agents);
+    mockGetAgentCount.mockResolvedValueOnce(2);
+    mockListAgentsPage.mockResolvedValueOnce(agents);
 
     const res = await request(app).get('/api/agents');
 
     expect(res.status).toBe(200);
     expect(res.body.agents).toHaveLength(2);
-    expect(res.body.count).toBe(2);
+    expect(res.body.total).toBe(2);
+  });
+
+  it('should filter out demo agents when exclude_demo=true', async () => {
+    const agents = [
+      makeAgent({ address: 'GA1', name: 'Real Agent', is_demo: false }),
+      makeAgent({ address: 'GA2', name: 'Demo Agent', is_demo: true }),
+      makeAgent({ address: 'GA3', name: 'Another Real', is_demo: false }),
+    ];
+    mockGetAgentCount.mockResolvedValueOnce(3);
+    mockListAgentsPage.mockResolvedValueOnce(agents);
+
+    const res = await request(app).get('/api/agents?exclude_demo=true');
+
+    expect(res.status).toBe(200);
+    expect(res.body.agents).toHaveLength(2);
+    expect(res.body.agents.every(a => !a.is_demo)).toBe(true);
+    expect(res.body.total).toBe(2);
+  });
+
+  it('should include demo agents when exclude_demo is not set', async () => {
+    const agents = [
+      makeAgent({ address: 'GA1', is_demo: false }),
+      makeAgent({ address: 'GA2', is_demo: true }),
+    ];
+    mockGetAgentCount.mockResolvedValueOnce(2);
+    mockListAgentsPage.mockResolvedValueOnce(agents);
+
+    const res = await request(app).get('/api/agents');
+
+    expect(res.status).toBe(200);
+    expect(res.body.agents).toHaveLength(2);
+    expect(res.body.total).toBe(2);
   });
 
   it('should return 500 when contract call fails', async () => {
-    mockListAgents.mockRejectedValueOnce(new Error('Chain error'));
+    mockGetAgentCount.mockRejectedValueOnce(new Error('Chain error'));
 
     const res = await request(app).get('/api/agents');
 
@@ -156,7 +192,8 @@ describe('GET /api/agents/stats', () => {
       makeAgent({ score: 100, total_volume_stroops: '10000000' }),
       makeAgent({ score: 200, total_volume_stroops: '20000000' }),
     ];
-    mockListAgents.mockResolvedValueOnce(agents);
+    mockGetAgentCount.mockResolvedValueOnce(2);
+    mockListAgentsPage.mockResolvedValueOnce(agents);
 
     const res = await request(app).get('/api/agents/stats');
 
@@ -166,7 +203,8 @@ describe('GET /api/agents/stats', () => {
   });
 
   it('should return zero stats when no agents', async () => {
-    mockListAgents.mockResolvedValueOnce([]);
+    mockGetAgentCount.mockResolvedValueOnce(0);
+    mockListAgentsPage.mockResolvedValueOnce([]);
 
     const res = await request(app).get('/api/agents/stats');
 
