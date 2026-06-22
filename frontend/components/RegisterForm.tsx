@@ -2,9 +2,16 @@
 
 import { useState } from 'react';
 import type { Category } from '@/lib/types';
-import { registerService, type RegisterFormData } from '@/lib/contract';
+import { registerService, type RegisterFormData, type RegisterStatus } from '@/lib/contract';
 
 const CATEGORIES: Category[] = ['search', 'weather', 'finance', 'ai', 'data', 'compute'];
+
+const TX_STATUS_LABELS: Record<RegisterStatus, string> = {
+  'simulating': 'Simulating transaction…',
+  'awaiting-signature': 'Awaiting wallet signature…',
+  'submitting': 'Submitting to network…',
+  'confirming': 'Confirming on-chain…',
+};
 
 const EXPLORER_URL =
   process.env.NEXT_PUBLIC_EXPLORER_URL ?? 'https://stellar.expert/explorer/testnet';
@@ -47,6 +54,7 @@ export default function RegisterForm({ walletAddress }: Props) {
   const [form, setForm]     = useState<FormState>(EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [txStatus, setTxStatus] = useState<RegisterStatus | null>(null);
   const [result, setResult] = useState<{ txHash: string } | null>(null);
   const [submitError, setSubmitError] = useState('');
 
@@ -63,15 +71,17 @@ export default function RegisterForm({ walletAddress }: Props) {
       return;
     }
     setSubmitting(true);
+    setTxStatus(null);
     setSubmitError('');
     try {
-      const res = await registerService(form as RegisterFormData, walletAddress);
+      const res = await registerService(form as RegisterFormData, walletAddress, setTxStatus);
       setResult(res);
       setForm(EMPTY);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Registration failed');
     } finally {
       setSubmitting(false);
+      setTxStatus(null);
     }
   }
 
@@ -176,6 +186,13 @@ export default function RegisterForm({ walletAddress }: Props) {
         <p className="text-error text-sm bg-error/5 border border-error/20 rounded-lg px-4 py-3">
           {submitError}
         </p>
+      )}
+
+      {txStatus && (
+        <div className="flex items-center gap-2 text-sm text-secondary">
+          <span className="w-2 h-2 rounded-full bg-primary animate-pulse shrink-0" />
+          <span>{TX_STATUS_LABELS[txStatus]}</span>
+        </div>
       )}
 
       <button
