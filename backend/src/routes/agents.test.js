@@ -11,6 +11,16 @@ const mockGetAgentCount = vi.fn();
 const mockIsAgentEligible = vi.fn();
 const mockCheckSpendingAllowed = vi.fn();
 const mockRecordPaymentOnChain = vi.fn();
+const mockGetActivityFeed = vi.fn();
+
+vi.mock('../lib/activityFeed.js', () => ({
+  getActivityFeed: (...args) => mockGetActivityFeed(...args),
+  parseActivityPagination: (query = {}) => {
+    const limit = Math.min(Number(query.limit ?? 20), 50);
+    const offset = Number(query.offset ?? 0);
+    return { limit, offset, errors: [] };
+  },
+}));
 
 vi.mock('../lib/contract.js', () => ({
   listAgents: (...args) => mockListAgents(...args),
@@ -381,5 +391,56 @@ describe('POST /api/agents/:address/payment (HMAC + rate limit + idempotency)', 
 
     expect(res.status).toBe(429);
     expect(res.body.code).toBe('RATE_LIMITED');
+  });
+});
+
+describe('GET /api/agents/:address/payment-history', () => {
+  const agentAddress = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+  const otherAddress = 'GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPGKAMRQTLQHKF7XQEWZMPOKJ3H';
+
+  function makeEntry(agent, overrides = {}) {
+    return { timestamp: '2025-01-01T00:00:00Z', agent, service: 'TestSvc', amount: '0.001', txHash: 'abc123', ...overrides };
+  }
+
+  beforeEach(() => {
+    mockGetActivityFeed.mockReset();
+  });
+
+  it('returns only entries matching the agent address', async () => {
+    mockGetActivityFeed.mockReturnValue([
+      makeEntry(agentAddress, { txHash: 'tx1' }),
+      makeEntry(otherAddress, { txHash: 'tx2' }),
+      makeEntry(agentAddress, { txHash: 'tx3' }),
+    ]);
+
+    const res = await request(app).get(`/api/agents/${agentAddress}/payment-history`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toHaveLength(2);
+    expect(res.body.payments.every((e) => e.agent === agentAddress)).toBe(true);
+    expect(res.body.total).toBe(2);
+  });
+
+  it('returns empty list when agent has no payment history', async () => {
+    mockGetActivityFeed.mockReturnValue([makeEntry(otherAddress)]);
+
+    const res = await request(app).get(`/api/agents/${agentAddress}/payment-history`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toHaveLength(0);
+    expect(res.body.total).toBe(0);
+    expect(res.body.hasMore).toBe(false);
+  });
+
+  it('respects limit and offset pagination', async () => {
+    const entries = Array.from({ length: 5 }, (_, i) => makeEntry(agentAddress, { txHash: `tx${i}` }));
+    mockGetActivityFeed.mockReturnValue(entries);
+
+    const res = await request(app).get(`/api/agents/${agentAddress}/payment-history?limit=2&offset=1`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toHaveLength(2);
+    expect(res.body.total).toBe(5);
+    expect(res.body.hasMore).toBe(true);
   });
 });
