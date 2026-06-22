@@ -78,7 +78,7 @@ const config = Object.freeze({
     weatherPrice: process.env.WEATHER_PRICE ?? '0.001',
   },
 
-  braveApiKey: process.env.BRAVE_API_KEY ?? '',
+  serperApiKey: process.env.SERPER_API_KEY ?? '',
 
   corsOrigin: process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())

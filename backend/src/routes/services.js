@@ -124,7 +124,7 @@ router.get('/search', async (req, res) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-KEY': config.braveApiKey,
+          'X-API-KEY': config.serperApiKey,
         },
         body: JSON.stringify({ q, num: 5 }),
       }
