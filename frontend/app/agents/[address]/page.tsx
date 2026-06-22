@@ -3,11 +3,14 @@
 import { useEffect, useState, useCallback, ChangeEvent } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import type { AgentEntry, SpendingPolicy } from '@/lib/types';
+import type { AgentEntry, SpendingPolicy, Category } from '@/lib/types';
 import { scoreTier, TIER_LABELS } from '@/lib/types';
 import ScoreBadge from '@/components/ScoreBadge';
 import SpendingPolicyDisplay from '@/components/SpendingPolicy';
 import { fetchAgentEligibility } from '@/lib/contract';
+import { useWallet } from '@/components/WalletContext';
+
+const CATEGORY_OPTIONS: Category[] = ['weather', 'search', 'finance', 'ai', 'data', 'compute'];
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const EXPLORER_URL =
@@ -22,6 +25,7 @@ const ACCESS_TIERS = [
 
 export default function AgentProfilePage() {
   const { address } = useParams<{ address: string }>();
+  const { address: walletAddress, status: walletStatus } = useWallet();
   const [agent, setAgent] = useState<AgentEntry | null>(null);
   const [policy, setPolicy] = useState<SpendingPolicy | null>(null);
   const [loading, setLoading] = useState(true);
@@ -31,6 +35,11 @@ export default function AgentProfilePage() {
   const [customMinScore, setCustomMinScore] = useState(0);
   const [isEligible, setIsEligible] = useState<boolean | null>(null);
   const [checkingEligibility, setCheckingEligibility] = useState(false);
+
+  const [editingPolicy, setEditingPolicy] = useState(false);
+  const [policyForm, setPolicyForm] = useState({ maxPerTxUsdc: '', maxPerDayUsdc: '', minScoreToEarn: 0, allowedCategories: [] as Category[] });
+  const [policySubmitting, setPolicySubmitting] = useState(false);
+  const [policyError, setPolicyError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!address) return;
@@ -74,6 +83,47 @@ export default function AgentProfilePage() {
       setCheckingEligibility(false);
     }
   };
+
+  function openPolicyEdit() {
+    if (!policy) return;
+    const toUsdc = (stroops: string) => (Number(BigInt(stroops)) / 10_000_000).toString();
+    setPolicyForm({
+      maxPerTxUsdc: toUsdc(policy.max_per_tx_stroops),
+      maxPerDayUsdc: policy.max_per_day_stroops === '0' ? '0' : toUsdc(policy.max_per_day_stroops),
+      minScoreToEarn: policy.min_score_to_earn,
+      allowedCategories: (policy.allowed_categories as Category[]).filter(c => CATEGORY_OPTIONS.includes(c)),
+    });
+    setPolicyError(null);
+    setEditingPolicy(true);
+  }
+
+  async function submitPolicyEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!address || !walletAddress) return;
+    setPolicySubmitting(true);
+    setPolicyError(null);
+    try {
+      const toStroops = (usdc: string) => String(Math.round(parseFloat(usdc) * 10_000_000));
+      const res = await fetch(`${API}/api/agents/${address}/policy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-caller-address': walletAddress },
+        body: JSON.stringify({
+          maxPerTxStroops: toStroops(policyForm.maxPerTxUsdc),
+          maxPerDayStroops: policyForm.maxPerDayUsdc === '0' ? '0' : toStroops(policyForm.maxPerDayUsdc),
+          allowedCategories: policyForm.allowedCategories,
+          minScoreToEarn: policyForm.minScoreToEarn,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Update failed (${res.status})`);
+      await load();
+      setEditingPolicy(false);
+    } catch (err) {
+      setPolicyError(err instanceof Error ? err.message : 'Update failed');
+    } finally {
+      setPolicySubmitting(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -209,6 +259,55 @@ export default function AgentProfilePage() {
       {policy && (
         <div className="mb-6">
           <SpendingPolicyDisplay policy={policy} />
+          {walletStatus === 'connected' && walletAddress === agent.owner && !editingPolicy && (
+            <button onClick={openPolicyEdit} className="mt-3 btn-secondary text-sm px-4 py-2">
+              Edit Policy
+            </button>
+          )}
+          {editingPolicy && (
+            <form onSubmit={submitPolicyEdit} className="card p-6 mt-3 flex flex-col gap-4">
+              <h3 className="font-semibold text-sm">Edit Spending Policy</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-secondary mb-1">Max per transaction (USDC)</label>
+                  <input type="number" min="0.000001" step="0.000001" value={policyForm.maxPerTxUsdc}
+                    onChange={e => setPolicyForm(f => ({ ...f, maxPerTxUsdc: e.target.value }))}
+                    className="input w-full text-sm" required />
+                </div>
+                <div>
+                  <label className="block text-xs text-secondary mb-1">Max per day (USDC, 0 = no limit)</label>
+                  <input type="number" min="0" step="0.000001" value={policyForm.maxPerDayUsdc}
+                    onChange={e => setPolicyForm(f => ({ ...f, maxPerDayUsdc: e.target.value }))}
+                    className="input w-full text-sm" required />
+                </div>
+                <div>
+                  <label className="block text-xs text-secondary mb-1">Min score to earn</label>
+                  <input type="number" min="0" max="1000" value={policyForm.minScoreToEarn}
+                    onChange={e => setPolicyForm(f => ({ ...f, minScoreToEarn: Number(e.target.value) }))}
+                    className="input w-full text-sm" required />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-secondary mb-2">Allowed categories (empty = all)</label>
+                <div className="flex flex-wrap gap-2">
+                  {CATEGORY_OPTIONS.map(cat => (
+                    <button key={cat} type="button"
+                      onClick={() => setPolicyForm(f => ({ ...f, allowedCategories: f.allowedCategories.includes(cat) ? f.allowedCategories.filter(c => c !== cat) : [...f.allowedCategories, cat] }))}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${policyForm.allowedCategories.includes(cat) ? 'bg-accent text-white border-accent' : 'border-border text-secondary hover:border-accent hover:text-primary'}`}>
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {policyError && <p className="text-sm text-error">{policyError}</p>}
+              <div className="flex gap-3">
+                <button type="submit" disabled={policySubmitting} className="btn-primary text-sm disabled:opacity-50">
+                  {policySubmitting ? 'Saving…' : 'Save Policy'}
+                </button>
+                <button type="button" onClick={() => setEditingPolicy(false)} className="btn-secondary text-sm">Cancel</button>
+              </div>
+            </form>
+          )}
         </div>
       )}
 
