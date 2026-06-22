@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { ServiceEntry, Category } from '@/lib/types';
 import { submitReputation } from '@/lib/contract';
+import { CATEGORY_ICONS } from '@/lib/categoryIcons';
 
 const CATEGORY_COLORS: Record<Category, string> = {
   search:  'bg-blue-50 text-blue-700',
@@ -66,7 +67,8 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <h3 className="font-semibold text-base leading-snug">{service.name}</h3>
-        <span className={`badge shrink-0 ${CATEGORY_COLORS[service.category] ?? 'bg-gray-50 text-gray-700'}`}>
+        <span className={`badge shrink-0 flex items-center gap-1 ${CATEGORY_COLORS[service.category] ?? 'bg-gray-50 text-gray-700'}`}>
+          {CATEGORY_ICONS[service.category]}
           {service.category}
         </span>
       </div>

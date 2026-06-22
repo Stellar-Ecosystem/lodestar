@@ -7,6 +7,7 @@ import ServiceCardSkeleton from '@/components/ServiceCardSkeleton';
 import { fetchServices } from '@/lib/contract';
 import { filterServices, sortServices } from '@/lib/registry';
 import type { Category, SortOption } from '@/lib/types';
+import { CATEGORY_ICONS } from '@/lib/categoryIcons';
 
 const CATEGORIES: { label: string; value: Category | 'all' }[] = [
   { label: 'All', value: 'all' },
@@ -117,12 +118,13 @@ export default function RegistryPage() {
           <button
             key={c.value}
             onClick={() => handleCategoryChange(c.value)}
-            className={`px-4 py-1.5 rounded-full text-sm border transition-colors ${
+            className={`px-4 py-1.5 rounded-full text-sm border transition-colors flex items-center gap-1.5 ${
               activeCategory === c.value
                 ? 'bg-primary text-white border-primary'
                 : 'border-border text-secondary hover:border-primary hover:text-primary'
             }`}
           >
+            {c.value !== 'all' && CATEGORY_ICONS[c.value as Category]}
             {c.label}
           </button>
         ))}
