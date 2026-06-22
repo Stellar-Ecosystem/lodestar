@@ -127,38 +127,36 @@ async function recordOutcome(amountUsdc, success, serviceId) {
 }
 
 // ── x402 client ───────────────────────────────────────────────────────────────
+// Initialised once — signer and scheme are stateless per-request; no benefit
+// to rebuilding them for every runTask call, and doing so wastes crypto setup.
 
-function buildHttpClient() {
-  const signer = createEd25519Signer(AGENT_SECRET, 'stellar:testnet');
-  const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
-  const x402 = new x402Client().register('stellar:*', scheme);
-  const httpClient = new x402HTTPClient(x402);
+const _signer = createEd25519Signer(AGENT_SECRET, 'stellar:testnet');
+const _scheme = new ExactStellarScheme(_signer, { url: RPC_URL });
+const _x402   = new x402Client().register('stellar:*', _scheme);
+const httpClient = new x402HTTPClient(_x402);
 
-  // Implement fetch manually — x402HTTPClient.fetch() was removed in this version
-  httpClient.fetch = async (url, init = {}) => {
-    // Step 1: probe the endpoint
-    const probe = await fetch(url, init);
-    if (probe.status !== 402) return probe;
+// Implement fetch manually — x402HTTPClient.fetch() was removed in this version
+httpClient.fetch = async (url, init = {}) => {
+  // Step 1: probe the endpoint
+  const probe = await fetch(url, init);
+  if (probe.status !== 402) return probe;
 
-    // Step 2: decode the 402 payment-required header
-    const paymentRequired = httpClient.getPaymentRequiredResponse(
-      (name) => probe.headers.get(name),
-      probe.status === 402 ? await probe.json().catch(() => undefined) : undefined
-    );
+  // Step 2: decode the 402 payment-required header
+  const paymentRequired = httpClient.getPaymentRequiredResponse(
+    (name) => probe.headers.get(name),
+    probe.status === 402 ? await probe.json().catch(() => undefined) : undefined
+  );
 
-    // Step 3: build and sign the payment payload
-    const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
+  // Step 3: build and sign the payment payload
+  const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
 
-    // Step 4: encode as header and retry
-    const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
-    return fetch(url, {
-      ...init,
-      headers: { ...(init.headers ?? {}), ...paymentHeaders },
-    });
-  };
-
-  return httpClient;
-}
+  // Step 4: encode as header and retry
+  const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+  return fetch(url, {
+    ...init,
+    headers: { ...(init.headers ?? {}), ...paymentHeaders },
+  });
+};
 
 // ── Registry helpers ──────────────────────────────────────────────────────────
 
@@ -218,7 +216,6 @@ async function runTask(category, buildUrl, scoringEnabled) {
   const endpointUrl = buildUrl(best.endpoint);
   logger.info(`${tag()} Step 4: Sending x402 payment on Stellar…`);
 
-  const httpClient = buildHttpClient();
   let response;
   try {
     response = await httpClient.fetch(endpointUrl);
