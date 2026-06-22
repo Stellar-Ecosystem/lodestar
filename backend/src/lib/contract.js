@@ -11,11 +11,16 @@ const {
   rpc,
 } = pkg;
 import config from '../config.js';
-import { getStellarServer, getNetworkPassphrase } from './stellar.js';
+import { getStellarServer, getNetworkPassphrase, getCurrentLedgerSequence } from './stellar.js';
 import logger from './logger.js';
 
 
 const TIMEOUT = 30;
+
+// Soroban persistent storage MAX_TTL constant (mirrors contract/src/lib.rs)
+const MAX_TTL_LEDGERS = 3_110_400;
+// Warn when within 10% of expiry (~18 days at 5s/ledger)
+const TTL_WARNING_THRESHOLD = Math.floor(MAX_TTL_LEDGERS * 0.1);
 
 function getContract() {
   return new Contract(config.contract.id);
@@ -113,6 +118,10 @@ async function simulateRead(operation) {
 }
 
 
+function hasTtlWarning(registeredAt, currentLedger) {
+  return currentLedger >= registeredAt + MAX_TTL_LEDGERS - TTL_WARNING_THRESHOLD;
+}
+
 export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
   try {
     const contract = getContract();
@@ -127,24 +136,31 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
       nativeToScVal(pageSize, { type: 'u32' }),
       optionArg,
     );
-    const retval = await simulateRead(callOp);
+    const [retval, currentLedger] = await Promise.all([
+      simulateRead(callOp),
+      getCurrentLedgerSequence().catch(() => 0),
+    ]);
     if (!retval) return [];
 
     const vec = scValToNative(retval);
     if (!Array.isArray(vec)) return [];
 
-    return vec.map((item) => ({
-      id: Number(item.id),
-      name: item.name,
-      description: item.description,
-      endpoint: item.endpoint,
-      price_usdc: item.price_usdc,
-      category: item.category,
-      provider: item.provider?.toString() ?? item.provider,
-      reputation: Number(item.reputation),
-      active: item.active,
-      registered_at: Number(item.registered_at),
-    }));
+    return vec.map((item) => {
+      const registeredAt = Number(item.registered_at);
+      return {
+        id: Number(item.id),
+        name: item.name,
+        description: item.description,
+        endpoint: item.endpoint,
+        price_usdc: item.price_usdc,
+        category: item.category,
+        provider: item.provider?.toString() ?? item.provider,
+        reputation: Number(item.reputation),
+        active: item.active,
+        registered_at: registeredAt,
+        ttl_warning: hasTtlWarning(registeredAt, currentLedger),
+      };
+    });
   } catch (err) {
     logger.error({ err }, 'listServices failed');
     throw err;
@@ -155,9 +171,13 @@ export async function getService(id) {
   try {
     const contract = getContract();
     const op = contract.call('get_service', nativeToScVal(BigInt(id), { type: 'u64' }));
-    const retval = await simulateRead(op);
+    const [retval, currentLedger] = await Promise.all([
+      simulateRead(op),
+      getCurrentLedgerSequence().catch(() => 0),
+    ]);
     if (!retval) return null;
     const native = scValToNative(retval);
+    const registeredAt = Number(native.registered_at);
     return {
       id: Number(native.id),
       name: native.name,
@@ -168,7 +188,8 @@ export async function getService(id) {
       provider: native.provider?.toString() ?? native.provider,
       reputation: Number(native.reputation),
       active: native.active,
-      registered_at: Number(native.registered_at),
+      registered_at: registeredAt,
+      ttl_warning: hasTtlWarning(registeredAt, currentLedger),
     };
   } catch (err) {
     logger.error({ err, id }, 'getService failed');

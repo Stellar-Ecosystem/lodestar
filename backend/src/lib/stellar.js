@@ -25,6 +25,12 @@ export function getUSDCContractId() {
   return config.stellar.usdcContractId;
 }
 
+export async function getCurrentLedgerSequence() {
+  const server = getStellarServer();
+  const ledger = await server.getLatestLedger();
+  return ledger.sequence;
+}
+
 /**
  * Check RPC server connectivity and contract reachability.
  * Returns a health status object with connection and contract status.
