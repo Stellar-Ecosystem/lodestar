@@ -1,5 +1,6 @@
 import pkg from '@stellar/stellar-sdk';
 const {
+  Account,
   Contract,
   Keypair,
   TransactionBuilder,
@@ -93,7 +94,10 @@ async function simulateRead(operation) {
   const keypair = getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
-  const account = await server.getAccount(keypair.publicKey());
+  // Use a dummy zero-sequence account — read-only simulations are never submitted,
+  // so the account sequence number is irrelevant. This avoids an extra getAccount
+  // RPC round-trip on every read call.
+  const account = new Account(keypair.publicKey(), '0');
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
