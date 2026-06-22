@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import type { ServiceEntry, Category } from '@/lib/types';
 import { submitReputation } from '@/lib/contract';
 
@@ -129,12 +130,20 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
         <span className="text-xs text-secondary mono">{ledger}</span>
       </div>
 
-      <button
-        onClick={copyEndpoint}
-        className="btn-secondary w-full text-center text-sm"
-      >
-        Use Endpoint
-      </button>
+      <div className="flex gap-2">
+        <button
+          onClick={copyEndpoint}
+          className="btn-secondary flex-1 text-center text-sm"
+        >
+          Use Endpoint
+        </button>
+        <Link
+          href={`/services/${service.id}`}
+          className="btn-secondary shrink-0 text-sm px-4"
+        >
+          Details
+        </Link>
+      </div>
     </div>
   );
 }
