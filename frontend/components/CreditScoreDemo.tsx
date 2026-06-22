@@ -6,7 +6,7 @@ import type { AgentEntry } from '@/lib/types';
 import { fetchAgents, fetchAgentEligibility, fetchAgentSpendCheck } from '@/lib/contract';
 import ScoreBadge from './ScoreBadge';
 
-const PREMIUM_MIN_SCORE = 500;
+const DEFAULT_PREMIUM_MIN_SCORE = 500;
 const DAILY_LIMIT_USDC = '1.00';
 const SIMULATE_AMOUNT = '0.80';
 
@@ -23,6 +23,7 @@ export default function CreditScoreDemo() {
   const [spendDetail, setSpendDetail] = useState('');
   const [testing, setTesting] = useState<string | null>(null);
   const [simulating, setSimulating] = useState(false);
+  const [premiumMinScore, setPremiumMinScore] = useState(DEFAULT_PREMIUM_MIN_SCORE);
 
   const load = useCallback(async () => {
     try {
@@ -46,7 +47,7 @@ export default function CreditScoreDemo() {
     setAccessResults((prev) => ({ ...prev, [agent.address]: null }));
     setAccessDetails((prev) => ({ ...prev, [agent.address]: '' }));
     try {
-      const res = await fetchAgentEligibility(agent.address, PREMIUM_MIN_SCORE);
+      const res = await fetchAgentEligibility(agent.address, premiumMinScore);
       setAccessResults((prev) => ({
         ...prev,
         [agent.address]: res.eligible ? 'granted' : 'denied',
@@ -54,7 +55,7 @@ export default function CreditScoreDemo() {
       setAccessDetails((prev) => ({
         ...prev,
         [agent.address]: res.eligible
-          ? `Score ${res.score} ≥ ${PREMIUM_MIN_SCORE} — access granted`
+          ? `Score ${res.score} ≥ ${premiumMinScore} — access granted`
           : `Score ${res.score} — minimum ${res.required} required`,
       }));
     } catch {
@@ -97,6 +98,23 @@ export default function CreditScoreDemo() {
           Three agents, three score levels, three different levels of access. Scores are
           pulled live from the Soroban contract every 10 seconds.
         </p>
+
+        <label className="flex items-center gap-2 mt-4 text-sm">
+          <span className="text-secondary">Premium access threshold</span>
+          <input
+            type="number"
+            min={0}
+            max={1000}
+            step={50}
+            value={premiumMinScore}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setPremiumMinScore(Number.isFinite(n) ? Math.max(0, Math.min(1000, n)) : 0);
+            }}
+            aria-label="Premium access threshold"
+            className="w-24 border border-border rounded-lg px-3 py-1.5 mono bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </label>
       </div>
 
       {/* Agent cards */}
@@ -152,7 +170,7 @@ export default function CreditScoreDemo() {
                   disabled={testing === agent.address}
                   className="w-full btn-secondary text-sm py-2 disabled:opacity-50"
                 >
-                  {testing === agent.address ? 'Checking…' : 'Test Access (score 500+)'}
+                  {testing === agent.address ? 'Checking…' : `Test Access (score ${premiumMinScore}+)`}
                 </button>
 
                 {accessResults[agent.address] && (
