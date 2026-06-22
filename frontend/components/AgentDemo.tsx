@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import type { AgentStep } from '@/lib/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
@@ -39,6 +39,11 @@ export default function AgentDemo() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<DemoResult | null>(null);
   const [error, setError] = useState('');
+  const abortRef = useRef<AbortController | null>(null);
+
+  function cancelRun() {
+    abortRef.current?.abort();
+  }
 
   function pushStep(label: string, status: AgentStep['status'], detail?: string) {
     setSteps((prev) => [...prev, { label, status, detail }]);
@@ -54,6 +59,10 @@ export default function AgentDemo() {
   }
 
   async function runAgent() {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     setRunning(true);
     setSteps([]);
     setResult(null);
@@ -62,7 +71,7 @@ export default function AgentDemo() {
     try {
       // Step 1 — query registry
       pushStep('Querying Lodestar registry…', 'active');
-      const servicesRes = await fetch(`${API_URL}/api/services?category=${need}`);
+      const servicesRes = await fetch(`${API_URL}/api/services?category=${need}`, { signal });
       const servicesData = (await servicesRes.json()) as { services: Array<{ id: number; name: string; endpoint: string; price_usdc: string; reputation: number }> };
       const services = servicesData.services;
       completeLastStep();
@@ -83,13 +92,17 @@ export default function AgentDemo() {
 
       // Step 4 — send payment
       pushStep('Sending x402 payment on Stellar…', 'active');
-      await new Promise((r) => setTimeout(r, 800));
+      await new Promise<void>((r, rej) => {
+        const t = setTimeout(r, 800);
+        signal.addEventListener('abort', () => { clearTimeout(t); rej(signal.reason); }, { once: true });
+      });
 
       // The backend demo agent handles payment internally
       const demoRes = await fetch(`${API_URL}/api/demo-run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ serviceId: best.id, category: need }),
+        signal,
       });
 
       if (!demoRes.ok) {
@@ -115,8 +128,20 @@ export default function AgentDemo() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ positive: true }),
+        signal,
       });
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        setSteps((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.status === 'active') {
+            next[next.length - 1] = { ...last, status: 'error', detail: 'Cancelled' };
+          }
+          return next;
+        });
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Agent run failed');
       setSteps((prev) => {
         const next = [...prev];
@@ -128,6 +153,7 @@ export default function AgentDemo() {
       });
     } finally {
       setRunning(false);
+      abortRef.current = null;
     }
   }
 
@@ -150,13 +176,21 @@ export default function AgentDemo() {
             ))}
           </select>
 
-          <button
-            onClick={runAgent}
-            disabled={running}
-            className="btn-accent shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {running ? 'Running…' : 'Run Agent'}
-          </button>
+          {running ? (
+            <button
+              onClick={cancelRun}
+              className="btn-secondary shrink-0 text-error border-error/40 hover:bg-error/5"
+            >
+              Cancel
+            </button>
+          ) : (
+            <button
+              onClick={runAgent}
+              className="btn-accent shrink-0"
+            >
+              Run Agent
+            </button>
+          )}
         </div>
       </div>
 
