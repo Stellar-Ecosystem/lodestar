@@ -228,6 +228,11 @@ export async function updateReputation(id, positive) {
   }
 }
 
+const PRICE_USDC_RE = /^\d+(\.\d+)?$/;
+const ALLOWED_REGISTER_CATEGORIES = new Set([
+  'search', 'weather', 'finance', 'ai', 'data', 'compute',
+]);
+
 export async function registerServiceOnChain(
   name,
   description,
@@ -235,6 +240,18 @@ export async function registerServiceOnChain(
   priceUsdc,
   category
 ) {
+  if (!PRICE_USDC_RE.test(String(priceUsdc)) || parseFloat(priceUsdc) <= 0) {
+    throw Object.assign(
+      new Error(`Invalid price_usdc: "${priceUsdc}" — must be a positive decimal number string`),
+      { code: 'INVALID_PRICE_USDC' }
+    );
+  }
+  if (!ALLOWED_REGISTER_CATEGORIES.has(category)) {
+    throw Object.assign(
+      new Error(`Invalid category: "${category}" — allowed: ${[...ALLOWED_REGISTER_CATEGORIES].join(', ')}`),
+      { code: 'INVALID_CATEGORY' }
+    );
+  }
   try {
     const contract = getContract();
     const keypair = getServerKeypair();

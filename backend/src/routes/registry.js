@@ -14,9 +14,21 @@ const router = Router();
 
 const PAGE_SIZE = 20;
 
+export const ALLOWED_CATEGORIES = new Set([
+  'search', 'weather', 'finance', 'ai', 'data', 'compute',
+]);
+
 router.get("/services", async (req, res) => {
   try {
     const { category, q, page: pageStr } = req.query;
+
+    if (category && !ALLOWED_CATEGORIES.has(category)) {
+      return res.status(400).json({
+        error: `Invalid category. Allowed values: ${[...ALLOWED_CATEGORIES].join(', ')}`,
+        code: 'INVALID_CATEGORY',
+      });
+    }
+
     const page = Math.max(0, parseInt(pageStr, 10) || 0);
     let services = await listServices({
       category: category || undefined,
