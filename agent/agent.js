@@ -208,11 +208,26 @@ async function runTask(category, buildUrl, scoringEnabled) {
   logger.info(`${tag()} Step 4: Sending x402 payment on Stellar…`);
 
   const httpClient = buildHttpClient();
+  const MAX_RETRIES = 3;
   let response;
-  try {
-    response = await httpClient.fetch(endpointUrl);
-  } catch (err) {
-    logger.error({ err }, `${tag()} x402 payment failed`);
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      response = await httpClient.fetch(endpointUrl);
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES) {
+        const delay = 1000 * 2 ** (attempt - 1); // 1s, 2s
+        logger.warn({ err, attempt }, `${tag()} x402 attempt ${attempt} failed — retrying in ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+
+  if (lastErr) {
+    logger.error({ err: lastErr }, `${tag()} x402 payment failed after ${MAX_RETRIES} attempts`);
     if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
     return;
   }
