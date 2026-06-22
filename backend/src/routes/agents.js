@@ -134,6 +134,45 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
   }
 });
 
+// POST /api/agents/register — Body: { agentAddress, name, description }
+// Must be registered BEFORE the /:address param middleware so "register" is not
+// captured as an agent address.
+router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
+  try {
+    const { agentAddress, name, description } = req.body;
+
+    if (!agentAddress || typeof agentAddress !== 'string') {
+      return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
+    }
+    if (!isValidStellarAddress(agentAddress)) {
+      return res.status(400).json({ error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
+    }
+    if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 64) {
+      return res.status(400).json({ error: '`name` must be 3–64 characters', code: 'INVALID_BODY' });
+    }
+    if (!description || typeof description !== 'string' || description.trim().length < 10 || description.trim().length > 256) {
+      return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
+    }
+
+    // Explicit existence check before hitting the contract — avoids relying on brittle panic-message parsing
+    const existing = await getAgent(agentAddress);
+    if (existing) {
+      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+    }
+
+    const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
+    agentsCache = null; // invalidate so next request reflects the new agent
+    logger.info({ agentAddress, name }, 'Agent registered on-chain');
+    res.status(201).json({ success: true, agentCount: count, agentAddress });
+  } catch (err) {
+    logger.error({ err }, 'POST /api/agents/register failed');
+    if (err.message?.includes('already registered')) {
+      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress: req.body.agentAddress });
+    }
+    return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
+  }
+});
+
 // Param middleware for agent address routes
 router.use('/agents/:address', validateAgentAddressParam);
 
@@ -255,37 +294,6 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/can-spend failed');
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
-  }
-});
-
-// POST /api/agents/register — Body: { agentAddress, name, description }
-router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
-  try {
-    const { agentAddress, name, description } = req.body;
-
-    if (!agentAddress || typeof agentAddress !== 'string') {
-      return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
-    }
-    if (!isValidStellarAddress(agentAddress)) {
-      return res.status(400).json({ error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
-    }
-    if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 64) {
-      return res.status(400).json({ error: '`name` must be 3–64 characters', code: 'INVALID_BODY' });
-    }
-    if (!description || typeof description !== 'string' || description.trim().length < 10 || description.trim().length > 256) {
-      return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
-    }
-
-    const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
-    agentsCache = null; // invalidate so next request reflects the new agent
-    logger.info({ agentAddress, name }, 'Agent registered on-chain');
-    res.status(201).json({ success: true, agentCount: count, agentAddress });
-  } catch (err) {
-    logger.error({ err }, 'POST /api/agents/register failed');
-    if (err.message?.includes('already registered')) {
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS' });
-    }
-    return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
   }
 });
 

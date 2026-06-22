@@ -11,6 +11,7 @@ const mockGetAgentCount = vi.fn();
 const mockIsAgentEligible = vi.fn();
 const mockCheckSpendingAllowed = vi.fn();
 const mockRecordPaymentOnChain = vi.fn();
+const mockRegisterAgentOnChain = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
   listAgents: (...args) => mockListAgents(...args),
@@ -20,7 +21,7 @@ vi.mock('../lib/contract.js', () => ({
   getAgentCount: (...args) => mockGetAgentCount(...args),
   isAgentEligible: (...args) => mockIsAgentEligible(...args),
   checkSpendingAllowed: (...args) => mockCheckSpendingAllowed(...args),
-  registerAgentOnChain: vi.fn(),
+  registerAgentOnChain: (...args) => mockRegisterAgentOnChain(...args),
   recordPaymentOnChain: (...args) => mockRecordPaymentOnChain(...args),
   flagAgentOnChain: vi.fn(),
   deactivateAgentOnChain: vi.fn(),
@@ -381,5 +382,49 @@ describe('POST /api/agents/:address/payment (HMAC + rate limit + idempotency)', 
 
     expect(res.status).toBe(429);
     expect(res.body.code).toBe('RATE_LIMITED');
+  });
+});
+
+describe('POST /api/agents/register — is_registered pre-check', () => {
+  const validBody = {
+    agentAddress: 'GAEGI2EEQM5GYEMVS6BLQARSGDGMZEBKRJ3RNHZN7MNFHZV5J4ONHSK',
+    name: 'TestAgent',
+    description: 'A test agent for vitest (10+ chars)',
+  };
+
+  beforeEach(() => {
+    mockGetAgent.mockReset();
+    mockRegisterAgentOnChain.mockReset();
+  });
+
+  it('returns 201 when agent is not yet registered', async () => {
+    mockGetAgent.mockResolvedValueOnce(null);
+    mockRegisterAgentOnChain.mockResolvedValueOnce(1);
+
+    const res = await request(app).post('/api/agents/register').send(validBody);
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.agentAddress).toBe(validBody.agentAddress);
+  });
+
+  it('returns 409 ALREADY_EXISTS with agentAddress when agent is already registered', async () => {
+    mockGetAgent.mockResolvedValueOnce({ address: validBody.agentAddress, score: 100 });
+
+    const res = await request(app).post('/api/agents/register').send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('ALREADY_EXISTS');
+    expect(res.body.agentAddress).toBe(validBody.agentAddress);
+    expect(mockRegisterAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for invalid body fields', async () => {
+    const res = await request(app)
+      .post('/api/agents/register')
+      .send({ agentAddress: validBody.agentAddress, name: 'X', description: 'short' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
   });
 });
