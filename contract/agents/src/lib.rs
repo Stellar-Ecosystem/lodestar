@@ -73,6 +73,14 @@ pub struct SpendingPolicy {
     pub last_reset_ledger: u64,
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Returns true when the current ledger sequence falls in a new day window
+/// relative to the last reset ledger, meaning daily spend should be reset.
+fn is_new_day(now: u64, last_reset_ledger: u64) -> bool {
+    now >= last_reset_ledger + DAY_LEDGERS
+}
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 #[contract]
 pub struct LodestarAgents;
@@ -187,7 +195,7 @@ impl LodestarAgents {
         if let Some(mut policy) = env.storage().persistent().get::<DataKey, SpendingPolicy>(&key) {
             // Reset daily spend if a new day has started
             let now = env.ledger().sequence() as u64;
-            if now >= policy.last_reset_ledger + DAY_LEDGERS {
+            if is_new_day(now, policy.last_reset_ledger) {
                 policy.daily_spent_stroops = 0;
                 policy.last_reset_ledger = now;
             }
@@ -252,7 +260,7 @@ impl LodestarAgents {
         }
 
         let now = env.ledger().sequence() as u64;
-        let daily_spent = if now >= policy.last_reset_ledger + DAY_LEDGERS {
+        let daily_spent = if is_new_day(now, policy.last_reset_ledger) {
             0i128
         } else {
             policy.daily_spent_stroops
@@ -318,7 +326,7 @@ impl LodestarAgents {
             env.storage().persistent().get::<DataKey, SpendingPolicy>(&policy_key)
         {
             let now = env.ledger().sequence() as u64;
-            if now >= policy.last_reset_ledger + DAY_LEDGERS {
+            if is_new_day(now, policy.last_reset_ledger) {
                 policy.daily_spent_stroops = 0;
                 policy.last_reset_ledger = now;
             }
@@ -470,7 +478,7 @@ impl LodestarAgents {
         let now = env.ledger().sequence() as u64;
         let (daily_spent, last_reset) = existing
             .map(|p| {
-                if now >= p.last_reset_ledger + DAY_LEDGERS {
+                if is_new_day(now, p.last_reset_ledger) {
                     (0i128, now)
                 } else {
                     (p.daily_spent_stroops, p.last_reset_ledger)
@@ -492,5 +500,52 @@ impl LodestarAgents {
         env.storage()
             .persistent()
             .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_new_day boundary tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_is_new_day_before_threshold() {
+        // One ledger before the day boundary — should NOT reset
+        let last_reset = 1_000u64;
+        let now = last_reset + DAY_LEDGERS - 1;
+        assert!(!is_new_day(now, last_reset));
+    }
+
+    #[test]
+    fn test_is_new_day_at_threshold() {
+        // Exactly at the boundary — should reset
+        let last_reset = 1_000u64;
+        let now = last_reset + DAY_LEDGERS;
+        assert!(is_new_day(now, last_reset));
+    }
+
+    #[test]
+    fn test_is_new_day_after_threshold() {
+        // Well past the boundary (multiple days) — should reset
+        let last_reset = 1_000u64;
+        let now = last_reset + DAY_LEDGERS * 3;
+        assert!(is_new_day(now, last_reset));
+    }
+
+    #[test]
+    fn test_is_new_day_same_ledger() {
+        // Same ledger as last reset — definitely should NOT reset
+        let last_reset = 5_000u64;
+        assert!(!is_new_day(last_reset, last_reset));
+    }
+
+    #[test]
+    fn test_is_new_day_one_past_threshold() {
+        // One ledger past the boundary — should reset
+        let last_reset = 1_000u64;
+        let now = last_reset + DAY_LEDGERS + 1;
+        assert!(is_new_day(now, last_reset));
     }
 }
