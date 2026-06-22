@@ -11,6 +11,8 @@ const mockGetAgentCount = vi.fn();
 const mockIsAgentEligible = vi.fn();
 const mockCheckSpendingAllowed = vi.fn();
 const mockRecordPaymentOnChain = vi.fn();
+const mockRegisterAgentOnChain = vi.fn();
+const mockUpdatePolicyOnChain = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
   listAgents: (...args) => mockListAgents(...args),
@@ -20,11 +22,11 @@ vi.mock('../lib/contract.js', () => ({
   getAgentCount: (...args) => mockGetAgentCount(...args),
   isAgentEligible: (...args) => mockIsAgentEligible(...args),
   checkSpendingAllowed: (...args) => mockCheckSpendingAllowed(...args),
-  registerAgentOnChain: vi.fn(),
+  registerAgentOnChain: (...args) => mockRegisterAgentOnChain(...args),
   recordPaymentOnChain: (...args) => mockRecordPaymentOnChain(...args),
   flagAgentOnChain: vi.fn(),
   deactivateAgentOnChain: vi.fn(),
-  updatePolicyOnChain: vi.fn(),
+  updatePolicyOnChain: (...args) => mockUpdatePolicyOnChain(...args),
 }));
 
 vi.mock('../config.js', () => ({
@@ -381,5 +383,67 @@ describe('POST /api/agents/:address/payment (HMAC + rate limit + idempotency)', 
 
     expect(res.status).toBe(429);
     expect(res.body.code).toBe('RATE_LIMITED');
+  });
+});
+
+describe('POST /api/agents/register', () => {
+  const agentAddress = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+  const base = { agentAddress, name: 'My Agent', description: 'A valid agent description' };
+
+  it('registers without a policy and does not call updatePolicyOnChain', async () => {
+    mockRegisterAgentOnChain.mockResolvedValueOnce(1);
+
+    const res = await request(app).post('/api/agents/register').send(base);
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ success: true, agentAddress, policyApplied: false });
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('applies the spending policy and converts USDC to stroops', async () => {
+    mockRegisterAgentOnChain.mockResolvedValueOnce(1);
+    mockUpdatePolicyOnChain.mockResolvedValueOnce(true);
+
+    const res = await request(app).post('/api/agents/register').send({
+      ...base,
+      maxPerTxUsdc: '1.50',
+      maxPerDayUsdc: '10',
+      allowedCategories: ['weather'],
+      minScoreToEarn: 200,
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.policyApplied).toBe(true);
+    // 1.50 USDC → 15_000_000 stroops, 10 USDC → 100_000_000 stroops
+    expect(mockUpdatePolicyOnChain).toHaveBeenCalledWith(
+      agentAddress, '15000000', '100000000', ['weather'], 200
+    );
+  });
+
+  it('rejects a non-numeric maxPerTxUsdc before any on-chain write', async () => {
+    const res = await request(app).post('/api/agents/register').send({
+      ...base,
+      maxPerTxUsdc: 'abc',
+      maxPerDayUsdc: '10',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockRegisterAgentOnChain).not.toHaveBeenCalled();
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('still returns 201 with policyApplied false when the policy update fails', async () => {
+    mockRegisterAgentOnChain.mockResolvedValueOnce(1);
+    mockUpdatePolicyOnChain.mockRejectedValueOnce(new Error('chain error'));
+
+    const res = await request(app).post('/api/agents/register').send({
+      ...base,
+      maxPerTxUsdc: '1',
+      maxPerDayUsdc: '5',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.policyApplied).toBe(false);
   });
 });
