@@ -5,6 +5,7 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import type { AgentsResponse, AgentStats, AgentSortOption } from '@/lib/types';
 import { fetchAgents, fetchAgentStats } from '@/lib/contract';
+import { sortAgents } from '@/lib/sort';
 import AgentCard from '@/components/AgentCard';
 import AgentCardSkeleton from '@/components/AgentCardSkeleton';
 import ScoreBadge from '@/components/ScoreBadge';
@@ -56,6 +57,9 @@ export default function AgentsPage() {
       ? agentsError.message
       : 'Failed to load'
     : null;
+
+  // Sort agents locally based on the selected sort option
+  const sortedAgents = sortAgents(agents, sort);
 
   // Clamp the page if the dataset shrank (e.g. agents removed between polls).
   useEffect(() => {
@@ -184,7 +188,7 @@ export default function AgentsPage() {
       {!loading && !error && total > 0 && (
         <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : ''}>
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
-            {agents.map((agent) => (
+            {sortedAgents.map((agent) => (
               <AgentCard key={agent.address} agent={agent} />
             ))}
           </div>
