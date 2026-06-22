@@ -134,6 +134,85 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
   }
 });
 
+// Convert a USDC decimal string (e.g. "1.50") to an i128 stroops string.
+// Returns null if the value is not a finite, non-negative number.
+function usdcToStroops(usdc) {
+  const n = parseFloat(usdc);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return BigInt(Math.round(n * 10_000_000)).toString();
+}
+
+// POST /api/agents/register — Body: { agentAddress, name, description, maxPerTxUsdc?, maxPerDayUsdc?, allowedCategories?, minScoreToEarn? }
+// Registered before the '/agents/:address' param middleware below so the
+// literal "register" path is not captured and rejected as an agent address.
+router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
+  try {
+    const { agentAddress, name, description, maxPerTxUsdc, maxPerDayUsdc, allowedCategories, minScoreToEarn } = req.body;
+
+    if (!agentAddress || typeof agentAddress !== 'string') {
+      return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
+    }
+    if (!isValidStellarAddress(agentAddress)) {
+      return res.status(400).json({ error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
+    }
+    if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 64) {
+      return res.status(400).json({ error: '`name` must be 3–64 characters', code: 'INVALID_BODY' });
+    }
+    if (!description || typeof description !== 'string' || description.trim().length < 10 || description.trim().length > 256) {
+      return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
+    }
+
+    // A spending policy is applied only when the caller supplies both limits.
+    // Validate up front so we reject bad input before any on-chain write.
+    const wantsPolicy = maxPerTxUsdc != null || maxPerDayUsdc != null;
+    let maxPerTxStroops, maxPerDayStroops, categories, minScore;
+    if (wantsPolicy) {
+      maxPerTxStroops = usdcToStroops(maxPerTxUsdc);
+      maxPerDayStroops = usdcToStroops(maxPerDayUsdc);
+      if (maxPerTxStroops === null || maxPerDayStroops === null) {
+        return res.status(400).json({
+          error: '`maxPerTxUsdc` and `maxPerDayUsdc` must be non-negative numbers',
+          code: 'INVALID_BODY',
+        });
+      }
+      if (allowedCategories != null && !Array.isArray(allowedCategories)) {
+        return res.status(400).json({ error: '`allowedCategories` must be an array', code: 'INVALID_BODY' });
+      }
+      if (minScoreToEarn != null && (typeof minScoreToEarn !== 'number' || !Number.isInteger(minScoreToEarn))) {
+        return res.status(400).json({ error: '`minScoreToEarn` must be an integer', code: 'INVALID_BODY' });
+      }
+      categories = Array.isArray(allowedCategories) ? allowedCategories : [];
+      minScore = Number.isInteger(minScoreToEarn) ? minScoreToEarn : 0;
+    }
+
+    const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
+    agentsCache = null; // invalidate so next request reflects the new agent
+    logger.info({ agentAddress, name }, 'Agent registered on-chain');
+
+    // Apply the user-specified spending policy immediately after registration.
+    // A policy failure must not mask the successful registration, so it is
+    // reported via a policyApplied flag rather than failing the whole request.
+    let policyApplied = false;
+    if (wantsPolicy) {
+      try {
+        await updatePolicyOnChain(agentAddress, maxPerTxStroops, maxPerDayStroops, categories, minScore);
+        policyApplied = true;
+        logger.info({ agentAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent spending policy applied');
+      } catch (policyErr) {
+        logger.error({ err: policyErr, agentAddress }, 'Agent registered but policy update failed');
+      }
+    }
+
+    res.status(201).json({ success: true, agentCount: count, agentAddress, policyApplied });
+  } catch (err) {
+    logger.error({ err }, 'POST /api/agents/register failed');
+    if (err.message?.includes('already registered')) {
+      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS' });
+    }
+    return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
+  }
+});
+
 // Param middleware for agent address routes
 router.use('/agents/:address', validateAgentAddressParam);
 
@@ -255,37 +334,6 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/can-spend failed');
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
-  }
-});
-
-// POST /api/agents/register — Body: { agentAddress, name, description }
-router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
-  try {
-    const { agentAddress, name, description } = req.body;
-
-    if (!agentAddress || typeof agentAddress !== 'string') {
-      return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
-    }
-    if (!isValidStellarAddress(agentAddress)) {
-      return res.status(400).json({ error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
-    }
-    if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 64) {
-      return res.status(400).json({ error: '`name` must be 3–64 characters', code: 'INVALID_BODY' });
-    }
-    if (!description || typeof description !== 'string' || description.trim().length < 10 || description.trim().length > 256) {
-      return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
-    }
-
-    const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
-    agentsCache = null; // invalidate so next request reflects the new agent
-    logger.info({ agentAddress, name }, 'Agent registered on-chain');
-    res.status(201).json({ success: true, agentCount: count, agentAddress });
-  } catch (err) {
-    logger.error({ err }, 'POST /api/agents/register failed');
-    if (err.message?.includes('already registered')) {
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS' });
-    }
-    return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
   }
 });
 
