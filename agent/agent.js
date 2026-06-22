@@ -78,11 +78,11 @@ async function ensureRegistered() {
         return true;
       }
       const err = await regRes.json().catch(() => ({}));
-      logger.warn({ err }, `${tag()} Registration failed — scoring disabled`);
+      logger.error({ err }, `${tag()} Registration FAILED — agent will run WITHOUT spending limits or score tracking. Set LODESTAR_API_URL and check the agents contract is deployed.`);
       return false;
     }
-  } catch {
-    logger.warn(`${tag()} Could not reach agents API — scoring disabled`);
+  } catch (err) {
+    logger.error({ err }, `${tag()} Could not reach agents API — agent will run WITHOUT spending limits or score tracking. Check LODESTAR_API_URL and network connectivity.`);
   }
   return false;
 }
@@ -242,6 +242,10 @@ async function main() {
   logger.info(`${tag()} Address: ${AGENT_ADDRESS}`);
 
   const scoringEnabled = await ensureRegistered();
+
+  if (!scoringEnabled) {
+    logger.warn(`${tag()} Proceeding WITHOUT score tracking — payments will execute but agent credit history will not be recorded.`);
+  }
 
   await runTask('weather', (ep) => `${ep}?lat=40.7128&lon=-74.0060`, scoringEnabled);
   await runTask('search', (ep) => `${ep}?q=Stellar+blockchain+AI+agents`, scoringEnabled);
