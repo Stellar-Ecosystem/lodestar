@@ -76,6 +76,10 @@ const config = Object.freeze({
     facilitatorUrl: process.env.FACILITATOR_URL,
     searchPrice: process.env.SEARCH_PRICE ?? '0.001',
     weatherPrice: process.env.WEATHER_PRICE ?? '0.001',
+    // payTo is the Stellar address that receives x402 payments.
+    // Defaults to SERVER_STELLAR_ADDRESS so existing deployments work without change.
+    // Set PAYMENT_ADDRESS separately so the payment destination can survive server keypair rotations.
+    payTo: process.env.PAYMENT_ADDRESS ?? process.env.SERVER_STELLAR_ADDRESS,
   },
 
   braveApiKey: process.env.BRAVE_API_KEY ?? '',
@@ -108,5 +112,13 @@ const config = Object.freeze({
     pollMaxDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_DELAY_MS, 2_000, 'DEMO_RUN_POLL_MAX_DELAY_MS'),
   },
 });
+
+if (!process.env.PAYMENT_ADDRESS) {
+  console.warn(
+    '[config] PAYMENT_ADDRESS is not set — payment destination defaults to SERVER_STELLAR_ADDRESS. ' +
+    'Set PAYMENT_ADDRESS to decouple the payment destination from the server signing key.'
+  );
+}
+console.info(`[config] Payment address: ${config.x402.payTo}`);
 
 export default config;
