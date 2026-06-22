@@ -28,6 +28,7 @@ import {
   markComplete,
   markFailed,
 } from '../lib/idempotency.js';
+import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js';
 
 const router = Router();
 
@@ -418,6 +419,27 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
   } catch (err) {
     logger.error({ err }, 'POST /agents/:address/deactivate failed');
     return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
+  }
+});
+
+// GET /api/agents/:address/payment-history — paginated payment events for one agent
+router.get('/agents/:address/payment-history', requireAgentsContract, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { limit, offset, errors } = parseActivityPagination(req.query);
+    if (errors.length > 0) {
+      return res.status(400).json({ error: errors.join('; '), code: 'INVALID_PAGINATION' });
+    }
+
+    const feed = getActivityFeed();
+    const agentEntries = feed.filter((entry) => entry.agent === address);
+    const total = agentEntries.length;
+    const items = agentEntries.slice(offset, offset + limit);
+
+    res.json({ payments: items, total, limit, offset, hasMore: offset + items.length < total });
+  } catch (err) {
+    logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/payment-history failed');
+    return handleContractError(err, res, 'Failed to fetch payment history', 'FETCH_ERROR');
   }
 });
 
