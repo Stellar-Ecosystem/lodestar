@@ -1,10 +1,12 @@
 import type { SpendingPolicy } from '@/lib/types';
 
-const STROOPS_PER_USDC = 10_000_000;
+const STROOPS_PER_USDC = 10_000_000n;
 
 function stroopsToUsdc(stroops: string): string {
-  const n = Number(BigInt(stroops) / BigInt(STROOPS_PER_USDC));
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const n = BigInt(stroops);
+  const whole = n / STROOPS_PER_USDC;
+  const frac = String(n % STROOPS_PER_USDC).padStart(7, '0').slice(0, 2);
+  return `${whole.toLocaleString()}.${frac}`;
 }
 
 interface Props {
@@ -12,7 +14,10 @@ interface Props {
 }
 
 export default function SpendingPolicyDisplay({ policy }: Props) {
-  const dailyUsed = Number(BigInt(policy.daily_spent_stroops) * 100n / BigInt(policy.max_per_day_stroops === '0' ? '1' : policy.max_per_day_stroops));
+  const hasMaxDay = policy.max_per_day_stroops !== '0';
+  const dailyUsed = hasMaxDay
+    ? Number(BigInt(policy.daily_spent_stroops) * 100n / BigInt(policy.max_per_day_stroops))
+    : 0;
 
   return (
     <div className="card p-6 flex flex-col gap-5">
@@ -25,7 +30,7 @@ export default function SpendingPolicyDisplay({ policy }: Props) {
         />
         <PolicyRow
           label="Max per day"
-          value={`$${stroopsToUsdc(policy.max_per_day_stroops)} USDC`}
+          value={hasMaxDay ? `$${stroopsToUsdc(policy.max_per_day_stroops)} USDC` : 'No daily limit'}
         />
         <PolicyRow
           label="Min score to earn"
@@ -42,25 +47,31 @@ export default function SpendingPolicyDisplay({ policy }: Props) {
       </div>
 
       {/* Daily spend progress */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-secondary">Daily spend used</span>
-          <span className="mono text-xs text-primary">
-            ${stroopsToUsdc(policy.daily_spent_stroops)} / ${stroopsToUsdc(policy.max_per_day_stroops)} USDC
-          </span>
+      {hasMaxDay ? (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-secondary">Daily spend used</span>
+            <span className="mono text-xs text-primary">
+              ${stroopsToUsdc(policy.daily_spent_stroops)} / ${stroopsToUsdc(policy.max_per_day_stroops)} USDC
+            </span>
+          </div>
+          <div className="w-full bg-border rounded-full h-1.5">
+            <div
+              className={`h-1.5 rounded-full transition-all ${
+                dailyUsed > 90 ? 'bg-error' : dailyUsed > 70 ? 'bg-accent' : 'bg-success'
+              }`}
+              style={{ width: `${Math.min(dailyUsed, 100)}%` }}
+            />
+          </div>
+          <p className="text-xs text-secondary mt-1.5">
+            Resets every ~17,280 ledgers (≈24 hours)
+          </p>
         </div>
-        <div className="w-full bg-border rounded-full h-1.5">
-          <div
-            className={`h-1.5 rounded-full transition-all ${
-              dailyUsed > 90 ? 'bg-error' : dailyUsed > 70 ? 'bg-accent' : 'bg-success'
-            }`}
-            style={{ width: `${Math.min(dailyUsed, 100)}%` }}
-          />
-        </div>
-        <p className="text-xs text-secondary mt-1.5">
-          Resets every ~17,280 ledgers (≈24 hours)
+      ) : (
+        <p className="text-xs text-secondary">
+          ${stroopsToUsdc(policy.daily_spent_stroops)} USDC spent today · no daily cap
         </p>
-      </div>
+      )}
     </div>
   );
 }
