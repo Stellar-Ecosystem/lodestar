@@ -59,11 +59,14 @@ export default function AgentDemo() {
     setResult(null);
     setError('');
 
+    type ServiceEntry = { id: number; name: string; endpoint: string; price_usdc: string; reputation: number };
+    let chosenService: ServiceEntry | null = null;
+
     try {
       // Step 1 — query registry
       pushStep('Querying Lodestar registry…', 'active');
       const servicesRes = await fetch(`${API_URL}/api/services?category=${need}`);
-      const servicesData = (await servicesRes.json()) as { services: Array<{ id: number; name: string; endpoint: string; price_usdc: string; reputation: number }> };
+      const servicesData = (await servicesRes.json()) as { services: ServiceEntry[] };
       const services = servicesData.services;
       completeLastStep();
 
@@ -79,6 +82,7 @@ export default function AgentDemo() {
 
       // Step 3 — select best
       const best = [...services].sort((a, b) => b.reputation - a.reputation)[0];
+      chosenService = best;
       pushStep(`Selected "${best.name}" at $${best.price_usdc} USDC`, 'complete');
 
       // Step 4 — send payment
@@ -98,6 +102,14 @@ export default function AgentDemo() {
       }
 
       const demoData = (await demoRes.json()) as { data: unknown; txHash: string };
+
+      // Quality check: non-null, non-empty data means a successful service response
+      const dataOk =
+        demoData.data != null &&
+        (typeof demoData.data !== 'object' ||
+          Object.keys(demoData.data as Record<string, unknown>).length > 0);
+      if (!dataOk) throw new Error('Service returned empty data');
+
       completeLastStep();
 
       // Step 5 — confirmed
@@ -110,7 +122,7 @@ export default function AgentDemo() {
         price: best.price_usdc,
       });
 
-      // Update reputation positively
+      // Positive reputation only on verified good result
       await fetch(`${API_URL}/api/reputation/${best.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,6 +138,14 @@ export default function AgentDemo() {
         }
         return next;
       });
+      // Negative reputation update for the service that failed the demo
+      if (chosenService) {
+        fetch(`${API_URL}/api/reputation/${chosenService.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ positive: false }),
+        }).catch(() => {});
+      }
     } finally {
       setRunning(false);
     }
