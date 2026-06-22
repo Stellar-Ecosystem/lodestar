@@ -113,9 +113,16 @@ router.get('/weather', async (req, res) => {
 
 router.get('/search', async (req, res) => {
   try {
-    const q = req.query.q;
-    if (!q) {
+    const rawQ = req.query.q;
+    if (!rawQ || typeof rawQ !== 'string') {
       return res.status(400).json({ error: 'Query parameter `q` is required', code: 'MISSING_QUERY' });
+    }
+    const q = rawQ.trim();
+    if (!q) {
+      return res.status(400).json({ error: 'Query parameter `q` must not be blank', code: 'MISSING_QUERY' });
+    }
+    if (q.length > 256) {
+      return res.status(400).json({ error: 'Query parameter `q` must be at most 256 characters', code: 'INVALID_QUERY' });
     }
 
     const response = await fetch(
