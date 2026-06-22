@@ -228,6 +228,11 @@ export async function updateReputation(id, positive) {
   }
 }
 
+const NAME_MIN = 3;
+const NAME_MAX = 64;
+const DESC_MIN = 10;
+const DESC_MAX = 256;
+
 export async function registerServiceOnChain(
   name,
   description,
@@ -235,6 +240,18 @@ export async function registerServiceOnChain(
   priceUsdc,
   category
 ) {
+  if (typeof name !== 'string' || name.length < NAME_MIN || name.length > NAME_MAX) {
+    throw Object.assign(
+      new Error(`name must be ${NAME_MIN}–${NAME_MAX} characters (got ${String(name).length})`),
+      { code: 'INVALID_NAME' }
+    );
+  }
+  if (typeof description !== 'string' || description.length < DESC_MIN || description.length > DESC_MAX) {
+    throw Object.assign(
+      new Error(`description must be ${DESC_MIN}–${DESC_MAX} characters (got ${String(description).length})`),
+      { code: 'INVALID_DESCRIPTION' }
+    );
+  }
   try {
     const contract = getContract();
     const keypair = getServerKeypair();
