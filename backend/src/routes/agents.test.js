@@ -171,6 +171,7 @@ describe('GET /api/agents/stats', () => {
     expect(res.status).toBe(200);
     expect(res.body.totalAgents).toBe(2);
     expect(res.body.avgScore).toBe(150);
+    expect(res.body.totalVolume).toBe('3.00');
   });
 
   it('should return zero stats when no agents', async () => {
@@ -181,6 +182,7 @@ describe('GET /api/agents/stats', () => {
     expect(res.status).toBe(200);
     expect(res.body.totalAgents).toBe(0);
     expect(res.body.avgScore).toBe(0);
+    expect(res.body.totalVolume).toBe('0');
   });
 });
 
