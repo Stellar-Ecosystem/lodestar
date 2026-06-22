@@ -36,6 +36,9 @@ const logger = pino({
 
 let currentScore = null;
 
+// Accumulates across the full run so main() can emit a final summary.
+const runSummary = { totalPayments: 0, totalSpentUsdc: 0 };
+
 function tag() {
   return currentScore !== null ? `[${AGENT_NAME} | Score: ${currentScore}]` : `[${AGENT_NAME}]`;
 }
@@ -226,6 +229,9 @@ async function runTask(category, buildUrl, scoringEnabled) {
   const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
   logger.info(`${tag()} Step 5: Payment confirmed — tx: ${txHash}`);
 
+  runSummary.totalPayments += 1;
+  runSummary.totalSpentUsdc += parseFloat(best.price_usdc) || 0;
+
   const data = await response.json();
   logger.info({ data }, `${tag()} Paid $${best.price_usdc} USDC — data received`);
 
@@ -245,6 +251,18 @@ async function main() {
 
   await runTask('weather', (ep) => `${ep}?lat=40.7128&lon=-74.0060`, scoringEnabled);
   await runTask('search', (ep) => `${ep}?q=Stellar+blockchain+AI+agents`, scoringEnabled);
+
+  logger.info(
+    {
+      agentName: AGENT_NAME,
+      totalPayments: runSummary.totalPayments,
+      totalSpentUsdc: runSummary.totalSpentUsdc.toFixed(7).replace(/\.?0+$/, ''),
+      endingScore: currentScore,
+    },
+    `\n${tag()} Run summary — ${runSummary.totalPayments} payment(s), ` +
+      `$${runSummary.totalSpentUsdc.toFixed(7).replace(/\.?0+$/, '')} USDC spent, ` +
+      `ending score: ${currentScore ?? 'n/a'}`
+  );
 
   logger.info(`\n${tag()} Agent complete.`);
 }
