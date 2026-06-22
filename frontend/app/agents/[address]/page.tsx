@@ -101,7 +101,8 @@ export default function AgentProfilePage() {
       : null;
 
   const tier = scoreTier(agent.score);
-  const totalVolumeUsdc = (Number(BigInt(agent.total_volume_stroops)) / 10_000_000).toFixed(4);
+  const _stroops = BigInt(agent.total_volume_stroops);
+  const totalVolumeUsdc = `${_stroops / 10_000_000n}.${String(_stroops % 10_000_000n).padStart(7, '0').slice(0, 4)}`;
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-12">
