@@ -22,7 +22,11 @@ const AGENT_NAME       = process.env.AGENT_NAME ?? 'LodestarAgent';
 const AGENT_DESC       = process.env.AGENT_DESC ?? 'Autonomous x402 agent powered by Lodestar service discovery';
 const MAX_PER_TX       = process.env.AGENT_MAX_PER_TX ?? '0.001';
 const MAX_PER_DAY      = process.env.AGENT_MAX_PER_DAY ?? '1.00';
+const AGENT_FAIL_OPEN  = process.env.AGENT_FAIL_OPEN === 'true';
 const ALLOWED_CATS     = (process.env.AGENT_ALLOWED_CATEGORIES ?? '').split(',').filter(Boolean);
+
+const AGENT_MAX_PER_TX_USDC = Number.isFinite(Number(MAX_PER_TX)) ? Number(MAX_PER_TX) : 0.001;
+const AGENT_MAX_PER_DAY_USDC = Number.isFinite(Number(MAX_PER_DAY)) ? Number(MAX_PER_DAY) : 1;
 
 const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
 const AGENT_ADDRESS = agentKeypair.publicKey();
@@ -32,12 +36,35 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
+let sessionSpentUsdc = 0;
+
 // ── Credit scoring helpers ────────────────────────────────────────────────────
 
 let currentScore = null;
 
 function tag() {
   return currentScore !== null ? `[${AGENT_NAME} | Score: ${currentScore}]` : `[${AGENT_NAME}]`;
+}
+
+function checkLocalSpendLimit(amountUsdc) {
+  const amount = Number.parseFloat(String(amountUsdc));
+
+  if (!Number.isFinite(amount)) {
+    return { allowed: false, reason: 'Invalid amount for local spend check' };
+  }
+  if (amount > AGENT_MAX_PER_TX_USDC) {
+    return {
+      allowed: false,
+      reason: `Amount exceeds local per-transaction limit of $${AGENT_MAX_PER_TX_USDC.toFixed(4)} USDC`,
+    };
+  }
+  if (sessionSpentUsdc + amount > AGENT_MAX_PER_DAY_USDC) {
+    return {
+      allowed: false,
+      reason: `Local daily spending limit of $${AGENT_MAX_PER_DAY_USDC.toFixed(2)} USDC reached`,
+    };
+  }
+  return { allowed: true };
 }
 
 async function ensureRegistered() {
@@ -88,15 +115,33 @@ async function ensureRegistered() {
 }
 
 async function checkSpend(amountUsdc, category) {
+  const url =
+    `${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/can-spend` +
+    `?amount=${encodeURIComponent(amountUsdc)}&category=${encodeURIComponent(category)}`;
+
   try {
-    const res = await fetch(
-      `${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/can-spend` +
-      `?amount=${encodeURIComponent(amountUsdc)}&category=${encodeURIComponent(category)}`
-    );
-    if (!res.ok) return { allowed: true, reason: 'OK' };
-    return await res.json();
-  } catch {
-    return { allowed: true, reason: 'OK' };
+    const res = await fetch(url);
+    if (!res.ok) {
+      logger.warn({ url, status: res.status }, `${tag()} Spending policy check failed`);
+      return AGENT_FAIL_OPEN
+        ? { allowed: true, reason: 'Policy check unreachable (fail-open enabled)' }
+        : { allowed: false, reason: 'Policy check unreachable' };
+    }
+
+    const data = await res.json();
+    if (typeof data?.allowed !== 'boolean') {
+      logger.warn({ url, status: res.status }, `${tag()} Spending policy check returned invalid payload`);
+      return AGENT_FAIL_OPEN
+        ? { allowed: true, reason: 'Policy check unreachable (fail-open enabled)' }
+        : { allowed: false, reason: 'Policy check unreachable' };
+    }
+
+    return data;
+  } catch (err) {
+    logger.warn({ url, err }, `${tag()} Spending policy check failed`);
+    return AGENT_FAIL_OPEN
+      ? { allowed: true, reason: 'Policy check unreachable (fail-open enabled)' }
+      : { allowed: false, reason: 'Policy check unreachable' };
   }
 }
 
@@ -208,11 +253,22 @@ async function runTask(category, buildUrl, scoringEnabled) {
   // Spending policy check
   if (scoringEnabled) {
     const check = await checkSpend(best.price_usdc, category);
+
     if (!check.allowed) {
       logger.warn(`${tag()} Payment blocked by spending policy: ${check.reason}`);
       return;
     }
-    logger.info(`${tag()} Spending policy check passed`);
+
+    if (check.reason === 'Policy check unreachable (fail-open enabled)') {
+      const localCheck = checkLocalSpendLimit(best.price_usdc);
+      if (!localCheck.allowed) {
+        logger.warn(`${tag()} Payment blocked by local fallback spending policy: ${localCheck.reason}`);
+        return;
+      }
+      logger.warn(`${tag()} Spending policy check unreachable; using local fallback guard for this session`);
+    } else {
+      logger.info(`${tag()} Spending policy check passed`);
+    }
   }
 
   const endpointUrl = buildUrl(best.endpoint);
@@ -240,6 +296,9 @@ async function runTask(category, buildUrl, scoringEnabled) {
   const data = await response.json();
   logger.info({ data }, `${tag()} Paid $${best.price_usdc} USDC — data received`);
 
+  sessionSpentUsdc += Number(best.price_usdc);
+  logger.info({ totalSpentUsdc: sessionSpentUsdc }, `${tag()} Session spend updated`);
+
   if (scoringEnabled) await recordOutcome(best.price_usdc, true, best.id);
 
   await submitReputation(best.id, true);
@@ -251,6 +310,11 @@ async function runTask(category, buildUrl, scoringEnabled) {
 async function main() {
   logger.info(`${tag()} Lodestar Agent starting`);
   logger.info(`${tag()} Address: ${AGENT_ADDRESS}`);
+  if (AGENT_FAIL_OPEN) {
+    logger.warn(
+      `${tag()} AGENT_FAIL_OPEN=true — policy failures are allowed for development only; local fallback limits still apply`
+    );
+  }
 
   const scoringEnabled = await ensureRegistered();
 

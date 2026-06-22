@@ -4,6 +4,7 @@ import express from 'express';
 import request from 'supertest';
 
 const mockListAgents = vi.fn();
+const mockListAgentsPage = vi.fn();
 const mockGetAgent = vi.fn();
 const mockGetAgentPolicy = vi.fn();
 const mockGetAgentScore = vi.fn();
@@ -14,6 +15,7 @@ const mockRecordPaymentOnChain = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
   listAgents: (...args) => mockListAgents(...args),
+  listAgentsPage: (...args) => mockListAgentsPage(...args),
   getAgent: (...args) => mockGetAgent(...args),
   getAgentPolicy: (...args) => mockGetAgentPolicy(...args),
   getAgentScore: (...args) => mockGetAgentScore(...args),
@@ -85,16 +87,15 @@ function signBody(body) {
 
 let app;
 
-beforeAll(async () => {
+beforeEach(async () => {
+  vi.clearAllMocks();
+  vi.resetModules();
+  resetIdempotencyStore();
+
   const router = (await import('./agents.js')).default;
   app = express();
   app.use(express.json());
   app.use('/api', router);
-});
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  resetIdempotencyStore();
 });
 
 function makeAgent(overrides = {}) {
@@ -120,17 +121,19 @@ function makeAgent(overrides = {}) {
 describe('GET /api/agents', () => {
   it('should return list of agents', async () => {
     const agents = [makeAgent({ address: 'GA1' }), makeAgent({ address: 'GA2' })];
-    mockListAgents.mockResolvedValueOnce(agents);
+    mockGetAgentCount.mockResolvedValueOnce(2);
+    mockListAgentsPage.mockResolvedValueOnce(agents);
 
     const res = await request(app).get('/api/agents');
 
     expect(res.status).toBe(200);
     expect(res.body.agents).toHaveLength(2);
-    expect(res.body.count).toBe(2);
+    expect(res.body.total).toBe(2);
+    expect(res.body.page).toBe(0);
   });
 
   it('should return 500 when contract call fails', async () => {
-    mockListAgents.mockRejectedValueOnce(new Error('Chain error'));
+    mockGetAgentCount.mockRejectedValueOnce(new Error('Chain error'));
 
     const res = await request(app).get('/api/agents');
 
@@ -156,7 +159,8 @@ describe('GET /api/agents/stats', () => {
       makeAgent({ score: 100, total_volume_stroops: '10000000' }),
       makeAgent({ score: 200, total_volume_stroops: '20000000' }),
     ];
-    mockListAgents.mockResolvedValueOnce(agents);
+    mockGetAgentCount.mockResolvedValueOnce(2);
+    mockListAgentsPage.mockResolvedValueOnce(agents);
 
     const res = await request(app).get('/api/agents/stats');
 
@@ -206,6 +210,52 @@ describe('GET /api/agents/:address/score', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.score).toBe(85);
+  });
+});
+
+describe('GET /api/agents/:address/can-spend', () => {
+  it('should allow spending when the backend policy check passes', async () => {
+    mockCheckSpendingAllowed.mockResolvedValueOnce(true);
+    mockGetAgentPolicy.mockResolvedValueOnce(null);
+    mockGetAgent.mockResolvedValueOnce(makeAgent());
+
+    const res = await request(app)
+      .get(`/api/agents/${makeAgent().address}/can-spend`)
+      .query({ amount: '0.001', category: 'weather' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ allowed: true, reason: 'OK' });
+  });
+
+  it('should deny spending when the agent is not registered', async () => {
+    mockCheckSpendingAllowed.mockResolvedValueOnce(true);
+    mockGetAgentPolicy.mockResolvedValueOnce(null);
+    mockGetAgent.mockResolvedValueOnce(null);
+
+    const res = await request(app)
+      .get(`/api/agents/${makeAgent().address}/can-spend`)
+      .query({ amount: '0.001', category: 'weather' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ allowed: false, reason: 'Agent not registered' });
+  });
+
+  it('should deny spending when the policy rejects the request', async () => {
+    mockCheckSpendingAllowed.mockResolvedValueOnce(false);
+    mockGetAgentPolicy.mockResolvedValueOnce({
+      allowed_categories: [],
+      max_per_tx_stroops: '10000000',
+      max_per_day_stroops: '50000000',
+      daily_spent_stroops: '0',
+    });
+    mockGetAgent.mockResolvedValueOnce(makeAgent());
+
+    const res = await request(app)
+      .get(`/api/agents/${makeAgent().address}/can-spend`)
+      .query({ amount: '0.001', category: 'weather' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ allowed: false, reason: 'Spending policy violation' });
   });
 });
 
