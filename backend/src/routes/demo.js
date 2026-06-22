@@ -12,7 +12,7 @@ import { recordActivity, getActivityFeed } from './services.js';
 const router = Router();
 
 function buildHttpClient() {
-  const signer = createEd25519Signer(config.server.secret, 'stellar:testnet');
+  const signer = createEd25519Signer(config.server.secret, config.stellar.networkId);
   const scheme = new ExactStellarScheme(signer, { url: config.stellar.rpcUrl });
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
