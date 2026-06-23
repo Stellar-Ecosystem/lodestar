@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import pino from 'pino';
 import pkg from '@stellar/stellar-sdk';
 const { Keypair } = pkg;
@@ -14,37 +15,51 @@ for (const key of required) {
   if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
 }
 
-const AGENT_SECRET     = process.env.AGENT_STELLAR_SECRET;
-const RPC_URL          = process.env.STELLAR_RPC_URL;
-const LODESTAR_API_URL = process.env.LODESTAR_API_URL;
+const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
+const RPC_URL              = process.env.STELLAR_RPC_URL;
+const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
-const AGENT_NAME       = process.env.AGENT_NAME ?? 'LodestarAgent';
-const AGENT_DESC       = process.env.AGENT_DESC ?? 'Autonomous x402 agent powered by Lodestar service discovery';
-const MAX_PER_TX       = process.env.AGENT_MAX_PER_TX ?? '0.001';
-const MAX_PER_DAY      = process.env.AGENT_MAX_PER_DAY ?? '1.00';
-const ALLOWED_CATS     = (process.env.AGENT_ALLOWED_CATEGORIES ?? '').split(',').filter(Boolean);
+const AGENT_NAME           = process.env.AGENT_NAME ?? 'LodestarAgent';
+const AGENT_DESC           = process.env.AGENT_DESC ?? 'Autonomous x402 agent powered by Lodestar service discovery';
+const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX ?? '0.001';
+const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY ?? '1.00';
+const ALLOWED_CATS         = (process.env.AGENT_ALLOWED_CATEGORIES ?? '').split(',').filter(Boolean);
 
 const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
 const AGENT_ADDRESS = agentKeypair.publicKey();
 
 const logger = pino({
-  level: 'info',
+  level: process.env.LOG_LEVEL ?? 'info',
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
+
+// ── Canonical event names ─────────────────────────────────────────────────────
+
+export const EVENT = {
+  AGENT_START:         'agent_start',
+  AGENT_REGISTERED:    'agent_registered',
+  TASK_START:          'task_start',
+  SERVICE_SELECTED:    'service_selected',
+  SPEND_CHECK_PASSED:  'spend_check_passed',
+  SPEND_CHECK_BLOCKED: 'spend_check_blocked',
+  PAYMENT_SUCCESS:     'payment_success',
+  PAYMENT_FAILED:      'payment_failed',
+  SCORE_UPDATED:       'score_updated',
+  AGENT_COMPLETE:      'agent_complete',
+};
 
 // ── Credit scoring helpers ────────────────────────────────────────────────────
 
 let currentScore = null;
 
-function tag() {
-  return currentScore !== null ? `[${AGENT_NAME} | Score: ${currentScore}]` : `[${AGENT_NAME}]`;
-}
-
-async function ensureRegistered() {
+export async function ensureRegistered() {
   try {
     const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
     if (res.status === 503) {
-      logger.info(`${tag()} Agents contract not deployed — scoring disabled`);
+      logger.info(
+        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false },
+        'Agents contract not deployed — scoring disabled'
+      );
       return false;
     }
     if (res.ok) {
@@ -52,14 +67,20 @@ async function ensureRegistered() {
       const agent = data.agent ?? data;
       currentScore = agent.score;
       const policy = data.policy;
+      const dailyLimitUsdc = policy
+        ? (Number(BigInt(policy.max_per_day_stroops)) / 10_000_000).toFixed(2)
+        : null;
       logger.info(
-        `${tag()} Already registered — score: ${agent.score}` +
-        (policy ? ` | daily limit: $${(Number(BigInt(policy.max_per_day_stroops)) / 10_000_000).toFixed(2)} USDC` : '')
+        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: agent.score, dailyLimitUsdc, scoringEnabled: true },
+        'Already registered'
       );
       return true;
     }
     if (res.status === 404) {
-      logger.info(`${tag()} Not registered — registering now…`);
+      logger.info(
+        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS },
+        'Not registered — registering now…'
+      );
       const regRes = await fetch(`${LODESTAR_API_URL}/api/agents/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -74,15 +95,24 @@ async function ensureRegistered() {
       });
       if (regRes.ok) {
         currentScore = 100;
-        logger.info(`${tag()} Registered — starting score: 100`);
+        logger.info(
+          { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: 100, scoringEnabled: true },
+          'Registered — starting score: 100'
+        );
         return true;
       }
       const err = await regRes.json().catch(() => ({}));
-      logger.warn({ err }, `${tag()} Registration failed — scoring disabled`);
+      logger.warn(
+        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false, err },
+        'Registration failed — scoring disabled'
+      );
       return false;
     }
-  } catch {
-    logger.warn(`${tag()} Could not reach agents API — scoring disabled`);
+  } catch (err) {
+    logger.warn(
+      { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false, err },
+      'Could not reach agents API — scoring disabled'
+    );
   }
   return false;
 }
@@ -117,9 +147,12 @@ async function recordOutcome(amountUsdc, success, serviceId) {
     });
     if (res.ok) {
       const data = await res.json();
-      const oldScore = currentScore;
+      const scoreBefore = currentScore;
       currentScore = data.newScore;
-      logger.info(`${tag()} Score updated: ${oldScore} → ${currentScore}`);
+      logger.info(
+        { event: EVENT.SCORE_UPDATED, agentAddress: AGENT_ADDRESS, scoreBefore, scoreAfter: currentScore },
+        'Score updated'
+      );
     }
   } catch {
     // non-critical
@@ -190,77 +223,167 @@ async function submitReputation(id, positive) {
 
 // ── Agent task ────────────────────────────────────────────────────────────────
 
-async function runTask(category, buildUrl, scoringEnabled) {
-  logger.info(`\n${tag()} ── Task: ${category} ──────────────────────────────────`);
+export async function runTask(category, buildUrl, scoringEnabled) {
+  const taskStart = Date.now();
+  logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
 
-  logger.info(`${tag()} Step 1: Querying Lodestar registry…`);
   const services = await fetchServices(category);
 
   if (!services.length) {
-    logger.error(`${tag()} No services found for category "${category}"`);
-    return;
+    logger.error(
+      { event: EVENT.TASK_START, category, servicesFound: 0 },
+      'No services found for category'
+    );
+    return { success: false, priceUsdc: null };
   }
 
-  logger.info(`${tag()} Step 2: Found ${services.length} service(s)`);
   const best = [...services].sort((a, b) => b.reputation - a.reputation)[0];
-  logger.info(`${tag()} Step 3: Selected "${best.name}" — $${best.price_usdc} USDC`);
+  logger.info(
+    {
+      event: EVENT.SERVICE_SELECTED,
+      category,
+      serviceId: best.id,
+      serviceName: best.name,
+      priceUsdc: best.price_usdc,
+      servicesFound: services.length,
+    },
+    'Service selected'
+  );
 
-  // Spending policy check
   if (scoringEnabled) {
     const check = await checkSpend(best.price_usdc, category);
     if (!check.allowed) {
-      logger.warn(`${tag()} Payment blocked by spending policy: ${check.reason}`);
-      return;
+      logger.warn(
+        {
+          event: EVENT.SPEND_CHECK_BLOCKED,
+          category,
+          serviceId: best.id,
+          serviceName: best.name,
+          priceUsdc: best.price_usdc,
+          reason: check.reason,
+        },
+        'Payment blocked by spending policy'
+      );
+      return { success: false, priceUsdc: null };
     }
-    logger.info(`${tag()} Spending policy check passed`);
+    logger.info(
+      { event: EVENT.SPEND_CHECK_PASSED, category, serviceId: best.id, serviceName: best.name, priceUsdc: best.price_usdc },
+      'Spending policy check passed'
+    );
   }
 
   const endpointUrl = buildUrl(best.endpoint);
-  logger.info(`${tag()} Step 4: Sending x402 payment on Stellar…`);
+  logger.debug(
+    { event: EVENT.TASK_START, category, serviceId: best.id, endpointUrl },
+    'Sending x402 payment on Stellar'
+  );
 
   const httpClient = buildHttpClient();
   let response;
   try {
     response = await httpClient.fetch(endpointUrl);
   } catch (err) {
-    logger.error({ err }, `${tag()} x402 payment failed`);
+    logger.error(
+      { event: EVENT.PAYMENT_FAILED, category, serviceId: best.id, serviceName: best.name, priceUsdc: best.price_usdc, err },
+      'x402 payment failed'
+    );
     if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
-    return;
+    return { success: false, priceUsdc: best.price_usdc };
   }
 
   if (!response.ok) {
-    logger.error({ status: response.status }, `${tag()} Service error after payment`);
+    logger.error(
+      { event: EVENT.PAYMENT_FAILED, category, serviceId: best.id, serviceName: best.name, priceUsdc: best.price_usdc, httpStatus: response.status },
+      'Service error after payment'
+    );
     if (scoringEnabled) await recordOutcome(best.price_usdc, false, best.id);
-    return;
+    return { success: false, priceUsdc: best.price_usdc };
   }
 
   const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
-  logger.info(`${tag()} Step 5: Payment confirmed — tx: ${txHash}`);
-
   const data = await response.json();
-  logger.info({ data }, `${tag()} Paid $${best.price_usdc} USDC — data received`);
+  const taskDurationMs = Date.now() - taskStart;
+
+  logger.info(
+    {
+      event: EVENT.PAYMENT_SUCCESS,
+      category,
+      serviceId: best.id,
+      serviceName: best.name,
+      priceUsdc: best.price_usdc,
+      txHash,
+      scoreBefore: currentScore,
+      taskDurationMs,
+    },
+    'Payment completed'
+  );
+  logger.debug({ data }, 'Response data received');
 
   if (scoringEnabled) await recordOutcome(best.price_usdc, true, best.id);
-
   await submitReputation(best.id, true);
-  logger.info(`${tag()} Submitted positive reputation for "${best.name}"`);
+
+  return { success: true, priceUsdc: best.price_usdc };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-async function main() {
-  logger.info(`${tag()} Lodestar Agent starting`);
-  logger.info(`${tag()} Address: ${AGENT_ADDRESS}`);
+export async function main() {
+  const runStart = Date.now();
+  logger.info(
+    { event: EVENT.AGENT_START, agentAddress: AGENT_ADDRESS, agentName: AGENT_NAME },
+    'Lodestar Agent starting'
+  );
 
   const scoringEnabled = await ensureRegistered();
+  const scoreAfterRegistration = currentScore;
 
-  await runTask('weather', (ep) => `${ep}?lat=40.7128&lon=-74.0060`, scoringEnabled);
-  await runTask('search', (ep) => `${ep}?q=Stellar+blockchain+AI+agents`, scoringEnabled);
+  const tasks = [
+    { category: 'weather', buildUrl: (ep) => `${ep}?lat=40.7128&lon=-74.0060` },
+    { category: 'search',  buildUrl: (ep) => `${ep}?q=Stellar+blockchain+AI+agents` },
+  ];
 
-  logger.info(`\n${tag()} Agent complete.`);
+  let successCount = 0;
+  let failCount = 0;
+  let totalUsdcSpent = 0;
+
+  for (const { category, buildUrl } of tasks) {
+    const result = await runTask(category, buildUrl, scoringEnabled);
+    if (result.success) {
+      successCount++;
+      totalUsdcSpent += parseFloat(result.priceUsdc ?? '0');
+    } else {
+      failCount++;
+    }
+  }
+
+  const runDurationMs = Date.now() - runStart;
+  const finalScore = currentScore;
+  const scoreDelta =
+    finalScore !== null && scoreAfterRegistration !== null
+      ? finalScore - scoreAfterRegistration
+      : null;
+
+  logger.info(
+    {
+      event: EVENT.AGENT_COMPLETE,
+      agentAddress: AGENT_ADDRESS,
+      totalTasks: tasks.length,
+      successCount,
+      failCount,
+      totalUsdcSpent: totalUsdcSpent.toFixed(6),
+      finalScore,
+      scoreDelta,
+      runDurationMs,
+    },
+    'Agent run complete'
+  );
 }
 
-main().catch((err) => {
-  logger.error({ err }, 'Agent crashed');
-  process.exit(1);
-});
+// ── Entry point guard ─────────────────────────────────────────────────────────
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    logger.error({ err }, 'Agent crashed');
+    process.exit(1);
+  });
+}
