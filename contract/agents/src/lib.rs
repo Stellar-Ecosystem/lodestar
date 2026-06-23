@@ -68,6 +68,10 @@ pub struct SpendingPolicy {
     pub max_per_tx_stroops: i128,
     pub max_per_day_stroops: i128,
     pub allowed_categories: Vec<String>,
+    /// Minimum agent score required to earn score increments from successful
+    /// payments. Agents below this threshold still have payment stats recorded
+    /// (total_payments, successful_payments) but their score will not increase
+    /// until they reach this score. Set to 0 to allow all agents to earn score.
     pub min_score_to_earn: i32,
     pub daily_spent_stroops: i128,
     pub last_reset_ledger: u64,
@@ -92,7 +96,9 @@ impl LodestarAgents {
             .extend_ttl(&DataKey::RegistryContract, MAX_TTL, MAX_TTL);
     }
 
-    // Register a new agent
+    // Register a new agent.
+    // owner = agent_address — self-owned by default. No require_auth here so
+    // the backend server can register on behalf of any wallet address.
     pub fn register_agent(
         env: Env,
         agent_address: Address,
@@ -100,7 +106,6 @@ impl LodestarAgents {
         description: String,
         owner: Address,
     ) -> u64 {
-        owner.require_auth();
 
         let key = DataKey::Agent(agent_address.clone());
         if env.storage().persistent().has(&key) {
@@ -295,13 +300,25 @@ impl LodestarAgents {
             .get(&agent_key)
             .expect("agent not found");
 
+        // Load policy for min_score_to_earn enforcement and daily spend update
+        let policy_key = DataKey::Policy(agent_address.clone());
+        let mut policy: SpendingPolicy = env
+            .storage()
+            .persistent()
+            .get(&policy_key)
+            .expect("policy not found");
+
         agent.total_payments += 1;
         agent.total_volume_stroops += amount_stroops;
         agent.last_active = env.ledger().sequence() as u64;
 
         if success {
             agent.successful_payments += 1;
-            agent.score = (agent.score + SCORE_SUCCESS).min(MAX_SCORE);
+            // Enforce min_score_to_earn: agents below the threshold do not gain
+            // score from successful payments, though payment stats are still recorded.
+            if agent.score >= policy.min_score_to_earn {
+                agent.score = (agent.score + SCORE_SUCCESS).min(MAX_SCORE);
+            }
         } else {
             agent.failed_payments += 1;
             agent.score = (agent.score + SCORE_FAILURE).max(0);
@@ -313,23 +330,19 @@ impl LodestarAgents {
             .extend_ttl(&agent_key, MAX_TTL, MAX_TTL);
 
         // Update daily spend in policy
-        let policy_key = DataKey::Policy(agent_address);
-        if let Some(mut policy) =
-            env.storage().persistent().get::<DataKey, SpendingPolicy>(&policy_key)
-        {
-            let now = env.ledger().sequence() as u64;
-            if now >= policy.last_reset_ledger + DAY_LEDGERS {
-                policy.daily_spent_stroops = 0;
-                policy.last_reset_ledger = now;
-            }
-            if success {
-                policy.daily_spent_stroops += amount_stroops;
-            }
-            env.storage().persistent().set(&policy_key, &policy);
-            env.storage()
-                .persistent()
-                .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
+        let now = env.ledger().sequence() as u64;
+        if now >= policy.last_reset_ledger + DAY_LEDGERS {
+            policy.daily_spent_stroops = 0;
+            policy.last_reset_ledger = now;
         }
+        if success {
+            policy.daily_spent_stroops += amount_stroops;
+        }
+
+        env.storage().persistent().set(&policy_key, &policy);
+        env.storage()
+            .persistent()
+            .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
     }
 
     // Flag an agent (admin: owner auth required on agent)

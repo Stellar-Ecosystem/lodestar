@@ -50,6 +50,13 @@ function parseTrustProxy(value) {
   return value;
 }
 
+// Validate PAYMENT_ADDRESS format if explicitly provided (not relying on fallback)
+if (process.env.PAYMENT_ADDRESS && !/^G[A-Z2-7]{55}$/.test(process.env.PAYMENT_ADDRESS)) {
+  throw new Error(
+    `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`,
+  );
+}
+
 const config = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '3001', 10),
@@ -77,6 +84,7 @@ const config = Object.freeze({
     facilitatorUrl: process.env.FACILITATOR_URL,
     searchPrice: process.env.SEARCH_PRICE ?? '0.001',
     weatherPrice: process.env.WEATHER_PRICE ?? '0.001',
+    payTo: process.env.PAYMENT_ADDRESS || process.env.SERVER_STELLAR_ADDRESS,
   },
 
   braveApiKey: process.env.BRAVE_API_KEY ?? '',

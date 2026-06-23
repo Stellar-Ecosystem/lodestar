@@ -35,12 +35,12 @@ const mockAgent: AgentEntry = {
   description: 'Handles demo requests',
   owner: 'GOWNER',
   score: 820,
-  total_payments: 10,
-  successful_payments: 9,
-  failed_payments: 1,
+  total_payments: '10',
+  successful_payments: '9',
+  failed_payments: '1',
   total_volume_stroops: '10000000',
-  registered_at: 12345,
-  last_active: 12350,
+  registered_at: '12345',
+  last_active: '12350',
   active: true,
   flagged: false,
   flag_reason: '',
@@ -51,6 +51,7 @@ const mockStats: AgentStats = {
   avgScore: 820,
   topAgent: mockAgent,
   totalVolume: '1.00',
+  totalVolumeStroops: '10000000',
 };
 
 describe('AgentsPage retry state', () => {

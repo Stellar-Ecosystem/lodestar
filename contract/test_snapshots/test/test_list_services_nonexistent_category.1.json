@@ -143,6 +143,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "pay_to"
+                      },
+                      "val": {
+                        "string": "G_TEST_PAYMENT"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "price_usdc"
                       },
                       "val": {

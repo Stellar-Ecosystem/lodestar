@@ -132,13 +132,13 @@ export default function CreditScoreDemo() {
 
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-background border border-border rounded px-2 py-1.5 text-center">
-                  <div className="mono font-semibold">{agent.total_payments}</div>
+                  <div className="mono font-semibold">{Number(agent.total_payments).toLocaleString()}</div>
                   <div className="text-secondary">payments</div>
                 </div>
                 <div className="bg-background border border-border rounded px-2 py-1.5 text-center">
                   <div className="mono font-semibold text-success">
-                    {agent.total_payments > 0
-                      ? `${Math.round((agent.successful_payments / agent.total_payments) * 100)}%`
+                    {Number(agent.total_payments) > 0
+                      ? `${Math.round((Number(agent.successful_payments) / Number(agent.total_payments)) * 100)}%`
                       : '—'}
                   </div>
                   <div className="text-secondary">success</div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterServices, sortServices } from './registry';
+import { filterServices } from './registry';
 import type { ServiceEntry } from './types';
 
 const SERVICES: ServiceEntry[] = [
@@ -41,27 +41,7 @@ const SERVICES: ServiceEntry[] = [
   },
 ];
 
-describe('sortServices', () => {
-  it('sorts services by newest first', () => {
-    expect(sortServices(SERVICES, 'newest').map((service) => service.id)).toEqual([2, 3, 1]);
-  });
-
-  it('sorts services by highest reputation first', () => {
-    expect(sortServices(SERVICES, 'reputation').map((service) => service.id)).toEqual([2, 3, 1]);
-  });
-
-  it('sorts services by lowest price first', () => {
-    expect(sortServices(SERVICES, 'price').map((service) => service.id)).toEqual([2, 3, 1]);
-  });
-
-  it('does not mutate the original services array', () => {
-    const original = [...SERVICES];
-
-    sortServices(SERVICES, 'newest');
-
-    expect(SERVICES).toEqual(original);
-  });
-});
+// sortServices tests removed (moved to sort.test.ts)
 
 describe('filterServices', () => {
   it('returns all services when the query is empty', () => {

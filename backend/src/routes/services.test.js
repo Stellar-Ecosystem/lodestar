@@ -26,7 +26,7 @@ vi.mock('../config.js', () => ({
   default: {
     contract: { agentsId: null },
     server: { address: 'mock_address', secret: 'mock_secret' },
-    x402: { facilitatorUrl: 'https://mock', weatherPrice: '0.001', searchPrice: '0.001' },
+    x402: { facilitatorUrl: 'https://mock', weatherPrice: '0.001', searchPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
     braveApiKey: 'mock_key',
     corsOrigin: ['http://localhost:3000'],
     nodeEnv: 'test',

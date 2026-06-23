@@ -5,7 +5,8 @@
   "type": "module",
   "main": "agent.js",
   "scripts": {
-    "start": "node agent.js"
+    "start": "node agent.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^13.0.0",
@@ -14,6 +15,9 @@
     "dotenv": "^16.4.5",
     "pino": "^9.3.2",
     "pino-pretty": "^11.2.2"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.1"
   },
   "engines": {
     "node": ">=22.0.0"
