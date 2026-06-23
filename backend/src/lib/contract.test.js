@@ -36,7 +36,7 @@ describe('registerServiceOnChain duplicate checks', () => {
     activeServiceExistsSpy.mockResolvedValueOnce(true);
 
     expect(await contractLib.activeServiceExists(provider, endpoint)).toBe(true);
-    expect(activeServiceExistsSpy).toHaveBeenCalledWith(provider, endpoint);
+    expect(activeServiceExistsSpy).toHaveBeenCalledWith(provider, endpoint, expect.any(Function));
   });
 
   it('returns false when no matching active service exists', async () => {

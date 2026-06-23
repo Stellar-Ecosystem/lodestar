@@ -96,7 +96,9 @@ impl LodestarAgents {
             .extend_ttl(&DataKey::RegistryContract, MAX_TTL, MAX_TTL);
     }
 
-    // Register a new agent
+    // Register a new agent.
+    // owner = agent_address — self-owned by default. No require_auth here so
+    // the backend server can register on behalf of any wallet address.
     pub fn register_agent(
         env: Env,
         agent_address: Address,
@@ -104,7 +106,6 @@ impl LodestarAgents {
         description: String,
         owner: Address,
     ) -> u64 {
-        owner.require_auth();
 
         let key = DataKey::Agent(agent_address.clone());
         if env.storage().persistent().has(&key) {

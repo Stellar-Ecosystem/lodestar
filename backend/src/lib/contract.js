@@ -2,6 +2,7 @@ import pkg from '@stellar/stellar-sdk';
 const {
   Contract,
   Keypair,
+  Transaction,
   TransactionBuilder,
   BASE_FEE,
   xdr,
@@ -15,15 +16,7 @@ import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
 import { ContractError } from './ContractError.js';
-import { recordReputationChange } from './reputationHistory.js';
 
-class ContractError extends Error {
-  constructor(message, code) {
-    super(message);
-    this.name = 'ContractError';
-    this.code = code;
-  }
-}
 
 const TIMEOUT = 30;
 
@@ -546,9 +539,9 @@ export async function getAgentCount() {
 export async function registerAgentOnChain(agentAddress, name, description) {
   try {
     const contract = getAgentsContract();
-    const keypair = getServerKeypair();
-    const ownerAddress = Address.fromString(keypair.publicKey());
     const agentAddr = Address.fromString(agentAddress);
+    // owner = the agent's own wallet address (self-owned), not the server key
+    const ownerAddress = agentAddr;
 
     const op = contract.call(
       'register_agent',
@@ -694,4 +687,108 @@ export async function updatePolicyOnChain(
     logger.error({ err, agentAddress }, 'updatePolicyOnChain failed');
     throw err;
   }
+}
+
+/**
+ * Build an unsigned, simulated transaction XDR for a mutating agent operation.
+ * The frontend wallet (Freighter) will sign the returned XDR and POST it back
+ * via submitSignedAgentTx.
+ *
+ * @param {'flag'|'deactivate'|'update_policy'} action
+ * @param {string} agentAddress  - the agent's Stellar address (also the owner/caller)
+ * @param {object} params        - action-specific params
+ * @returns {Promise<string>}    - base64-encoded transaction XDR ready for signing
+ */
+export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
+  const server = getStellarServer();
+  const keypair = getServerKeypair();
+  const passphrase = getNetworkPassphrase();
+  const contract = getAgentsContract();
+  const callerAddr = Address.fromString(agentAddress);
+
+  let op;
+  if (action === 'flag') {
+    op = contract.call(
+      'flag_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(params.reason ?? '', { type: 'string' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else if (action === 'deactivate') {
+    op = contract.call(
+      'deactivate_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else if (action === 'update_policy') {
+    op = contract.call(
+      'update_policy',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(BigInt(params.maxPerTxStroops), { type: 'i128' }),
+      nativeToScVal(BigInt(params.maxPerDayStroops), { type: 'i128' }),
+      nativeToScVal(params.allowedCategories ?? [], { type: 'string' }),
+      nativeToScVal(params.minScoreToEarn ?? 0, { type: 'i32' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else {
+    throw new Error(`Unknown action: ${action}`);
+  }
+
+  // Use server account as fee payer; the agent wallet will add its auth entry
+  const account = await server.getAccount(keypair.publicKey());
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: passphrase,
+  })
+    .addOperation(op)
+    .setTimeout(TIMEOUT)
+    .build();
+
+  const simResult = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(simResult)) {
+    throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
+  }
+
+  const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+  return preparedTx.toXDR();
+}
+
+/**
+ * Submit a pre-signed transaction XDR (signed by the agent's Freighter wallet).
+ * @param {string} signedXdr - base64-encoded signed transaction XDR
+ * @returns {Promise<string>} - transaction hash
+ */
+export async function submitSignedAgentTx(signedXdr) {
+  const server = getStellarServer();
+  const passphrase = getNetworkPassphrase();
+
+  const tx = new Transaction(signedXdr, passphrase);
+
+  const sendResult = await server.sendTransaction(tx);
+  if (sendResult.status === 'ERROR') {
+    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
+  }
+
+  let getResult;
+  for (let i = 0; i < 20; i++) {
+    try {
+      getResult = await server.getTransaction(sendResult.hash);
+      if (getResult.status !== 'NOT_FOUND') break;
+    } catch (parseErr) {
+      if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
+        return sendResult.hash;
+      }
+      throw parseErr;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  if (!getResult || getResult.status === 'NOT_FOUND') {
+    throw new ContractError(`Transaction not confirmed: ${sendResult.hash}`, 'TRANSACTION_TIMEOUT');
+  }
+  if (getResult.status === 'FAILED') {
+    throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
+  }
+
+  return sendResult.hash;
 }
