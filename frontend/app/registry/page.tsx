@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import ServiceCard from '@/components/ServiceCard';
 import ServiceCardSkeleton from '@/components/ServiceCardSkeleton';
 import { fetchServices } from '@/lib/contract';
-import { filterServices, sortServices } from '@/lib/registry';
+import { filterServices } from '@/lib/registry';
+import { sortServices } from '@/lib/sort';
 import type { Category, SortOption } from '@/lib/types';
 
 const CATEGORIES: { label: string; value: Category | 'all' }[] = [
