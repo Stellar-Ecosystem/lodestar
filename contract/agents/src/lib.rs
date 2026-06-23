@@ -68,9 +68,29 @@ pub struct SpendingPolicy {
     pub max_per_tx_stroops: i128,
     pub max_per_day_stroops: i128,
     pub allowed_categories: Vec<String>,
+    /// Agent must have at least this score to earn SCORE_SUCCESS on successful
+    /// payments.  Payments are still recorded when below the threshold — only
+    /// the score increment is withheld.  Default: 0 (no gate).
     pub min_score_to_earn: i32,
     pub daily_spent_stroops: i128,
     pub last_reset_ledger: u64,
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn is_new_day(now: u64, last_reset_ledger: u64) -> bool {
+    now >= last_reset_ledger + DAY_LEDGERS
+}
+
+/// Returns the new score after a successful payment, applying the
+/// min_score_to_earn gate: if the agent's current score is below the minimum,
+/// the score is returned unchanged (payment stats are still recorded).
+fn apply_score_success(current: i32, min_score_to_earn: i32) -> i32 {
+    if current >= min_score_to_earn {
+        (current + SCORE_SUCCESS).min(MAX_SCORE)
+    } else {
+        current
+    }
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────
@@ -295,13 +315,24 @@ impl LodestarAgents {
             .get(&agent_key)
             .expect("agent not found");
 
+        // Load policy upfront so min_score_to_earn can gate the score increment.
+        let policy_key = DataKey::Policy(agent_address.clone());
+        let maybe_policy: Option<SpendingPolicy> = env.storage().persistent().get(&policy_key);
+
+        let now = env.ledger().sequence() as u64;
+
         agent.total_payments += 1;
         agent.total_volume_stroops += amount_stroops;
-        agent.last_active = env.ledger().sequence() as u64;
+        agent.last_active = now;
 
         if success {
             agent.successful_payments += 1;
-            agent.score = (agent.score + SCORE_SUCCESS).min(MAX_SCORE);
+            // Only grant score improvement when the agent meets or exceeds the
+            // minimum score threshold set in their spending policy.  An agent
+            // below the threshold still has the payment recorded so their history
+            // is accurate, but the score does not increase until they qualify.
+            let min_score = maybe_policy.as_ref().map(|p| p.min_score_to_earn).unwrap_or(0);
+            agent.score = apply_score_success(agent.score, min_score);
         } else {
             agent.failed_payments += 1;
             agent.score = (agent.score + SCORE_FAILURE).max(0);
@@ -313,12 +344,8 @@ impl LodestarAgents {
             .extend_ttl(&agent_key, MAX_TTL, MAX_TTL);
 
         // Update daily spend in policy
-        let policy_key = DataKey::Policy(agent_address);
-        if let Some(mut policy) =
-            env.storage().persistent().get::<DataKey, SpendingPolicy>(&policy_key)
-        {
-            let now = env.ledger().sequence() as u64;
-            if now >= policy.last_reset_ledger + DAY_LEDGERS {
+        if let Some(mut policy) = maybe_policy {
+            if is_new_day(now, policy.last_reset_ledger) {
                 policy.daily_spent_stroops = 0;
                 policy.last_reset_ledger = now;
             }
@@ -492,5 +519,65 @@ impl LodestarAgents {
         env.storage()
             .persistent()
             .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── apply_score_success (min_score_to_earn gate) ──────────────────────────
+
+    #[test]
+    fn test_score_success_no_gate() {
+        // No gate (min_score_to_earn = 0) — always increment
+        assert_eq!(apply_score_success(100, 0), 110);
+    }
+
+    #[test]
+    fn test_score_success_below_gate_no_increment() {
+        // Agent at INITIAL_SCORE (100) with gate of 200 — score must not increase
+        assert_eq!(apply_score_success(100, 200), 100);
+    }
+
+    #[test]
+    fn test_score_success_at_gate_increments() {
+        // Agent exactly at the gate — score should increase
+        assert_eq!(apply_score_success(200, 200), 210);
+    }
+
+    #[test]
+    fn test_score_success_above_gate_increments() {
+        // Agent above the gate — normal score increment
+        assert_eq!(apply_score_success(500, 200), 510);
+    }
+
+    #[test]
+    fn test_score_success_capped_at_max() {
+        // Score near MAX_SCORE — must not exceed it
+        assert_eq!(apply_score_success(MAX_SCORE - 5, 0), MAX_SCORE);
+    }
+
+    #[test]
+    fn test_score_success_at_max_stays() {
+        // Score already at MAX_SCORE — must stay there
+        assert_eq!(apply_score_success(MAX_SCORE, 0), MAX_SCORE);
+    }
+
+    // ── is_new_day boundary tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_is_new_day_before_threshold() {
+        let last_reset = 1_000u64;
+        let now = last_reset + DAY_LEDGERS - 1;
+        assert!(!is_new_day(now, last_reset));
+    }
+
+    #[test]
+    fn test_is_new_day_at_threshold() {
+        let last_reset = 1_000u64;
+        let now = last_reset + DAY_LEDGERS;
+        assert!(is_new_day(now, last_reset));
     }
 }
