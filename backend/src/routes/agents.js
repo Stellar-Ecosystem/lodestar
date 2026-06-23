@@ -125,9 +125,13 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
       (sum, a) => sum + BigInt(a.total_volume_stroops),
       0n
     );
-    const totalVolumeUsdc = (Number(totalVolumeStroops) / 10_000_000).toFixed(2);
+    // Avoid Number(BigInt) which loses precision above 2^53 (≈900 USDC).
+    // Perform division in BigInt arithmetic and format as a decimal string.
+    const whole = totalVolumeStroops / 10_000_000n;
+    const remainder = totalVolumeStroops % 10_000_000n;
+    const totalVolume = `${whole}.${String(remainder).padStart(7, '0').slice(0, 2)}`;
 
-    res.json({ totalAgents, avgScore, topAgent, totalVolume: totalVolumeUsdc });
+    res.json({ totalAgents, avgScore, topAgent, totalVolume });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/stats failed');
     return handleContractError(err, res, 'Failed to fetch stats', 'FETCH_ERROR');
