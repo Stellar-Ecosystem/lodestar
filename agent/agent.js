@@ -7,7 +7,7 @@ const { Keypair } = pkg;
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
-import config from './backend/src/config.js';
+import config from '../backend/src/config.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
