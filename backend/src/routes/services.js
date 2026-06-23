@@ -35,8 +35,6 @@ const paymentConfig = {
       price: `$${config.x402.weatherPrice}`,
       network: config.stellar.networkId,
       payTo: config.server.address,
-      network: 'stellar:testnet',
-      payTo: config.x402.payTo,
     },
     description: 'Real-time weather data via Lodestar',
   },
