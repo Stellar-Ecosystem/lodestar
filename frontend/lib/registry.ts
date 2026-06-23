@@ -1,15 +1,6 @@
-import type { ServiceEntry, SortOption } from '@/lib/types';
+import type { ServiceEntry } from '@/lib/types';
 
-export function sortServices(
-  services: ServiceEntry[],
-  sort: SortOption,
-): ServiceEntry[] {
-  return [...services].sort((a, b) => {
-    if (sort === 'reputation') return b.reputation - a.reputation;
-    if (sort === 'price') return parseFloat(a.price_usdc) - parseFloat(b.price_usdc);
-    return b.registered_at - a.registered_at;
-  });
-}
+// sortServices moved to lib/sort.ts
 
 export function filterServices(
   services: ServiceEntry[],

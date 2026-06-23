@@ -30,6 +30,7 @@ export default function SpendingPolicyDisplay({ policy }: Props) {
         <PolicyRow
           label="Min score to earn"
           value={policy.min_score_to_earn === 0 ? 'None' : String(policy.min_score_to_earn)}
+          tooltip="Agents below this score will not gain score from successful payments (stats still recorded). Set to 0 to allow all agents to earn score."
         />
         <PolicyRow
           label="Allowed categories"
@@ -65,10 +66,19 @@ export default function SpendingPolicyDisplay({ policy }: Props) {
   );
 }
 
-function PolicyRow({ label, value }: { label: string; value: string }) {
+function PolicyRow({ label, value, tooltip }: { label: string; value: string; tooltip?: string }) {
   return (
     <div className="bg-background rounded-lg px-4 py-3 border border-border">
-      <div className="text-xs text-secondary mb-1">{label}</div>
+      <div className="text-xs text-secondary mb-1 flex items-center gap-1">
+        {label}
+        {tooltip && (
+          <span className="group relative cursor-help" title={tooltip}>
+            <svg className="w-3.5 h-3.5 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z" />
+            </svg>
+          </span>
+        )}
+      </div>
       <div className="text-sm font-medium mono">{value}</div>
     </div>
   );

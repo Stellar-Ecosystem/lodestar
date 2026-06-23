@@ -9,6 +9,7 @@ const REQUIRED = {
   STELLAR_NETWORK_PASSPHRASE: 'Test',
   FACILITATOR_URL: 'https://facilitator.test',
   USDC_CONTRACT_ID: 'C_USDC',
+  PAYMENT_ADDRESS: 'GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV',
 };
 
 const ORIGINAL_ENV = { ...process.env };
@@ -110,6 +111,48 @@ describe('config demoRun polling env validation', () => {
     });
     expect(config.demoRun.pollInitialDelayMs).toBe(250);
     expect(config.demoRun.pollMaxDelayMs).toBe(2000);
+  });
+});
+
+describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('uses explicit PAYMENT_ADDRESS when set to a valid Stellar address', async () => {
+    const config = await loadConfig({
+  PAYMENT_ADDRESS: 'GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV',
+    });
+    expect(config.x402.payTo).toBe('GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV');
+  });
+
+  it('falls back to SERVER_STELLAR_ADDRESS when PAYMENT_ADDRESS is not set', async () => {
+    // Delete PAYMENT_ADDRESS from the REQUIRED that loadConfig always applies
+    const overrides = {};
+    const env = { ...ORIGINAL_ENV, ...REQUIRED, ...overrides };
+    delete env.PAYMENT_ADDRESS;
+    vi.resetModules();
+    process.env = { ...env };
+    for (const key of [
+      'RATE_LIMIT_WINDOW_MS',
+      'RATE_LIMIT_MAX',
+      'PAYMENT_RATE_LIMIT_WINDOW_MS',
+      'PAYMENT_RATE_LIMIT_MAX',
+      'TRUST_PROXY',
+      'DEMO_RUN_POLL_MAX_WAIT_MS',
+      'DEMO_RUN_POLL_INITIAL_DELAY_MS',
+      'DEMO_RUN_POLL_MAX_DELAY_MS',
+    ]) {
+      delete process.env[key];
+    }
+    const config = (await import('./config.js')).default;
+    expect(config.x402.payTo).toBe('G_TEST');
+  });
+
+  it('throws when PAYMENT_ADDRESS is an invalid Stellar address format', async () => {
+    await expect(loadConfig({ PAYMENT_ADDRESS: 'INVALID' })).rejects.toThrow(
+      'Invalid PAYMENT_ADDRESS',
+    );
   });
 });
 

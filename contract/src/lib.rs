@@ -19,6 +19,7 @@ pub struct ServiceEntry {
     pub description: String,
     pub endpoint: String,
     pub price_usdc: String,
+    pub pay_to: String,
     pub category: String,
     pub provider: Address,
     pub reputation: i32,
@@ -99,6 +100,7 @@ impl LodestarRegistry {
         description: String,
         endpoint: String,
         price_usdc: String,
+        pay_to: String,
         category: String,
     ) -> u64 {
         provider.require_auth();
@@ -124,6 +126,7 @@ impl LodestarRegistry {
             description,
             endpoint,
             price_usdc,
+            pay_to,
             category,
             provider,
             reputation: 0,
@@ -373,6 +376,7 @@ mod test {
             description: String::from_str(env, "Test Description"),
             endpoint: String::from_str(env, "https://test.com"),
             price_usdc: String::from_str(env, "10"),
+            pay_to: String::from_str(env, "G_TEST_PAYMENT"),
             category: cat.clone(),
             provider: provider.clone(),
             reputation,
@@ -624,6 +628,7 @@ mod test {
             &String::from_str(env, "Test Description"),
             &String::from_str(env, "https://test.com"),
             &String::from_str(env, "10"),
+            &String::from_str(env, "G_TEST_PAYMENT"),
             &String::from_str(env, "compute"),
         )
     }

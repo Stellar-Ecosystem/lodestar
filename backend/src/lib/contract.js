@@ -2,6 +2,7 @@ import pkg from '@stellar/stellar-sdk';
 const {
   Contract,
   Keypair,
+  Transaction,
   TransactionBuilder,
   BASE_FEE,
   xdr,
@@ -10,14 +11,26 @@ const {
   scValToNative,
   rpc,
 } = pkg;
+import PQueue from 'p-queue';
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
 import { ContractError } from './ContractError.js';
-import { recordReputationChange } from './reputationHistory.js';
 
 
 const TIMEOUT = 30;
+
+const submitQueue = new PQueue({ concurrency: 1 });
+let currentSeqNum = null;
+let lastSeqSyncTime = 0;
+
+export function getSubmitQueueDepth() {
+  return submitQueue.size + submitQueue.pending;
+}
+
+export async function drainSubmitQueue() {
+  await submitQueue.onIdle();
+}
 
 function getContract() {
   return new Contract(config.contract.id);
@@ -64,14 +77,21 @@ function getServerKeypair() {
   return Keypair.fromSecret(config.server.secret);
 }
 
-async function simulateAndSubmit(operation, signer) {
+async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const server = getStellarServer();
   const keypair = signer ?? getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
-  const account = await server.getAccount(keypair.publicKey());
+  const now = Date.now();
+  if (retryCount > 0 || currentSeqNum === null || (now - lastSeqSyncTime > 60000)) {
+    const account = await server.getAccount(keypair.publicKey());
+    currentSeqNum = BigInt(account.sequence);
+    lastSeqSyncTime = now;
+  }
 
-  const tx = new TransactionBuilder(account, {
+  const txAccount = new pkg.Account(keypair.publicKey(), currentSeqNum.toString());
+
+  const tx = new TransactionBuilder(txAccount, {
     fee: BASE_FEE,
     networkPassphrase: passphrase,
   })
@@ -90,7 +110,27 @@ async function simulateAndSubmit(operation, signer) {
 
   const sendResult = await server.sendTransaction(preparedTx);
   if (sendResult.status === 'ERROR') {
-    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
+    let isBadSeq = false;
+    if (sendResult.errorResultXdr) {
+      try {
+        const txResult = xdr.TransactionResult.fromXDR(sendResult.errorResultXdr, 'base64');
+        const code = txResult.result().switch().name;
+        if (code === 'txBadSeq' || code === 'txBAD_SEQ') {
+          isBadSeq = true;
+        }
+      } catch (e) {
+        // Ignore parse errors here
+      }
+    }
+    if (!isBadSeq && (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))) {
+      isBadSeq = true;
+    }
+
+    if (isBadSeq && retryCount < 3) {
+      logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
+      return _simulateAndSubmit(operation, signer, retryCount + 1);
+    }
+    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, 'TRANSACTION_FAILED');
   }
 
   let getResult;
@@ -102,6 +142,8 @@ async function simulateAndSubmit(operation, signer) {
       // Protocol-22 XDR parse errors on confirmed txs — treat as SUCCESS
       if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
         logger.warn({ hash: sendResult.hash }, 'getTransaction XDR parse error — assuming confirmed');
+        // Optimistic increment on success
+        currentSeqNum += 1n;
         return { status: 'SUCCESS', returnValue: null };
       }
       throw parseErr;
@@ -117,7 +159,14 @@ async function simulateAndSubmit(operation, signer) {
     throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
   }
 
+  // Optimistic increment on success
+  currentSeqNum += 1n;
+
   return getResult;
+}
+
+function simulateAndSubmit(operation, signer) {
+  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
 }
 
 async function simulateRead(operation) {
@@ -171,6 +220,7 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
       description: item.description,
       endpoint: item.endpoint,
       price_usdc: item.price_usdc,
+      pay_to: item.pay_to,
       category: item.category,
       provider: item.provider?.toString() ?? item.provider,
       reputation: Number(item.reputation),
@@ -196,6 +246,7 @@ export async function getService(id) {
       description: native.description,
       endpoint: native.endpoint,
       price_usdc: native.price_usdc,
+      pay_to: native.pay_to,
       category: native.category,
       provider: native.provider?.toString() ?? native.provider,
       reputation: Number(native.reputation),
@@ -254,7 +305,8 @@ export async function registerServiceOnChain(
   description,
   endpoint,
   priceUsdc,
-  category
+  category,
+  payTo
 ) {
   try {
     const keypair = getServerKeypair();
@@ -270,6 +322,8 @@ export async function registerServiceOnChain(
     }
 
     const contract = getContract();
+    const payToAddress = payTo || config.x402.payTo;
+
     const op = contract.call(
       'register_service',
       nativeToScVal(providerAddress, { type: 'address' }),
@@ -277,6 +331,7 @@ export async function registerServiceOnChain(
       nativeToScVal(description, { type: 'string' }),
       nativeToScVal(endpoint, { type: 'string' }),
       nativeToScVal(priceUsdc, { type: 'string' }),
+      nativeToScVal(payToAddress, { type: 'string' }),
       nativeToScVal(category, { type: 'string' })
     );
 
@@ -364,12 +419,12 @@ export function mapAgent(raw) {
     description: raw.description,
     owner: raw.owner?.toString() ?? raw.owner,
     score: toNumber(raw.score),
-    total_payments: toNumber(raw.total_payments),
-    successful_payments: toNumber(raw.successful_payments),
-    failed_payments: toNumber(raw.failed_payments),
+    total_payments: String(raw.total_payments),
+    successful_payments: String(raw.successful_payments),
+    failed_payments: String(raw.failed_payments),
     total_volume_stroops: String(raw.total_volume_stroops),
-    registered_at: toNumber(raw.registered_at),
-    last_active: toNumber(raw.last_active),
+    registered_at: String(raw.registered_at),
+    last_active: String(raw.last_active),
     active: raw.active,
     flagged: raw.flagged,
     flag_reason: raw.flag_reason ?? '',
@@ -385,7 +440,7 @@ export function mapPolicy(raw) {
     allowed_categories: Array.isArray(raw.allowed_categories) ? raw.allowed_categories : [],
     min_score_to_earn: toNumber(raw.min_score_to_earn),
     daily_spent_stroops: String(raw.daily_spent_stroops),
-    last_reset_ledger: toNumber(raw.last_reset_ledger),
+    last_reset_ledger: String(raw.last_reset_ledger),
   };
 }
 
@@ -491,9 +546,9 @@ export async function getAgentCount() {
 export async function registerAgentOnChain(agentAddress, name, description, isDemo = false) {
   try {
     const contract = getAgentsContract();
-    const keypair = getServerKeypair();
-    const ownerAddress = Address.fromString(keypair.publicKey());
     const agentAddr = Address.fromString(agentAddress);
+    // owner = the agent's own wallet address (self-owned), not the server key
+    const ownerAddress = agentAddr;
 
     const op = contract.call(
       'register_agent',
@@ -640,4 +695,108 @@ export async function updatePolicyOnChain(
     logger.error({ err, agentAddress }, 'updatePolicyOnChain failed');
     throw err;
   }
+}
+
+/**
+ * Build an unsigned, simulated transaction XDR for a mutating agent operation.
+ * The frontend wallet (Freighter) will sign the returned XDR and POST it back
+ * via submitSignedAgentTx.
+ *
+ * @param {'flag'|'deactivate'|'update_policy'} action
+ * @param {string} agentAddress  - the agent's Stellar address (also the owner/caller)
+ * @param {object} params        - action-specific params
+ * @returns {Promise<string>}    - base64-encoded transaction XDR ready for signing
+ */
+export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
+  const server = getStellarServer();
+  const keypair = getServerKeypair();
+  const passphrase = getNetworkPassphrase();
+  const contract = getAgentsContract();
+  const callerAddr = Address.fromString(agentAddress);
+
+  let op;
+  if (action === 'flag') {
+    op = contract.call(
+      'flag_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(params.reason ?? '', { type: 'string' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else if (action === 'deactivate') {
+    op = contract.call(
+      'deactivate_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else if (action === 'update_policy') {
+    op = contract.call(
+      'update_policy',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(BigInt(params.maxPerTxStroops), { type: 'i128' }),
+      nativeToScVal(BigInt(params.maxPerDayStroops), { type: 'i128' }),
+      nativeToScVal(params.allowedCategories ?? [], { type: 'string' }),
+      nativeToScVal(params.minScoreToEarn ?? 0, { type: 'i32' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else {
+    throw new Error(`Unknown action: ${action}`);
+  }
+
+  // Use server account as fee payer; the agent wallet will add its auth entry
+  const account = await server.getAccount(keypair.publicKey());
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: passphrase,
+  })
+    .addOperation(op)
+    .setTimeout(TIMEOUT)
+    .build();
+
+  const simResult = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(simResult)) {
+    throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
+  }
+
+  const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+  return preparedTx.toXDR();
+}
+
+/**
+ * Submit a pre-signed transaction XDR (signed by the agent's Freighter wallet).
+ * @param {string} signedXdr - base64-encoded signed transaction XDR
+ * @returns {Promise<string>} - transaction hash
+ */
+export async function submitSignedAgentTx(signedXdr) {
+  const server = getStellarServer();
+  const passphrase = getNetworkPassphrase();
+
+  const tx = new Transaction(signedXdr, passphrase);
+
+  const sendResult = await server.sendTransaction(tx);
+  if (sendResult.status === 'ERROR') {
+    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
+  }
+
+  let getResult;
+  for (let i = 0; i < 20; i++) {
+    try {
+      getResult = await server.getTransaction(sendResult.hash);
+      if (getResult.status !== 'NOT_FOUND') break;
+    } catch (parseErr) {
+      if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
+        return sendResult.hash;
+      }
+      throw parseErr;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  if (!getResult || getResult.status === 'NOT_FOUND') {
+    throw new ContractError(`Transaction not confirmed: ${sendResult.hash}`, 'TRANSACTION_TIMEOUT');
+  }
+  if (getResult.status === 'FAILED') {
+    throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
+  }
+
+  return sendResult.hash;
 }

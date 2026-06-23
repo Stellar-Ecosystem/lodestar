@@ -31,6 +31,9 @@
                   "string": "10"
                 },
                 {
+                  "string": "G_TEST_PAYMENT"
+                },
+                {
                   "string": "compute"
                 }
               ]
@@ -355,6 +358,14 @@
                       },
                       "val": {
                         "string": "Test Service"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "pay_to"
+                      },
+                      "val": {
+                        "string": "G_TEST_PAYMENT"
                       }
                     },
                     {

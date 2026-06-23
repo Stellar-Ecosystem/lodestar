@@ -14,9 +14,10 @@ interface Props {
 }
 
 export default function AgentCard({ agent }: Props) {
+  const totalPayments = Number(agent.total_payments);
   const successRate =
-    agent.total_payments > 0
-      ? Math.round((agent.successful_payments / agent.total_payments) * 100)
+    totalPayments > 0
+      ? Math.round((Number(agent.successful_payments) / totalPayments) * 100)
       : null;
 
   return (
@@ -56,7 +57,7 @@ export default function AgentCard({ agent }: Props) {
 
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-3">
-        <Stat label="Payments" value={agent.total_payments.toLocaleString()} />
+        <Stat label="Payments" value={totalPayments.toLocaleString()} />
         <Stat
           label="Success rate"
           value={successRate !== null ? `${successRate}%` : '—'}
@@ -71,7 +72,7 @@ export default function AgentCard({ agent }: Props) {
 
       {/* Footer */}
       <div className="border-t border-border pt-3 mt-1 flex items-center justify-between">
-        <span className="text-xs text-secondary">Ledger #{agent.registered_at.toLocaleString()}</span>
+        <span className="text-xs text-secondary">Ledger #{Number(agent.registered_at).toLocaleString()}</span>
         <Link
           href={`/agents/${agent.address}`}
           className="text-xs text-accent hover:underline font-medium"

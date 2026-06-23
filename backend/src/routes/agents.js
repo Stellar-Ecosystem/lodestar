@@ -12,6 +12,8 @@ import {
   flagAgentOnChain,
   deactivateAgentOnChain,
   updatePolicyOnChain,
+  buildUnsignedAgentTx,
+  submitSignedAgentTx,
 } from '../lib/contract.js';
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
@@ -36,6 +38,11 @@ const router = Router();
 let agentsCache = null;
 let agentsCacheTime = 0;
 const AGENTS_CACHE_TTL = 30_000;
+
+
+  agentsCache = null;
+  agentsCacheTime = 0;
+}
 
 const CACHE_BATCH_SIZE = 50;
 
@@ -64,8 +71,8 @@ async function getCachedAgents() {
 function sortAgents(agents, sort) {
   return [...agents].sort((a, b) => {
     if (sort === 'score') return b.score - a.score;
-    if (sort === 'payments') return b.total_payments - a.total_payments;
-    return b.registered_at - a.registered_at;
+    if (sort === 'payments') return Number(b.total_payments) - Number(a.total_payments);
+    return Number(b.registered_at) - Number(a.registered_at);
   });
 }
 
@@ -127,7 +134,7 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
     const totalAgents = agents.length;
 
     if (totalAgents === 0) {
-      return res.json({ totalAgents: 0, avgScore: 0, topAgent: null, totalVolume: '0' });
+      return res.json({ totalAgents: 0, avgScore: 0, topAgent: null, totalVolume: '0', totalVolumeStroops: '0' });
     }
 
     const avgScore = Math.round(agents.reduce((sum, a) => sum + a.score, 0) / totalAgents);
@@ -137,9 +144,11 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
       (sum, a) => sum + BigInt(a.total_volume_stroops),
       0n
     );
-    const totalVolumeUsdc = (Number(totalVolumeStroops) / 10_000_000).toFixed(2);
+    const usdcWhole = totalVolumeStroops / 10_000_000n;
+    const usdcCents = totalVolumeStroops % 10_000_000n;
+    const totalVolume = `${usdcWhole}.${String(usdcCents).padStart(7, '0').slice(0, 2)}`;
 
-    res.json({ totalAgents, avgScore, topAgent, totalVolume: totalVolumeUsdc });
+    res.json({ totalAgents, avgScore, topAgent, totalVolume, totalVolumeStroops: totalVolumeStroops.toString() });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/stats failed');
     return handleContractError(err, res, 'Failed to fetch stats', 'FETCH_ERROR');
@@ -406,7 +415,61 @@ router.get('/agents/:address/check', requireAgentsContract, async (req, res) => 
   }
 });
 
-// Admin routes for owner actions
+// ── Owner-signed mutation routes ─────────────────────────────────────────────
+// Two-step flow:
+//   1. POST /api/agents/:address/build-tx  → returns unsigned XDR for Freighter
+//   2. POST /api/agents/:address/submit-signed-tx → submits wallet-signed XDR
+//
+// The ownerAuth middleware verifies x-caller-address matches the on-chain owner
+// before building the XDR, preventing XDR construction for non-owners.
+
+// POST /api/agents/:address/build-tx
+// Body: { action: 'flag'|'deactivate'|'update_policy', ...actionParams }
+router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { action, ...params } = req.body;
+    if (!action || !['flag', 'deactivate', 'update_policy'].includes(action)) {
+      return res.status(400).json({ error: '`action` must be flag, deactivate, or update_policy', code: 'INVALID_BODY' });
+    }
+    if (action === 'flag' && (!params.reason || typeof params.reason !== 'string')) {
+      return res.status(400).json({ error: '`reason` is required for flag action', code: 'INVALID_BODY' });
+    }
+    if (action === 'update_policy') {
+      if (!params.maxPerTxStroops || !params.maxPerDayStroops || !Array.isArray(params.allowedCategories) || typeof params.minScoreToEarn !== 'number') {
+        return res.status(400).json({ error: 'Invalid policy parameters', code: 'INVALID_BODY' });
+      }
+    }
+    const xdrBase64 = await buildUnsignedAgentTx(action, address, params);
+    logger.info({ address, action }, 'Built unsigned agent tx XDR');
+    res.json({ xdr: xdrBase64 });
+  } catch (err) {
+    logger.error({ err }, 'POST /agents/:address/build-tx failed');
+    return handleContractError(err, res, 'Failed to build transaction', 'BUILD_TX_ERROR');
+  }
+});
+
+// POST /api/agents/:address/submit-signed-tx
+// Body: { signedXdr: string }
+router.post('/agents/:address/submit-signed-tx', requireAgentsContract, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { signedXdr } = req.body;
+    if (!signedXdr || typeof signedXdr !== 'string') {
+      return res.status(400).json({ error: '`signedXdr` is required', code: 'INVALID_BODY' });
+    }
+    const hash = await submitSignedAgentTx(signedXdr);
+    agentsCache = null; // invalidate so next read reflects the change
+    logger.info({ address, hash }, 'Submitted wallet-signed agent tx');
+    res.json({ success: true, hash });
+  } catch (err) {
+    logger.error({ err }, 'POST /agents/:address/submit-signed-tx failed');
+    return handleContractError(err, res, 'Failed to submit transaction', 'SUBMIT_TX_ERROR');
+  }
+});
+
+// Legacy direct-action routes kept for backwards-compat (server-side signing).
+// These still work but owner must pass x-caller-address matching the on-chain owner.
 router.post('/agents/:address/flag', requireAgentsContract, ownerAuth, async (req, res) => {
   try {
     const { address } = req.params;
