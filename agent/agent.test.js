@@ -25,7 +25,7 @@ vi.mock('@stellar/stellar-sdk', () => ({
 
 vi.mock('@x402/core/client', () => ({
   x402Client: class { register() { return this; } },
-  x402HTTPClient: class { },
+  x402HTTPClient: class { encodePaymentSignatureHeader() { return {}; } },
 }));
 
 vi.mock('@x402/stellar', () => ({ createEd25519Signer: () => ({}) }));
@@ -36,6 +36,8 @@ vi.mock('@x402/stellar/exact/client', () => ({ ExactStellarScheme: class { } }))
 process.env.AGENT_STELLAR_SECRET = 'STEST0000000000000000000000000000000000000000000000000000';
 process.env.STELLAR_RPC_URL      = 'https://mock-rpc.example.com';
 process.env.LODESTAR_API_URL     = 'http://localhost:9999';
+
+const mockHttpClient = { encodePaymentSignatureHeader: () => ({}) };
 
 const { runTask, main, EVENT } = await import('./agent.js');
 
@@ -91,7 +93,7 @@ beforeEach(() => {
 
 describe('runTask — happy path', () => {
   it('logs task_start with category field', async () => {
-    await runTask('weather', (ep) => ep, true);
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
 
     const taskStartCall = logInfo.mock.calls.find(
       ([fields]) => fields?.event === EVENT.TASK_START
@@ -101,7 +103,7 @@ describe('runTask — happy path', () => {
   });
 
   it('logs service_selected with structured fields', async () => {
-    await runTask('weather', (ep) => ep, true);
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
 
     const call = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SERVICE_SELECTED);
     expect(call).toBeDefined();
@@ -116,7 +118,7 @@ describe('runTask — happy path', () => {
   });
 
   it('logs spend_check_passed when scoring enabled', async () => {
-    await runTask('weather', (ep) => ep, true);
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
 
     const call = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_PASSED);
     expect(call).toBeDefined();
@@ -124,7 +126,7 @@ describe('runTask — happy path', () => {
   });
 
   it('logs payment_success with txHash, scoreBefore, and taskDurationMs', async () => {
-    await runTask('weather', (ep) => ep, true);
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
 
     const call = logInfo.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_SUCCESS);
     expect(call).toBeDefined();
@@ -141,12 +143,12 @@ describe('runTask — happy path', () => {
   });
 
   it('returns { success: true, priceUsdc } on success', async () => {
-    const result = await runTask('weather', (ep) => ep, true);
+    const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
     expect(result).toEqual({ success: true, priceUsdc: MOCK_SERVICE.price_usdc });
   });
 
   it('skips spend check when scoring is disabled', async () => {
-    await runTask('weather', (ep) => ep, false);
+    await runTask('weather', (ep) => ep, false, mockHttpClient);
 
     const blocked = logWarn.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_BLOCKED);
     const passed  = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_PASSED);
@@ -159,7 +161,7 @@ describe('runTask — no services found', () => {
   it('logs task_start error with servicesFound: 0', async () => {
     global.fetch = buildFetch({ services: [] });
 
-    await runTask('weather', (ep) => ep, true);
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
 
     const call = logError.mock.calls.find(([f]) => f?.event === EVENT.TASK_START);
     expect(call).toBeDefined();
@@ -168,7 +170,7 @@ describe('runTask — no services found', () => {
 
   it('returns { success: false, priceUsdc: null }', async () => {
     global.fetch = buildFetch({ services: [] });
-    const result = await runTask('weather', (ep) => ep, true);
+    const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
     expect(result).toEqual({ success: false, priceUsdc: null });
   });
 });
@@ -177,7 +179,7 @@ describe('runTask — spend check blocked', () => {
   it('logs spend_check_blocked with reason field', async () => {
     global.fetch = buildFetch({ canSpend: false });
 
-    await runTask('weather', (ep) => ep, true);
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
 
     const call = logWarn.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_BLOCKED);
     expect(call).toBeDefined();
@@ -192,7 +194,7 @@ describe('runTask — spend check blocked', () => {
 
   it('returns { success: false, priceUsdc: null }', async () => {
     global.fetch = buildFetch({ canSpend: false });
-    const result = await runTask('weather', (ep) => ep, true);
+    const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
     expect(result).toEqual({ success: false, priceUsdc: null });
   });
 });
@@ -201,7 +203,7 @@ describe('runTask — service error after payment', () => {
   it('logs payment_failed with httpStatus when endpoint returns non-2xx', async () => {
     global.fetch = buildFetch({ endpointOk: false });
 
-    await runTask('weather', (ep) => ep, false);
+    await runTask('weather', (ep) => ep, false, mockHttpClient);
 
     const call = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_FAILED);
     expect(call).toBeDefined();
@@ -215,7 +217,7 @@ describe('runTask — service error after payment', () => {
 
   it('returns { success: false, priceUsdc } when endpoint fails', async () => {
     global.fetch = buildFetch({ endpointOk: false });
-    const result = await runTask('weather', (ep) => ep, false);
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
     expect(result).toEqual({ success: false, priceUsdc: MOCK_SERVICE.price_usdc });
   });
 });
@@ -230,7 +232,7 @@ describe('runTask — payment_failed on fetch throw', () => {
       return Promise.reject(new Error('Network error'));
     });
 
-    await runTask('weather', (ep) => ep, false);
+    await runTask('weather', (ep) => ep, false, mockHttpClient);
 
     const call = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_FAILED);
     expect(call).toBeDefined();

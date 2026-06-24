@@ -19,6 +19,13 @@ const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
+const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
+const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
+const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
+const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
+const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
+  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',')
+  : ['weather', 'search'];
 
 
 const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
@@ -164,6 +171,12 @@ function buildHttpClient() {
   return new x402HTTPClient(x402);
 }
 
+const httpClient = buildHttpClient();
+
+export function dispose() {
+  logger.info('Shutting down Lodestar Agent');
+}
+
 const STROOPS_PER_USDC = 10_000_000;
 
 function stroopsToUsdcStr(stroops) {
@@ -204,7 +217,7 @@ async function submitReputation(id, positive) {
 
 // ── Agent task ────────────────────────────────────────────────────────────────
 
-export async function runTask(category, buildUrl, scoringEnabled) {
+export async function runTask(category, buildUrl, scoringEnabled, httpClient) {
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
 
@@ -219,6 +232,9 @@ export async function runTask(category, buildUrl, scoringEnabled) {
   }
 
   const best = [...services].sort((a, b) => b.reputation - a.reputation)[0];
+  const demandedUsdc = best.price_usdc;
+  const endpointUrl = buildUrl(best.endpoint);
+
   logger.info(
     {
       event: EVENT.SERVICE_SELECTED,
@@ -230,7 +246,6 @@ export async function runTask(category, buildUrl, scoringEnabled) {
     },
     'Service selected'
   );
-
 
   if (scoringEnabled) {
     const check = await checkSpend(demandedUsdc, category);
@@ -254,19 +269,60 @@ export async function runTask(category, buildUrl, scoringEnabled) {
     );
   }
 
-
-
-  // Step 4f: encode as header and retry
+  const paymentPayload = { url: endpointUrl, method: 'GET' };
   const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
   let response;
   try {
-    response = await fetch(endpointUrl, { headers: paymentHeaders });
+    response = await fetch(endpointUrl, { headers: paymentHeaders, keepalive: true });
   } catch (err) {
+    logger.error(
+      {
+        event: EVENT.PAYMENT_FAILED,
+        category,
+        serviceId: best.id,
+        serviceName: best.name,
+        priceUsdc: best.price_usdc,
+        err,
+        taskDurationMs: Date.now() - taskStart,
+      },
+      'Payment failed — network error'
+    );
+    return { success: false, priceUsdc: best.price_usdc };
+  }
 
+  if (!response.ok) {
+    logger.error(
+      {
+        event: EVENT.PAYMENT_FAILED,
+        category,
+        serviceId: best.id,
+        serviceName: best.name,
+        priceUsdc: best.price_usdc,
+        httpStatus: response.status,
+        taskDurationMs: Date.now() - taskStart,
+      },
+      'Payment failed — endpoint error'
+    );
+    return { success: false, priceUsdc: best.price_usdc };
   }
 
   const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
-  const data = await response.json();
+  const scoreBefore = currentScore;
+  await recordOutcome(demandedUsdc, true, best.id);
+
+  logger.info(
+    {
+      event: EVENT.PAYMENT_SUCCESS,
+      category,
+      serviceId: best.id,
+      serviceName: best.name,
+      priceUsdc: best.price_usdc,
+      txHash,
+      scoreBefore,
+      taskDurationMs: Date.now() - taskStart,
+    },
+    'Payment successful'
+  );
 
   await submitReputation(best.id, true);
 
@@ -295,7 +351,7 @@ export async function main() {
   let totalUsdcSpent = 0;
 
   for (const { category, buildUrl } of tasks) {
-    const result = await runTask(category, buildUrl, scoringEnabled);
+    const result = await runTask(category, buildUrl, scoringEnabled, httpClient);
     if (result.success) {
       successCount++;
       totalUsdcSpent += parseFloat(result.priceUsdc ?? '0');
@@ -330,6 +386,8 @@ export async function main() {
 // ── Entry point guard ─────────────────────────────────────────────────────────
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  process.on('SIGTERM', () => { dispose(); process.exit(0); });
+  process.on('SIGINT',  () => { dispose(); process.exit(0); });
   main().catch((err) => {
     logger.error({ err }, 'Agent crashed');
     process.exit(1);
