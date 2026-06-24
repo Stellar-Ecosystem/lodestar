@@ -33,8 +33,8 @@ const paymentConfig = {
     accepts: {
       scheme: 'exact',
       price: `$${config.x402.weatherPrice}`,
-      network: 'stellar:testnet',
-      payTo: config.x402.payTo,
+      network: config.stellar.networkId,
+      payTo: config.server.address,
     },
     description: 'Real-time weather data via Lodestar',
   },
@@ -42,8 +42,8 @@ const paymentConfig = {
     accepts: {
       scheme: 'exact',
       price: `$${config.x402.searchPrice}`,
-      network: 'stellar:testnet',
-      payTo: config.x402.payTo,
+      network: config.stellar.networkId,
+      payTo: config.server.address,
     },
     description: 'Web search results via Lodestar',
   },
@@ -51,7 +51,7 @@ const paymentConfig = {
 
 router.use(
   paymentMiddlewareFromConfig(paymentConfig, facilitator, [
-    { network: 'stellar:testnet', server: stellarScheme },
+    { network: config.stellar.networkId, server: stellarScheme },
   ])
 );
 
