@@ -5,7 +5,10 @@ import {
   getServiceCount,
   updateReputation,
   isAllowedReputationAgent,
+  SERVICE_MAX_TTL,
+  SERVICE_TTL_WARNING_LEDGERS,
 } from "../lib/contract.js";
+import { getCurrentLedgerSequence } from "../lib/stellar.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
@@ -16,15 +19,44 @@ const router = Router();
 
 const PAGE_SIZE = 20;
 
+// Appends ttl_warning:true when the entry's estimated remaining TTL falls
+// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
+// is unavailable so callers can always treat absence as "no warning data".
+function annotateTtlWarning(service, currentLedger) {
+  if (currentLedger == null) return service;
+  return {
+    ...service,
+    ttl_warning:
+      currentLedger >=
+      service.registered_at + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS,
+  };
+}
+
 router.get("/services", async (req, res) => {
   try {
     const { category, q, page: pageStr } = req.query;
     const page = Math.max(0, parseInt(pageStr, 10) || 0);
-    let services = await listServices({
-      category: category || undefined,
-      page,
-      pageSize: PAGE_SIZE,
-    });
+
+    const [servicesResult, ledgerResult] = await Promise.allSettled([
+      listServices({ category: category || undefined, page, pageSize: PAGE_SIZE }),
+      getCurrentLedgerSequence(),
+    ]);
+
+    if (servicesResult.status === "rejected") throw servicesResult.reason;
+
+    if (ledgerResult.status === "rejected") {
+      logger.warn(
+        { err: ledgerResult.reason },
+        "Failed to fetch current ledger for TTL annotation on GET /api/services",
+      );
+    }
+
+    const currentLedger =
+      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
+
+    let services = servicesResult.value.map((s) =>
+      annotateTtlWarning(s, currentLedger),
+    );
 
     if (q && typeof q === "string" && q.trim()) {
       const query = q.trim().toLowerCase();
@@ -58,13 +90,31 @@ router.get("/services/:id", async (req, res) => {
         .status(400)
         .json({ error: "Invalid service ID", code: "INVALID_ID" });
     }
-    const service = await getService(id);
+
+    const [serviceResult, ledgerResult] = await Promise.allSettled([
+      getService(id),
+      getCurrentLedgerSequence(),
+    ]);
+
+    if (serviceResult.status === "rejected") throw serviceResult.reason;
+
+    const service = serviceResult.value;
     if (!service) {
       return res
         .status(404)
         .json({ error: "Service not found", code: "NOT_FOUND" });
     }
-    res.json(service);
+
+    if (ledgerResult.status === "rejected") {
+      logger.warn(
+        { err: ledgerResult.reason },
+        "Failed to fetch current ledger for TTL annotation on GET /api/services/:id",
+      );
+    }
+
+    const currentLedger =
+      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
+    res.json(annotateTtlWarning(service, currentLedger));
   } catch (err) {
     logger.error({ err }, "GET /api/services/:id failed");
     res.status(500).json({ error: "Failed to fetch service", code: "FETCH_ERROR" });

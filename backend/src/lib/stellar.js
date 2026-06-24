@@ -14,6 +14,11 @@ export function getStellarServer() {
   return _server;
 }
 
+export async function getCurrentLedgerSequence() {
+  const ledger = await getStellarServer().getLatestLedger();
+  return ledger.sequence;
+}
+
 export function getNetworkPassphrase() {
   if (config.stellar.network === "mainnet") {
     return Networks.PUBLIC;
