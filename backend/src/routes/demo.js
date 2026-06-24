@@ -36,7 +36,9 @@ function buildHttpClient() {
       headers: { ...(init.headers ?? {}), ...paymentHeaders },
     });
 
-    return { response: paid, txHash: '' };
+    // Extract the transaction hash from response headers if present
+    const txHash = paid.headers.get('x-payment-transaction') || '';
+    return { response: paid, txHash };
   };
 
   return httpClient;
@@ -73,7 +75,7 @@ router.post('/demo-run', async (req, res) => {
     const httpClient = buildHttpClient();
     const activityCountBefore = getActivityFeed().length;
 
-    const { response } = await httpClient.fetchWithTx(endpointUrl);
+    const { response, txHash: fetchedTxHash } = await httpClient.fetchWithTx(endpointUrl);
 
     if (!response.ok) {
       throw new Error(`Service responded with ${response.status}`);
@@ -81,12 +83,17 @@ router.post('/demo-run', async (req, res) => {
 
     const data = await response.json();
 
-    const txHash = await waitForActivityTxHash(
+    // Use the transaction hash from the payment response if available; otherwise poll the activity feed.
+    const txHash = fetchedTxHash || (await waitForActivityTxHash(
       getActivityFeed,
       activityCountBefore,
-      config.demoRun,
+      {
+        maxWaitMs: config.demoRun.pollMaxWaitMs,
+        initialDelayMs: config.demoRun.pollInitialDelayMs,
+        maxDelayMs: config.demoRun.pollMaxDelayMs,
+      },
       (entry) => entry.demoRunId === demoRunId,
-    );
+    ));
     if (!txHash) {
       logger.warn(
         { serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs },
