@@ -5,6 +5,7 @@ import { ExactStellarScheme } from '@x402/stellar/exact/server';
 import config from '../config.js';
 import logger from '../lib/logger.js';
 import { recordPaymentOnChain } from '../lib/contract.js';
+import { enqueuePaymentRecord } from '../lib/paymentRetryQueue.js';
 
 const router = Router();
 
@@ -102,9 +103,10 @@ router.get('/weather', async (req, res) => {
 
     if (agentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.weatherPrice) * 10_000_000));
-      recordPaymentOnChain(agentAddress, priceStroops, true).catch((err) =>
-        logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
-      );
+      recordPaymentOnChain(agentAddress, priceStroops, true).catch((err) => {
+        logger.warn({ err, agentAddress }, 'Weather payment record failed — queuing for retry');
+        enqueuePaymentRecord(agentAddress, () => recordPaymentOnChain(agentAddress, priceStroops, true));
+      });
     }
 
     logger.info({ lat, lon }, 'Weather request fulfilled');
@@ -160,9 +162,10 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.searchPrice) * 10_000_000));
-      recordPaymentOnChain(searchAgentAddress, priceStroops, true).catch((err) =>
-        logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
-      );
+      recordPaymentOnChain(searchAgentAddress, priceStroops, true).catch((err) => {
+        logger.warn({ err, agentAddress: searchAgentAddress }, 'Search payment record failed — queuing for retry');
+        enqueuePaymentRecord(searchAgentAddress, () => recordPaymentOnChain(searchAgentAddress, priceStroops, true));
+      });
     }
 
     logger.info({ q }, 'Search request fulfilled');
