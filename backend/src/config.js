@@ -64,6 +64,7 @@ const config = Object.freeze({
 
   stellar: {
     network: process.env.STELLAR_NETWORK ?? 'testnet',
+    networkId: `stellar:${process.env.STELLAR_NETWORK ?? 'testnet'}`,
     rpcUrl: process.env.STELLAR_RPC_URL,
     networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE,
     usdcContractId: process.env.USDC_CONTRACT_ID,
