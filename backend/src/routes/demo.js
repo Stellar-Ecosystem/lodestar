@@ -11,6 +11,40 @@ import { recordActivity, getActivityFeed } from './services.js';
 
 const router = Router();
 
+// Strict allowlist of demo paths per category.
+// Each entry maps category → { pathname, allowed query params }
+const DEMO_ALLOWLIST = {
+  weather: { pathname: '/demo/weather', allowedParams: new Set(['lat', 'lon']) },
+  search:  { pathname: '/demo/search',  allowedParams: new Set(['q']) },
+};
+
+/**
+ * Validate and rewrite a registry endpoint for use as a demo loopback URL.
+ * Rejects any path that is not in the per-category allowlist (prevents SSRF).
+ * Returns the sanitized URL, or null if validation fails.
+ */
+function validateDemoEndpoint(registryEndpoint, category, port) {
+  const rule = DEMO_ALLOWLIST[category];
+  if (!rule) return null;
+
+  let parsed;
+  try {
+    // Force a known origin so the URL constructor resolves relative paths
+    parsed = new URL(registryEndpoint);
+  } catch {
+    return null;
+  }
+
+  // Rewrite origin to loopback — normalises path traversal (/../ etc.) in the process
+  const rewritten = new URL(`http://127.0.0.1:${port}${parsed.pathname}`);
+
+  if (rewritten.pathname !== rule.pathname) {
+    return null;
+  }
+
+  return rewritten.toString();
+}
+
 function buildHttpClient() {
   const signer = createEd25519Signer(config.server.secret, 'stellar:testnet');
   const scheme = new ExactStellarScheme(signer, { url: config.stellar.rpcUrl });
@@ -55,15 +89,25 @@ router.post('/demo-run', async (req, res) => {
       return res.status(404).json({ error: 'Service not found', code: 'NOT_FOUND' });
     }
 
-    // Always use internal loopback — registry may store localhost from seed time
-    const baseUrl = `http://127.0.0.1:${config.port}`;
-    let endpointUrl = service.endpoint.replace(/https?:\/\/[^/]+/, baseUrl);
-
-    if (category === 'weather') {
-      endpointUrl += '?lat=40.7128&lon=-74.0060';
-    } else if (category === 'search') {
-      endpointUrl += '?q=Stellar+blockchain+AI+agents';
+    // Validate the registry endpoint against the per-category allowlist before loopback rewrite
+    const safeBase = validateDemoEndpoint(service.endpoint, category, config.port);
+    if (!safeBase) {
+      logger.warn(
+        { originalEndpoint: service.endpoint, category, serviceId, reason: 'blocked_ssrf_attempt' },
+        'Demo endpoint failed path validation — request blocked'
+      );
+      return res.status(400).json({ error: 'Endpoint not allowed for demo', code: 'ENDPOINT_NOT_ALLOWED' });
     }
+
+    // Append only the known, safe query params for this category (no query string from registry)
+    const endpointUrlObj = new URL(safeBase);
+    if (category === 'weather') {
+      endpointUrlObj.searchParams.set('lat', '40.7128');
+      endpointUrlObj.searchParams.set('lon', '-74.0060');
+    } else if (category === 'search') {
+      endpointUrlObj.searchParams.set('q', 'Stellar+blockchain+AI+agents');
+    }
+    let endpointUrl = endpointUrlObj.toString();
 
     const demoRunId = randomUUID();
     const endpoint = new URL(endpointUrl);
