@@ -72,9 +72,12 @@ export interface RegisterFormData {
   category: Category;
 }
 
+export type RegisterStatus = 'simulating' | 'awaiting-signature' | 'submitting' | 'confirming';
+
 export async function registerService(
   formData: RegisterFormData,
-  walletAddress: string
+  walletAddress: string,
+  onStatus?: (status: RegisterStatus) => void
 ): Promise<{ txHash: string; id: number }> {
   const stellarSdk = await import('@stellar/stellar-sdk');
   const sdk = (stellarSdk as unknown as { default: typeof stellarSdk }).default ?? stellarSdk;
@@ -120,21 +123,25 @@ export async function registerService(
     .setTimeout(30)
     .build();
 
+  onStatus?.('simulating');
   const simResult = await server.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(simResult)) {
     throw new Error(`Simulation failed: ${simResult.error}`);
   }
 
+  onStatus?.('awaiting-signature');
   const preparedTx = rpc.assembleTransaction(tx, simResult).build();
   const signedXdr = await signTx(preparedTx.toXDR());
 
   const signedTx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
 
+  onStatus?.('submitting');
   const sendResult = await server.sendTransaction(signedTx);
   if (sendResult.status === 'ERROR') {
     throw new Error('Transaction submission failed');
   }
 
+  onStatus?.('confirming');
   let getResult = await server.getTransaction(sendResult.hash);
   for (let i = 0; i < 20 && getResult.status === 'NOT_FOUND'; i++) {
     await new Promise((r) => setTimeout(r, 1500));
