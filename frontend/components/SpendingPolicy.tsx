@@ -3,7 +3,14 @@ import type { SpendingPolicy } from '@/lib/types';
 const STROOPS_PER_USDC = 10_000_000;
 
 function stroopsToUsdc(stroops: string): string {
-  const n = Number(BigInt(stroops) / BigInt(STROOPS_PER_USDC));
+  const divisor = BigInt(STROOPS_PER_USDC);
+  const value = BigInt(stroops);
+  // Keep the whole-dollar part exact via BigInt; only the sub-dollar
+  // remainder (always < 1 USDC) goes through Number, so large balances
+  // never lose precision while fractional cents are preserved.
+  const whole = value / divisor;
+  const remainder = value % divisor;
+  const n = Number(whole) + Number(remainder) / STROOPS_PER_USDC;
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
