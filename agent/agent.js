@@ -7,6 +7,7 @@ const { Keypair } = pkg;
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
+import config from './backend/src/config.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -158,7 +159,7 @@ async function recordOutcome(amountUsdc, success, serviceId) {
 // ── x402 helpers ──────────────────────────────────────────────────────────────
 
 function buildHttpClient() {
-  const signer = createEd25519Signer(AGENT_SECRET, 'stellar:testnet');
+  const signer = createEd25519Signer(AGENT_SECRET, config.stellar.networkId);
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
   const x402 = new x402Client().register('stellar:*', scheme);
   return new x402HTTPClient(x402);
