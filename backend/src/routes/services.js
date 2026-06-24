@@ -5,6 +5,7 @@ import { ExactStellarScheme } from '@x402/stellar/exact/server';
 import config from '../config.js';
 import logger from '../lib/logger.js';
 import { recordPaymentOnChain } from '../lib/contract.js';
+import { usdcToStroops } from '../lib/stroops.js';
 
 const router = Router();
 
@@ -101,7 +102,7 @@ router.get('/weather', async (req, res) => {
     });
 
     if (agentAddress && config.contract.agentsId) {
-      const priceStroops = BigInt(Math.round(parseFloat(config.x402.weatherPrice) * 10_000_000));
+      const priceStroops = usdcToStroops(config.x402.weatherPrice);
       recordPaymentOnChain(agentAddress, priceStroops, true).catch((err) =>
         logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
       );
@@ -159,7 +160,7 @@ router.get('/search', async (req, res) => {
     });
 
     if (searchAgentAddress && config.contract.agentsId) {
-      const priceStroops = BigInt(Math.round(parseFloat(config.x402.searchPrice) * 10_000_000));
+      const priceStroops = usdcToStroops(config.x402.searchPrice);
       recordPaymentOnChain(searchAgentAddress, priceStroops, true).catch((err) =>
         logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
       );

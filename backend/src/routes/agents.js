@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { usdcToStroops } from '../lib/stroops.js';
 import {
   listAgentsPage,
   getAgent,
@@ -212,7 +213,7 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
     const { address } = req.params;
     const amountUsdc = req.query.amount ?? '0';
     const category = req.query.category ?? '';
-    const amountStroops = BigInt(Math.round(parseFloat(amountUsdc) * 10_000_000));
+    const amountStroops = usdcToStroops(amountUsdc);
 
     const [allowed, policy, agent] = await Promise.all([
       checkSpendingAllowed(address, amountStroops),
@@ -366,7 +367,7 @@ router.post(
     markPending(scopedKey);
 
     try {
-      const amountStroops = BigInt(Math.round(parseFloat(String(amountUsdc)) * 10_000_000));
+      const amountStroops = usdcToStroops(String(amountUsdc));
       await recordPaymentOnChain(address, serviceId, amountStroops, success);
       const agent = await getAgent(address);
       const newScore = agent?.score ?? 0;
