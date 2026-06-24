@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  STELLAR_CLI_INSTALL_COMMIT: 5a7c5fe76530bf4248477ac812fc757146b98cc4
+  STELLAR_CLI_INSTALL_SHA256: fc0dde4effffcd2859c1ec640967c398cc47e208dc1f55baf8aa1fc7cedcb12d
+
+jobs:
+  contract-build:
+    name: Contract build and test (${{ matrix.contract }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        contract:
+          - contract
+          - contract/agents
+    defaults:
+      run:
+        working-directory: ${{ matrix.contract }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install Stellar CLI
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/stellar/stellar-cli/${STELLAR_CLI_INSTALL_COMMIT}/install.sh" -o /tmp/stellar-cli-install.sh
+          echo "${STELLAR_CLI_INSTALL_SHA256}  /tmp/stellar-cli-install.sh" | sha256sum -c -
+          sh /tmp/stellar-cli-install.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Show tool versions
+        run: |
+          rustc --version
+          cargo --version
+          stellar --version
+      - name: Build Soroban contract
+        run: stellar contract build
+      - name: Run contract tests
+        run: cargo test
+
+  backend-test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package.json
+      - name: Install dependencies
+        run: npm install
+      - name: Check JavaScript syntax
+        run: find src scripts test -name "*.js" -print0 | xargs -0 -n 1 node --check
+      - name: Run backend tests
+        run: npm test
+
+  frontend-typecheck:
+    name: Frontend typecheck and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package.json
+      - name: Install dependencies
+        run: npm install
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+      - name: Run frontend tests
+        run: npm test -- --runInBand
+      - name: Build frontend
+        run: npm run build
+
+  agent-smoke:
+    name: Agent script smoke check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent/package.json
+      - name: Install dependencies
+        run: npm install
+      - name: Check agent entrypoint syntax
+        run: node --check agent.js
+
+  contract-abi-diff:
+    name: Contract ABI compatibility check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with tags
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install Stellar CLI
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/stellar/stellar-cli/${STELLAR_CLI_INSTALL_COMMIT}/install.sh" -o /tmp/stellar-cli-install.sh
+          echo "${STELLAR_CLI_INSTALL_SHA256}  /tmp/stellar-cli-install.sh" | sha256sum -c -
+          sh /tmp/stellar-cli-install.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Compare current contract ABI with latest tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$latest_tag" ]; then
+            echo "No release tag found; skipping ABI diff until the first tagged release exists."
+            exit 0
+          fi
+          mkdir -p /tmp/lodestar-current /tmp/lodestar-base
+          for contract_dir in contract contract/agents; do
+            label="$(echo "$contract_dir" | tr "/" "-")"
+            (cd "$contract_dir" && stellar contract build)
+            current_wasm="$(find "$contract_dir/target/wasm32-unknown-unknown/release" -name "*.wasm" | head -n 1)"
+            stellar contract inspect --wasm "$current_wasm" > "/tmp/lodestar-current/$label.abi"
+          done
+          git worktree add /tmp/lodestar-base "$latest_tag"
+          pushd /tmp/lodestar-base >/dev/null
+          for contract_dir in contract contract/agents; do
+            label="$(echo "$contract_dir" | tr "/" "-")"
+            (cd "$contract_dir" && stellar contract build)
+            base_wasm="$(find "$contract_dir/target/wasm32-unknown-unknown/release" -name "*.wasm" | head -n 1)"
+            stellar contract inspect --wasm "$base_wasm" > "/tmp/lodestar-base/$label.abi"
+          done
+          popd >/dev/null
+          for contract_dir in contract contract/agents; do
+            label="$(echo "$contract_dir" | tr "/" "-")"
+            diff -u "/tmp/lodestar-base/$label.abi" "/tmp/lodestar-current/$label.abi"
+          done
