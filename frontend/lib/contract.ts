@@ -14,6 +14,11 @@ import type {
 } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+export const REGISTRY_CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID ?? '';
+export const AGENTS_CONTRACT_ID =
+  process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ??
+  process.env.NEXT_PUBLIC_AGENT_CONTRACT_ID ??
+  '';
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -91,7 +96,7 @@ export async function registerService(
 
   const { kitSignTransaction: signTx } = await import('./wallet');
 
-  const contractId = process.env.NEXT_PUBLIC_CONTRACT_ID ?? '';
+  const contractId = REGISTRY_CONTRACT_ID;
   const rpcUrl =
     process.env.NEXT_PUBLIC_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
   const networkPassphrase = Networks.TESTNET;
