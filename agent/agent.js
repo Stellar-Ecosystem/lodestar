@@ -19,6 +19,13 @@ const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
+const AGENT_REQUIRE_SCORING = process.env.AGENT_REQUIRE_SCORING !== 'false';
+
+const AGENT_NAME  = process.env.AGENT_NAME ?? 'LodestarAgent';
+const AGENT_DESC  = process.env.AGENT_DESC ?? 'Autonomous x402 agent powered by Lodestar service discovery';
+const MAX_PER_TX  = process.env.AGENT_MAX_PER_TX ?? '0.001';
+const MAX_PER_DAY = process.env.AGENT_MAX_PER_DAY ?? '1.00';
+const ALLOWED_CATS = process.env.AGENT_ALLOWED_CATEGORIES?.split(',') ?? ['weather', 'search'];
 
 const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
 const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
@@ -64,9 +71,9 @@ export async function ensureRegistered() {
   try {
     const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
     if (res.status === 503) {
-      logger.info(
+      logger.error(
         { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false },
-        'Agents contract not deployed — scoring disabled'
+        'Agents contract not deployed (503) — scoring disabled'
       );
       return false;
     }
@@ -102,24 +109,36 @@ export async function ensureRegistered() {
         }),
       });
       if (regRes.ok) {
-        currentScore = 100;
-        logger.info(
-          { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: 100, scoringEnabled: true },
-          'Registered — starting score: 100'
-        );
-        return true;
+        // Post-registration verification: confirm on-chain registration is visible
+        const verifyRes = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
+        if (verifyRes.ok) {
+          const verifyData = await verifyRes.json();
+          const verifyAgent = verifyData.agent ?? verifyData;
+          currentScore = verifyAgent.score ?? 100;
+          logger.info(
+            { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: currentScore, scoringEnabled: true },
+            'Registered and verified — starting score: 100'
+          );
+          return true;
+        } else {
+          logger.error(
+            { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false, status: verifyRes.status },
+            'Registration submitted but verification failed — scoring disabled'
+          );
+          return false;
+        }
       }
       const err = await regRes.json().catch(() => ({}));
-      logger.warn(
-        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false, err },
-        'Registration failed — scoring disabled'
+      logger.error(
+        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false, err, status: regRes.status },
+        'Registration call failed — scoring disabled'
       );
       return false;
     }
   } catch (err) {
-    logger.warn(
+    logger.error(
       { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false, err },
-      'Could not reach agents API — scoring disabled'
+      'Network unreachable — could not reach agents API — scoring disabled'
     );
   }
   return false;
@@ -415,8 +434,23 @@ export async function main() {
     'Lodestar Agent starting'
   );
 
+  if (!AGENT_REQUIRE_SCORING) {
+    logger.warn(
+      { event: EVENT.AGENT_START, agentAddress: AGENT_ADDRESS },
+      'Running without spending policy enforcement — AGENT_REQUIRE_SCORING=false'
+    );
+  }
+
   const scoringEnabled = await ensureRegistered();
   const scoreAfterRegistration = currentScore;
+
+  if (AGENT_REQUIRE_SCORING && !scoringEnabled) {
+    logger.error(
+      { event: EVENT.AGENT_START, agentAddress: AGENT_ADDRESS },
+      'Agent registration failed and AGENT_REQUIRE_SCORING=true — exiting to prevent unprotected agent run'
+    );
+    process.exit(1);
+  }
 
   const tasks = [
     { category: 'weather', buildUrl: (ep) => `${ep}?lat=40.7128&lon=-74.0060` },
