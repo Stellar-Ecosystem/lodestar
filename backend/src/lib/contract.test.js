@@ -522,6 +522,7 @@ describe('simulateReadBatch', () => {
 
 describe('rpcMetrics', () => {
   beforeEach(() => {
+    resetMockServer();
     contractLib.resetRpcMetrics();
   });
 
@@ -535,8 +536,11 @@ describe('rpcMetrics', () => {
     });
   });
 
-  it('resetRpcMetrics clears all counters', () => {
-    contractLib.getRpcMetrics();
+  it('resetRpcMetrics clears all counters', async () => {
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: 'x' } });
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    await contractLib.simulateReadBatch([contract.call('get_service_count')]);
+
     contractLib.resetRpcMetrics();
     const metrics = contractLib.getRpcMetrics();
     expect(metrics.simulateTransaction).toBe(0);
