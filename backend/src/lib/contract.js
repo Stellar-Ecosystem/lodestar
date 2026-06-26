@@ -880,6 +880,26 @@ export async function deactivateAgentOnChain(agentAddress, callerAddress) {
   }
 }
 
+export async function adminDeactivateAgentOnChain(agentAddress) {
+  try {
+    const contract = getAgentsContract();
+    const keypair = getServerKeypair();
+    const caller = Address.fromString(keypair.publicKey());
+
+    const op = contract.call(
+      'admin_deactivate_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(caller, { type: 'address' })
+    );
+
+    await simulateAndSubmit(op);
+    return true;
+  } catch (err) {
+    logger.error({ err, agentAddress }, 'adminDeactivateAgentOnChain failed');
+    throw err;
+  }
+}
+
 export async function updatePolicyOnChain(
   agentAddress,
   maxPerTxStroops,
@@ -916,7 +936,7 @@ export async function updatePolicyOnChain(
  * The frontend wallet (Freighter) will sign the returned XDR and POST it back
  * via submitSignedAgentTx.
  *
- * @param {'flag'|'deactivate'|'update_policy'} action
+ * @param {'deactivate'|'update_policy'} action
  * @param {string} agentAddress  - the agent's Stellar address (also the owner/caller)
  * @param {object} params        - action-specific params
  * @returns {Promise<string>}    - base64-encoded transaction XDR ready for signing
@@ -926,14 +946,7 @@ export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
   const callerAddr = Address.fromString(agentAddress);
 
   let op;
-  if (action === 'flag') {
-    op = contract.call(
-      'flag_agent',
-      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
-      nativeToScVal(params.reason ?? '', { type: 'string' }),
-      nativeToScVal(callerAddr, { type: 'address' })
-    );
-  } else if (action === 'deactivate') {
+  if (action === 'deactivate') {
     op = contract.call(
       'deactivate_agent',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
