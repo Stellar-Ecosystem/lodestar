@@ -941,7 +941,7 @@ export async function updatePolicyOnChain(
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(maxPerTxStroops), { type: 'i128' }),
       nativeToScVal(BigInt(maxPerDayStroops), { type: 'i128' }),
-      nativeToScVal(allowedCategories, { type: 'string' }),
+      nativeToScVal(allowedCategories),
       nativeToScVal(minScoreToEarn, { type: 'i32' }),
       nativeToScVal(caller, { type: 'address' })
     );
@@ -981,7 +981,7 @@ export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(params.maxPerTxStroops), { type: 'i128' }),
       nativeToScVal(BigInt(params.maxPerDayStroops), { type: 'i128' }),
-      nativeToScVal(params.allowedCategories ?? [], { type: 'string' }),
+      nativeToScVal(params.allowedCategories ?? []),
       nativeToScVal(params.minScoreToEarn ?? 0, { type: 'i32' }),
       nativeToScVal(callerAddr, { type: 'address' })
     );

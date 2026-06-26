@@ -425,8 +425,17 @@ router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async
       return res.status(400).json({ error: '`action` must be deactivate or update_policy', code: 'INVALID_BODY' });
     }
     if (action === 'update_policy') {
-      if (!params.maxPerTxStroops || !params.maxPerDayStroops || !Array.isArray(params.allowedCategories) || typeof params.minScoreToEarn !== 'number') {
-        return res.status(400).json({ error: 'Invalid policy parameters', code: 'INVALID_BODY' });
+      if (!params.maxPerTxStroops || (typeof params.maxPerTxStroops !== 'string' && typeof params.maxPerTxStroops !== 'number')) {
+        return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
+      }
+      if (!params.maxPerDayStroops || (typeof params.maxPerDayStroops !== 'string' && typeof params.maxPerDayStroops !== 'number')) {
+        return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+      }
+      if (!Array.isArray(params.allowedCategories)) {
+        return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+      }
+      if (typeof params.minScoreToEarn !== 'number') {
+        return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
       }
     }
     const xdrBase64 = await buildUnsignedAgentTx(action, address, params);
@@ -513,17 +522,29 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
   }
 });
 
-router.post('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
+router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
   try {
     const { address } = req.params;
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
-    if (!maxPerTxStroops || !maxPerDayStroops || !Array.isArray(allowedCategories) || typeof minScoreToEarn !== 'number') {
-      return res.status(400).json({ error: 'Invalid policy parameters', code: 'INVALID_BODY' });
+
+    // Validation
+    if (!maxPerTxStroops || (typeof maxPerTxStroops !== 'string' && typeof maxPerTxStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
     }
+    if (!maxPerDayStroops || (typeof maxPerDayStroops !== 'string' && typeof maxPerDayStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+    }
+    if (!Array.isArray(allowedCategories)) {
+      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+    }
+    if (typeof minScoreToEarn !== 'number') {
+      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+    }
+
     await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /agents/:address/policy failed');
+    logger.error({ err }, 'PUT /agents/:address/policy failed');
     return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });
