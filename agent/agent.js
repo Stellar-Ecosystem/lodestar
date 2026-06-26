@@ -255,6 +255,49 @@ function selectWeighted(services) {
   }
 
 
+  // Top-N candidates by reputation; weighted random selection reduces single-point manipulation.
+  const candidates = [...eligible].sort((a, b) => b.reputation - a.reputation).slice(0, maxRetries);
+  const failed = new Set();
+
+  for (let attempt = 1; attempt <= candidates.length; attempt++) {
+    const available = candidates.filter(s => !failed.has(s.id));
+    if (!available.length) break;
+
+    const selected = selectWeighted(available);
+
+    logger.info(
+      {
+        event: EVENT.SERVICE_SELECTED,
+        category,
+        serviceId: selected.id,
+        serviceName: selected.name,
+        priceUsdc: selected.price_usdc,
+        servicesFound: services.length,
+        attempt,
+      },
+      'Service selected'
+    );
+
+    if (scoringEnabled) {
+      const check = await checkSpend(selected.price_usdc, category);
+      if (!check.allowed) {
+        logger.warn(
+          {
+            event: EVENT.SPEND_CHECK_BLOCKED,
+            category,
+            serviceId: selected.id,
+            serviceName: selected.name,
+            priceUsdc: selected.price_usdc,
+            reason: check.reason,
+          },
+          'Payment blocked by spending policy'
+        );
+        failed.add(selected.id);
+        continue;
+      }
+      logger.info(
+        { event: EVENT.SPEND_CHECK_PASSED, category, serviceId: selected.id, serviceName: selected.name, priceUsdc: selected.price_usdc },
+        'Spending policy check passed'
       );
     }
 

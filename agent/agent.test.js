@@ -205,6 +205,49 @@ describe('runTask — spend check blocked', () => {
     const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
     expect(result).toEqual({ success: false, priceUsdc: null });
   });
+
+  it('falls back to the next candidate if the first is blocked by spend check', async () => {
+    const serviceA = { id: 1, name: 'Svc A', price_usdc: '0.002', endpoint: 'http://a', reputation: 100 };
+    const serviceB = { id: 2, name: 'Svc B', price_usdc: '0.001', endpoint: 'http://b', reputation: 90 };
+
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [serviceA, serviceB] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        // Block serviceA (price 0.002) but allow serviceB (price 0.001)
+        const canSpend = !url.includes('amount=0.002');
+        return Promise.resolve(makeResponse({
+          json: () => Promise.resolve({ allowed: canSpend, reason: canSpend ? 'OK' : 'Limit reached' }),
+        }));
+      }
+      if (url.includes('/payment')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      if (url.includes('/reputation')) {
+        return Promise.resolve(makeResponse());
+      }
+      // Endpoint fetch (should call serviceB endpoint http://b)
+      if (url.includes('http://b')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ result: 'ok' }) }));
+      }
+      return Promise.resolve(makeResponse({ ok: false, status: 500 }));
+    });
+
+    const result = await runTask('weather', (ep) => ep, true);
+
+    // Should succeed on serviceB
+    expect(result).toEqual({ success: true, priceUsdc: '0.001' });
+
+    // Should have logged both spend check blocked for Svc A and pass for Svc B
+    const blocked = logWarn.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_BLOCKED);
+    expect(blocked).toBeDefined();
+    expect(blocked[0]).toMatchObject({ serviceId: 1, priceUsdc: '0.002' });
+
+    const passed = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_PASSED);
+    expect(passed).toBeDefined();
+    expect(passed[0]).toMatchObject({ serviceId: 2, priceUsdc: '0.001' });
+  });
 });
 
 describe('runTask — service error after payment', () => {
