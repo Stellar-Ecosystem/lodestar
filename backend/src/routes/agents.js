@@ -11,12 +11,14 @@ import {
   isAgentEligible,
   flagAgentOnChain,
   deactivateAgentOnChain,
+  adminDeactivateAgentOnChain,
   updatePolicyOnChain,
   buildUnsignedAgentTx,
   submitSignedAgentTx,
 } from '../lib/contract.js';
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
+import { adminAuth } from '../middleware/adminAuth.js';
 import { hmacAuth } from '../middleware/hmacAuth.js';
 import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { writeRateLimiter } from '../middleware/rateLimiter.js';
@@ -38,11 +40,6 @@ const router = Router();
 let agentsCache = null;
 let agentsCacheTime = 0;
 const AGENTS_CACHE_TTL = 30_000;
-
-
-  agentsCache = null;
-  agentsCacheTime = 0;
-}
 
 const CACHE_BATCH_SIZE = 50;
 
@@ -417,11 +414,8 @@ router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async
   try {
     const { address } = req.params;
     const { action, ...params } = req.body;
-    if (!action || !['flag', 'deactivate', 'update_policy'].includes(action)) {
-      return res.status(400).json({ error: '`action` must be flag, deactivate, or update_policy', code: 'INVALID_BODY' });
-    }
-    if (action === 'flag' && (!params.reason || typeof params.reason !== 'string')) {
-      return res.status(400).json({ error: '`reason` is required for flag action', code: 'INVALID_BODY' });
+    if (!action || !['deactivate', 'update_policy'].includes(action)) {
+      return res.status(400).json({ error: '`action` must be deactivate or update_policy', code: 'INVALID_BODY' });
     }
     if (action === 'update_policy') {
       if (!params.maxPerTxStroops || !params.maxPerDayStroops || !Array.isArray(params.allowedCategories) || typeof params.minScoreToEarn !== 'number') {
@@ -458,18 +452,46 @@ router.post('/agents/:address/submit-signed-tx', requireAgentsContract, async (r
 
 // Legacy direct-action routes kept for backwards-compat (server-side signing).
 // These still work but owner must pass x-caller-address matching the on-chain owner.
-router.post('/agents/:address/flag', requireAgentsContract, ownerAuth, async (req, res) => {
+router.post('/agents/:address/flag', requireAgentsContract, adminAuth, async (req, res) => {
   try {
     const { address } = req.params;
     const { reason } = req.body;
     if (!reason || typeof reason !== 'string') {
       return res.status(400).json({ error: '`reason` is required', code: 'INVALID_BODY' });
     }
-    await flagAgentOnChain(address, reason, req.callerAddress);
+    await flagAgentOnChain(address, reason);
     res.json({ success: true });
   } catch (err) {
     logger.error({ err }, 'POST /agents/:address/flag failed');
     return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
+  }
+});
+
+// POST /api/admin/agents/:address/flag — Admin-only agent flagging
+router.post('/admin/agents/:address/flag', requireAgentsContract, adminAuth, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { reason } = req.body;
+    if (!reason || typeof reason !== 'string') {
+      return res.status(400).json({ error: '`reason` is required', code: 'INVALID_BODY' });
+    }
+    await flagAgentOnChain(address, reason);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error({ err }, 'POST /api/admin/agents/:address/flag failed');
+    return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
+  }
+});
+
+// POST /api/admin/agents/:address/deactivate — Admin-only agent deactivation
+router.post('/admin/agents/:address/deactivate', requireAgentsContract, adminAuth, async (req, res) => {
+  try {
+    const { address } = req.params;
+    await adminDeactivateAgentOnChain(address);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error({ err }, 'POST /api/admin/agents/:address/deactivate failed');
+    return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
   }
 });
 
