@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { getServiceCount, registerServiceOnChain } from '../src/lib/contract.js';
+import { getServiceCount, listServices, registerServiceOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 
 process.env.SEEDING_MODE ??= 'true';
@@ -40,12 +40,22 @@ async function seed() {
     const count = await getServiceCount();
     logger.info({ count }, 'Current service count');
 
-    if (count >= SERVICES.length) {
-      logger.info('Registry already seeded — skipping');
+    // Compare by service name rather than total count: a count-only check skips
+    // seeding after a partial failure (e.g. 2 of 4 registered), leaving the
+    // missing services unregistered forever. Fetch existing names and only
+    // register the ones that aren't on-chain yet.
+    const existing = await listServices({ page: 0, pageSize: Math.max(count, SERVICES.length) });
+    const existingNames = new Set(existing.map((s) => s.name));
+    const missing = SERVICES.filter((svc) => !existingNames.has(svc.name));
+
+    if (missing.length === 0) {
+      logger.info('All seed services already registered — skipping');
       process.exit(0);
     }
 
-    for (const svc of SERVICES) {
+    logger.info({ missing: missing.map((s) => s.name) }, 'Registering missing services');
+
+    for (const svc of missing) {
       try {
         const id = await registerServiceOnChain(
           svc.name,
