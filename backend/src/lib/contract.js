@@ -711,6 +711,29 @@ export async function getAgent(agentAddress) {
   }
 }
 
+/**
+ * Checks if an agent is already registered on-chain.
+ * 
+ * @param {string} agentAddress - Stellar address of the agent
+ * @returns {Promise<boolean>} True if registered, false otherwise
+ * @throws {ContractError|Error} If the read call or simulation fails
+ */
+export async function isAgentRegistered(agentAddress) {
+  try {
+    const contract = getAgentsContract();
+    const op = contract.call(
+      'is_registered',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
+    );
+    const retval = await simulateRead(op);
+    if (!retval) return false;
+    return scValToNative(retval);
+  } catch (err) {
+    logger.error({ err, agentAddress }, 'isAgentRegistered failed');
+    throw err;
+  }
+}
+
 export async function getAgentPolicy(agentAddress) {
   try {
     const contract = getAgentsContract();

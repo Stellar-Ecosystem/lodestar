@@ -15,6 +15,7 @@ import {
   updatePolicyOnChain,
   buildUnsignedAgentTx,
   submitSignedAgentTx,
+  isAgentRegistered,
 } from '../lib/contract.js';
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
@@ -282,6 +283,12 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
       return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
     }
 
+    const isRegistered = await isAgentRegistered(agentAddress);
+    if (isRegistered) {
+      logger.info({ agentAddress }, 'Attempted to register an already registered agent');
+      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+    }
+
     const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
     agentsCache = null; // invalidate so next request reflects the new agent
     logger.info({ agentAddress, name }, 'Agent registered on-chain');
@@ -289,7 +296,7 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
   } catch (err) {
     logger.error({ err }, 'POST /api/agents/register failed');
     if (err.message?.includes('already registered')) {
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS' });
+      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
     }
     return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
   }
