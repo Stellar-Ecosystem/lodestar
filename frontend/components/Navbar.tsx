@@ -14,6 +14,14 @@ const links = [
 export default function Navbar() {
   const pathname = usePathname();
 
+  // Exact match for the home route, prefix match for nested routes so a link
+  // stays highlighted on its sub-pages (e.g. /agents while on /agents/[address])
+  // without "/" matching every path.
+  const isActive = (href: string) =>
+    href === '/'
+      ? pathname === '/'
+      : pathname === href || pathname.startsWith(`${href}/`);
+
   return (
     <nav className="border-b border-border bg-background sticky top-0 z-50">
       <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -23,19 +31,23 @@ export default function Navbar() {
 
         <div className="flex items-center gap-8">
           <div className="hidden md:flex items-center gap-6">
-            {links.map(({ href, label }) => (
-              <Link
-                key={href}
-                href={href}
-                className={`text-sm transition-colors ${
-                  pathname === href
-                    ? 'text-primary font-medium'
-                    : 'text-secondary hover:text-primary'
-                }`}
-              >
-                {label}
-              </Link>
-            ))}
+            {links.map(({ href, label }) => {
+              const active = isActive(href);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  aria-current={active ? 'page' : undefined}
+                  className={`text-sm transition-colors ${
+                    active
+                      ? 'text-primary font-medium'
+                      : 'text-secondary hover:text-primary'
+                  }`}
+                >
+                  {label}
+                </Link>
+              );
+            })}
           </div>
           <div className="hidden md:flex items-center gap-3">
             <a
