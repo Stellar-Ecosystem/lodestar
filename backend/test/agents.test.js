@@ -105,7 +105,3 @@ describe("POST /api/agents/register", () => {
     );
   });
 });
-
-
-  });
-});
