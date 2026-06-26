@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { AgentStep } from '@/lib/types';
+import type { AgentStep, Category } from '@/lib/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const EXPLORER_URL =
@@ -9,11 +9,15 @@ const EXPLORER_URL =
 // Registered demo agent the backend signs reputation votes as.
 const DEMO_AGENT_ADDRESS = process.env.NEXT_PUBLIC_DEMO_AGENT_ADDRESS ?? '';
 
-type ServiceNeed = 'weather' | 'search';
+type ServiceNeed = Category;
 
 const SERVICE_OPTIONS: { label: string; value: ServiceNeed }[] = [
   { label: 'Weather Data', value: 'weather' },
   { label: 'Web Search', value: 'search' },
+  { label: 'Financial Data', value: 'finance' },
+  { label: 'AI Services', value: 'ai' },
+  { label: 'Data Feeds', value: 'data' },
+  { label: 'Compute', value: 'compute' },
 ];
 
 interface DemoResult {
