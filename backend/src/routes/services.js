@@ -12,7 +12,13 @@ const router = Router();
 // Validates and records a payment on-chain. All three guards (txHash presence,
 // address format, and agent registration) must pass before touching the contract,
 // so a forged or bypass-injected x-payment-address header is silently discarded.
-async function creditPayment(agentAddress, txHash, priceStroops, serviceLabel) {
+const WEATHER_SERVICE_ID = 1;
+const SEARCH_SERVICE_ID = 2;
+
+// Validates and records a payment on-chain. All three guards (txHash presence,
+// address format, and agent registration) must pass before touching the contract,
+// so a forged or bypass-injected x-payment-address header is silently discarded.
+async function creditPayment(agentAddress, txHash, serviceId, priceStroops, serviceLabel) {
   if (!txHash) {
     logger.warn(
       { agentAddress },
@@ -36,7 +42,7 @@ async function creditPayment(agentAddress, txHash, priceStroops, serviceLabel) {
     return;
   }
   logger.info({ agentAddress, txHash }, `${serviceLabel} payment credited to registered agent`);
-  await recordPaymentOnChain(agentAddress, priceStroops, true);
+  await recordPaymentOnChain(agentAddress, serviceId, priceStroops, true);
 }
 
 // Activity feed lives in its own dependency-free module so the feed and
@@ -133,7 +139,7 @@ router.get('/weather', async (req, res) => {
 
     if (agentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.weatherPrice) * 10_000_000));
-      creditPayment(agentAddress, txHash, priceStroops, 'weather').catch((err) =>
+      creditPayment(agentAddress, txHash, WEATHER_SERVICE_ID, priceStroops, 'weather').catch((err) =>
         logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
       );
     }
@@ -191,7 +197,7 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.searchPrice) * 10_000_000));
-      creditPayment(searchAgentAddress, searchTxHash, priceStroops, 'search').catch((err) =>
+      creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search').catch((err) =>
         logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
       );
     }
