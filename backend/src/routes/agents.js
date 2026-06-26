@@ -469,16 +469,17 @@ router.post('/agents/:address/submit-signed-tx', requireAgentsContract, async (r
 // Legacy direct-action routes kept for backwards-compat (server-side signing).
 // These still work but owner must pass x-caller-address matching the on-chain owner.
 router.post('/agents/:address/flag', requireAgentsContract, adminAuth, async (req, res) => {
+  const { address } = req.params;
   try {
-    const { address } = req.params;
     const { reason } = req.body;
     if (!reason || typeof reason !== 'string') {
       return res.status(400).json({ error: '`reason` is required', code: 'INVALID_BODY' });
     }
     await flagAgentOnChain(address, reason);
+    logger.info({ address, reason }, 'Agent flagged (legacy route)');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /agents/:address/flag failed');
+    logger.error({ err, address }, 'POST /agents/:address/flag failed');
     return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
   }
 });
@@ -491,10 +492,13 @@ router.post('/admin/agents/:address/flag', requireAgentsContract, adminAuth, asy
     if (!reason || typeof reason !== 'string') {
       return res.status(400).json({ error: '`reason` is required', code: 'INVALID_BODY' });
     }
-    await flagAgentOnChain(address, reason);
+    const { address: addr } = req.params;
+    await flagAgentOnChain(addr, reason);
+    logger.info({ address: addr, reason }, 'Agent flagged by admin');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /api/admin/agents/:address/flag failed');
+    const { address: addr } = req.params;
+    logger.error({ err, address: addr }, 'POST /api/admin/agents/:address/flag failed');
     return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
   }
 });
@@ -502,29 +506,31 @@ router.post('/admin/agents/:address/flag', requireAgentsContract, adminAuth, asy
 // POST /api/admin/agents/:address/deactivate — Admin-only agent deactivation
 router.post('/admin/agents/:address/deactivate', requireAgentsContract, adminAuth, async (req, res) => {
   try {
-    const { address } = req.params;
-    await adminDeactivateAgentOnChain(address);
+    const { address: addr } = req.params;
+    await adminDeactivateAgentOnChain(addr);
+    logger.info({ address: addr }, 'Agent deactivated by admin');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /api/admin/agents/:address/deactivate failed');
+    const { address: addr } = req.params;
+    logger.error({ err, address: addr }, 'POST /api/admin/agents/:address/deactivate failed');
     return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
   }
 });
 
 router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, async (req, res) => {
+  const { address } = req.params;
   try {
-    const { address } = req.params;
     await deactivateAgentOnChain(address, req.callerAddress);
+    logger.info({ address, caller: req.callerAddress }, 'Agent deactivated by owner');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /agents/:address/deactivate failed');
+    logger.error({ err, address }, 'POST /agents/:address/deactivate failed');
     return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
   }
 });
 
-router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
+
   try {
-    const { address } = req.params;
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
 
     // Validation
@@ -542,9 +548,10 @@ router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (r
     }
 
     await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
+    logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'PUT /agents/:address/policy failed');
+
     return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });
