@@ -1,4 +1,8 @@
-# Lodestar Registry — Contract Deployment
+# Lodestar — Contract Deployment
+
+This guide covers the deployment of the Lodestar Service Registry. For detailed
+instructions on the Agents credit scoring contract, see
+[contract/agents/DEPLOY.md](./agents/DEPLOY.md).
 
 ## Prerequisites
 
@@ -48,13 +52,15 @@ The compiled WASM files will be at:
 ## 5. Deploy the agents contract first
 
 The registry is wired to the agents contract **at deploy time** (next step), so
-the agents contract must exist first.
+the agents contract must exist first. See [contract/agents/DEPLOY.md](./agents/DEPLOY.md)
+for full details on the agents contract.
 
 ```sh
 stellar contract deploy \
   --wasm contract/agents/target/wasm32v1-none/release/lodestar_agents.wasm \
   --source deployer \
-  --network testnet
+  --network testnet \
+  -- --admin <ADMIN_ADDRESS>
 ```
 
 Copy the printed agent contract ID — referred to below as `<AGENTS_CONTRACT_ID>`.
