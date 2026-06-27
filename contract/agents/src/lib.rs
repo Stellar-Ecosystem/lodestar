@@ -1100,7 +1100,7 @@ mod test {
         setup_agent(&env, &contract_id, &agent_addr, &owner);
 
         let max_per_day = 1000i128;
-        let max_per_tx = 500i128;
+        let max_per_tx = 1000i128; 
         
         env.ledger().with_mut(|li| {
             li.sequence = 1;
