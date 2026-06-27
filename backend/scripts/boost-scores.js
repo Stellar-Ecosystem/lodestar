@@ -11,10 +11,21 @@ if (!process.env.AGENTS_CONTRACT_ID) {
 const TARGETS = [110, 600, 1000];
 const AMOUNT = 10_000n; // 0.001 USDC
 
+// --dry-run logs the transactions that would be submitted without touching the
+// chain — a safety net against accidentally firing hundreds of payments at the
+// wrong contract.
+const DRY_RUN = process.argv.includes('--dry-run');
+
 async function boost() {
   try {
+    if (DRY_RUN) {
+      logger.info('DRY RUN — no transactions will be submitted');
+    }
+
     const agents = await listAgents(10);
     logger.info({ count: agents.length }, 'Fetched agents');
+
+    let plannedPayments = 0;
 
     // Sort by registered_at to get original seed order
     const sorted = [...agents].sort((a, b) => a.registered_at - b.registered_at);
@@ -30,6 +41,16 @@ async function boost() {
         continue;
       }
 
+      plannedPayments += needed;
+
+      if (DRY_RUN) {
+        logger.info(
+          { name: agent.name, currentScore, target, payments: needed },
+          'Would submit payments (dry run)'
+        );
+        continue;
+      }
+
       logger.info({ name: agent.name, currentScore, target, payments: needed }, 'Building score…');
 
       for (let j = 0; j < needed; j++) {
@@ -42,7 +63,11 @@ async function boost() {
       logger.info({ name: agent.name, targetScore: target }, 'Done');
     }
 
-    logger.info('Score boost complete');
+    if (DRY_RUN) {
+      logger.info({ plannedPayments }, 'Dry run complete — re-run without --dry-run to submit');
+    } else {
+      logger.info('Score boost complete');
+    }
     process.exit(0);
   } catch (err) {
     logger.error({ err }, 'boost-scores failed');
