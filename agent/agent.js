@@ -21,14 +21,8 @@ const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
 const AGENT_REQUIRE_SCORING = process.env.AGENT_REQUIRE_SCORING !== 'false';
 
-const AGENT_NAME  = process.env.AGENT_NAME ?? 'LodestarAgent';
-const AGENT_DESC  = process.env.AGENT_DESC ?? 'Autonomous x402 agent powered by Lodestar service discovery';
-const MAX_PER_TX  = process.env.AGENT_MAX_PER_TX ?? '0.001';
-const MAX_PER_DAY = process.env.AGENT_MAX_PER_DAY ?? '1.00';
-const ALLOWED_CATS = process.env.AGENT_ALLOWED_CATEGORIES?.split(',') ?? ['weather', 'search'];
-
 const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
-const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
+const AGENT_DESC           = process.env.AGENT_DESC           ?? 'Autonomous x402 agent powered by Lodestar service discovery';
 const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
 const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
 const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
@@ -67,6 +61,11 @@ export const EVENT = {
 
 let currentScore = null;
 
+/**
+ * Ensure the agent is registered with Lodestar and fetch the current score.
+ * If the agent is not registered, attempt registration and verify it.
+ * @returns {Promise<boolean>} true when scoring can be enabled, false otherwise
+ */
 export async function ensureRegistered() {
   try {
     const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
@@ -144,6 +143,13 @@ export async function ensureRegistered() {
   return false;
 }
 
+/**
+ * Check whether the agent is allowed to spend on a given category.
+ * Network failures are treated as permissive to avoid blocking the agent run.
+ * @param {string} amountUsdc Amount to spend in USDC
+ * @param {string} category Service category being requested
+ * @returns {Promise<{allowed:boolean,reason:string}>}
+ */
 async function checkSpend(amountUsdc, category) {
   try {
     const res = await fetch(
@@ -157,6 +163,13 @@ async function checkSpend(amountUsdc, category) {
   }
 }
 
+/**
+ * Record the payment outcome with the Lodestar backend.
+ * Score updates are applied when the backend returns a new score.
+ * @param {string} amountUsdc Amount spent in USDC
+ * @param {boolean} success Whether the payment succeeded
+ * @param {number} serviceId Service identifier
+ */
 async function recordOutcome(amountUsdc, success, serviceId) {
   try {
     const body = JSON.stringify({ amountUsdc, success, serviceId });
@@ -188,22 +201,30 @@ async function recordOutcome(amountUsdc, success, serviceId) {
 
 // ── x402 client ───────────────────────────────────────────────────────────────
 
-const httpClient = buildHttpClient();
-
-export function dispose() {
-  logger.info('Shutting down Lodestar Agent');
-}
-
 const STROOPS_PER_USDC = 10_000_000;
 
+/**
+ * Convert a stroop quantity to a USDC string.
+ * @param {bigint|number|string} stroops
+ * @returns {string}
+ */
 function stroopsToUsdcStr(stroops) {
   return String(Number(stroops) / STROOPS_PER_USDC);
 }
 
+/**
+ * Convert a USDC string into piseles in stroops.
+ * @param {string} usdcStr
+ * @returns {bigint}
+ */
 function usdcStrToStroops(usdcStr) {
   return BigInt(Math.round(parseFloat(usdcStr) * STROOPS_PER_USDC));
 }
 
+/**
+ * Build an x402 HTTP client capable of signing service payments.
+ * @returns {import('@x402/core/client').x402HTTPClient}
+ */
 function buildHttpClient() {
   const signer = createEd25519Signer(AGENT_SECRET, 'stellar:testnet');
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
@@ -233,6 +254,11 @@ function buildHttpClient() {
 
 // ── Registry helpers ──────────────────────────────────────────────────────────
 
+/**
+ * Fetch available services for a category from Lodestar.
+ * @param {string} category
+ * @returns {Promise<Array<object>>}
+ */
 async function fetchServices(category) {
   const res = await fetch(`${LODESTAR_API_URL}/api/services?category=${category}`);
   if (!res.ok) throw new Error(`Registry fetch failed: ${res.status}`);
@@ -240,6 +266,12 @@ async function fetchServices(category) {
   return body.services ?? [];
 }
 
+/**
+ * Submit a best-effort reputation vote for a service.
+ * This operation should not abort the agent run if it fails.
+ * @param {number} id Service identifier
+ * @param {boolean} positive Whether the vote is positive
+ */
 async function submitReputation(id, positive) {
   try {
     const res = await fetch(`${LODESTAR_API_URL}/api/reputation/${id}`, {
@@ -273,10 +305,18 @@ function selectWeighted(services) {
 
 // ── Agent task ────────────────────────────────────────────────────────────────
 
+/**
+ * Perform a single task for a service category, enforcing spend policy and
+ * recording the result back to Lodestar.
+ * @param {string} category
+ * @param {(endpoint: string) => string} buildUrl
+ * @param {boolean} scoringEnabled
+ * @param {import('@x402/core/client').x402HTTPClient} client
+ * @returns {Promise<{success:boolean,priceUsdc:string|null}>}
+ */
 export async function runTask(category, buildUrl, scoringEnabled, client = httpClient) {
   const minReputation = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
   const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
-
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
 
@@ -427,6 +467,9 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Run the agent workflow end-to-end, including registration and task execution.
+ */
 export async function main() {
   const runStart = Date.now();
   logger.info(

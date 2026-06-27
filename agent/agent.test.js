@@ -166,7 +166,7 @@ describe('runTask — happy path', () => {
 });
 
 describe('runTask — no services found', () => {
-  it.skip('logs task_start error with servicesFound: 0', async () => {
+  it('logs task_start error with servicesFound: 0', async () => {
     global.fetch = buildFetch({ services: [] });
 
     await runTask('weather', (ep) => ep, true, mockHttpClient);
@@ -176,7 +176,7 @@ describe('runTask — no services found', () => {
     expect(call[0]).toMatchObject({ event: 'task_start', category: 'weather', servicesFound: 0 });
   });
 
-  it.skip('returns { success: false, priceUsdc: null }', async () => {
+  it('returns { success: false, priceUsdc: null }', async () => {
     global.fetch = buildFetch({ services: [] });
     const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
     expect(result).toEqual({ success: false, priceUsdc: null });
@@ -184,7 +184,6 @@ describe('runTask — no services found', () => {
 });
 
 describe('runTask — spend check blocked', () => {
-<<<<<<< HEAD
   let randomSpy;
   beforeEach(() => {
     randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -194,9 +193,6 @@ describe('runTask — spend check blocked', () => {
   });
 
   it('logs spend_check_blocked with reason field', async () => {
-=======
-  it.skip('logs spend_check_blocked with reason field', async () => {
->>>>>>> c06b70a (Security: Make scoring a hard requirement by default)
     global.fetch = buildFetch({ canSpend: false });
 
     await runTask('weather', (ep) => ep, true, mockHttpClient);
@@ -212,7 +208,7 @@ describe('runTask — spend check blocked', () => {
     });
   });
 
-  it.skip('returns { success: false, priceUsdc: null }', async () => {
+  it('returns { success: false, priceUsdc: null }', async () => {
     global.fetch = buildFetch({ canSpend: false });
     const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
     expect(result).toEqual({ success: false, priceUsdc: null });
@@ -263,7 +259,7 @@ describe('runTask — spend check blocked', () => {
 });
 
 describe('runTask — service error after payment', () => {
-  it.skip('logs payment_failed with httpStatus when endpoint returns non-2xx', async () => {
+  it('logs payment_failed with httpStatus when endpoint returns non-2xx', async () => {
     global.fetch = buildFetch({ endpointOk: false });
 
     await runTask('weather', (ep) => ep, false, mockHttpClient);
@@ -285,7 +281,7 @@ describe('runTask — service error after payment', () => {
 });
 
 describe('runTask — payment_failed on fetch throw', () => {
-  it.skip('logs payment_failed with err field when httpClient throws', async () => {
+  it('logs payment_failed with err field when httpClient throws', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
@@ -304,7 +300,7 @@ describe('runTask — payment_failed on fetch throw', () => {
 });
 
 describe('main — agent_complete summary', () => {
-  it.skip('logs agent_complete with all required summary fields', async () => {
+  it('logs agent_complete with all required summary fields', async () => {
     // ensureRegistered → already registered, score 100
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
@@ -342,7 +338,7 @@ describe('main — agent_complete summary', () => {
     expect(fields.runDurationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it.skip('logs agent_complete with correct fail counts when tasks fail', async () => {
+  it('logs agent_complete with correct fail counts when tasks fail', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
         return Promise.resolve(makeResponse({
