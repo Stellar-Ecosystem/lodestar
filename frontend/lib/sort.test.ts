@@ -7,7 +7,7 @@ const svc = (overrides: Partial<ServiceEntry> = {}): ServiceEntry => ({
   description: 'desc',
   endpoint: 'https://test.com',
   price_usdc: '1.0',
-  category: 'API',
+  category: 'ai',
   provider: 'GABC',
   reputation: 5,
   active: true,
