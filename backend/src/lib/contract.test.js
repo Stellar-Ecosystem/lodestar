@@ -636,3 +636,69 @@ describe('rpcMetrics', () => {
     expect(metrics.simulateTransaction).toBe(0);
   });
 });
+
+describe('pendingTransactions registry', () => {
+  let contract;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contractLib.__resetPendingTransactions();
+    contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+  });
+
+  afterEach(() => {
+    contractLib.__setAssembleTransactionForTest();
+    contractLib.__resetPendingTransactions();
+  });
+
+  it('reports zero by default', () => {
+    expect(contractLib.getPendingTransactionCount()).toBe(0);
+    expect(contractLib.getPendingTransactions()).toEqual([]);
+  });
+
+  it('retains pending transaction on NOT_FOUND timeout (tx may still confirm on-chain)', { timeout: 40000 }, async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'pending-hash-1' });
+    mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('get_service_count'))
+    ).rejects.toThrow('Transaction not confirmed after polling');
+
+    expect(contractLib.getPendingTransactionCount()).toBe(1);
+    const pending = contractLib.getPendingTransactions();
+    expect(pending[0].hash).toBe('pending-hash-1');
+    expect(pending[0].operation).toBe('unknown');
+    expect(pending[0].submittedAt).toBeGreaterThan(0);
+  });
+
+  it('removes tracked transaction on SUCCESS', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'success-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.simulateAndSubmit(contract.call('get_service_count'));
+
+    expect(contractLib.getPendingTransactionCount()).toBe(0);
+  });
+
+  it('removes tracked transaction on FAILED', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'fail-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'FAILED', resultXdr: 'raw-failure' });
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toThrow();
+    expect(contractLib.getPendingTransactionCount()).toBe(0);
+  });
+
+  it('tracks and removes on SUCCESS with one NOT_FOUND retry', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'retry-hash' });
+    mockGetTransaction
+      .mockResolvedValueOnce({ status: 'NOT_FOUND' })
+      .mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.simulateAndSubmit(contract.call('get_service_count'));
+    expect(contractLib.getPendingTransactionCount()).toBe(0);
+  });
+});
