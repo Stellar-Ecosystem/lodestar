@@ -1,19 +1,23 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../config.js', () => ({
-  default: {
-    contract: { id: 'mock', agentsId: 'mock' },
-    server: { address: 'mock', secret: 'SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2' },
-    stellar: { network: 'testnet', rpcUrl: 'https://mock', networkPassphrase: 'mock', usdcContractId: 'mock' },
-    x402: { facilitatorUrl: 'https://mock', searchPrice: '0.001', weatherPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
-    braveApiKey: '',
-    corsOrigin: ['http://localhost:3000'],
-    jsonBodyLimit: '100kb',
-    nodeEnv: 'test',
-    port: 3001,
-    logLevel: 'silent',
-  },
-}));
+vi.mock('../config.js', () => {
+  const sdk = require('@stellar/stellar-sdk');
+  const validId = sdk.StrKey.encodeContract(Buffer.alloc(32));
+  return {
+    default: {
+      contract: { id: validId, agentsId: validId },
+      server: { address: 'mock', secret: 'SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2' },
+      stellar: { network: 'testnet', rpcUrl: 'https://mock', networkPassphrase: 'mock', usdcContractId: 'mock' },
+      x402: { facilitatorUrl: 'https://mock', searchPrice: '0.001', weatherPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
+      braveApiKey: '',
+      corsOrigin: ['http://localhost:3000'],
+      jsonBodyLimit: '100kb',
+      nodeEnv: 'test',
+      port: 3001,
+      logLevel: 'silent',
+    },
+  };
+});
 
 const { mockGetAccount, mockSimulateTransaction, mockSendTransaction, mockGetTransaction } = vi.hoisted(() => ({
   mockGetAccount: vi.fn(),
@@ -653,5 +657,22 @@ describe('encodeOption', () => {
     const result = contractLib.encodeOption('weather', 'string');
     expect(result.switch().name).toBe('scvString');
     expect(result.str()).toBe('weather');
+  });
+});
+
+describe('listServices category encoding', () => {
+  beforeEach(() => {
+    resetMockServer();
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVec([]) } });
+  });
+
+  it('returns empty array when no category provided', async () => {
+    const result = await contractLib.listServices({});
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array when category is provided', async () => {
+    const result = await contractLib.listServices({ category: 'weather' });
+    expect(result).toEqual([]);
   });
 });
