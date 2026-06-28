@@ -96,5 +96,6 @@ describe('sortAgentsWithTieBreaker', () => {
     const b = agent({ score: 50, name: 'Beta' });
     const sorted = sortAgentsWithTieBreaker([a, b], 'score', (x, y) => x.name.localeCompare(y.name));
     expect(sorted[0].name).toBe('Alpha');
+    expect(sorted[1].name).toBe('Beta');
   });
 });
