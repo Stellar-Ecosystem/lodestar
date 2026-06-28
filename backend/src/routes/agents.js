@@ -44,6 +44,11 @@ const AGENTS_CACHE_TTL = 30_000;
 
 const CACHE_BATCH_SIZE = 50;
 
+export function _resetCache() {
+  agentsCache = null;
+  agentsCacheTime = 0;
+}
+
 async function getCachedAgents() {
   const now = Date.now();
   if (agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) return agentsCache;
@@ -89,8 +94,15 @@ router.get('/agents', requireAgentsContract, async (req, res) => {
     const sort = ['score', 'payments', 'newest'].includes(req.query.sort)
       ? req.query.sort
       : 'score';
+    const excludeDemo = req.query.exclude_demo === 'true';
 
-    const allAgents = await getCachedAgents();
+    let allAgents = await getCachedAgents();
+    
+    // Filter out demo agents if requested
+    if (excludeDemo) {
+      allAgents = allAgents.filter(agent => !agent.is_demo);
+    }
+    
     const sorted = sortAgents(allAgents, sort);
     const total = sorted.length;
     const agents = sorted.slice(page * pageSize, (page + 1) * pageSize);

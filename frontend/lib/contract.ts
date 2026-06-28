@@ -131,10 +131,12 @@ export const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ?? 
 export async function fetchAgents(
   page = 0,
   pageSize = 12,
-  sort: AgentSortOption = 'score'
+  sort: AgentSortOption = 'score',
+  excludeDemo = false
 ): Promise<AgentsResponse> {
+  const excludeDemoParam = excludeDemo ? '&exclude_demo=true' : '';
   return apiFetch<AgentsResponse>(
-    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`
+    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}${excludeDemoParam}`
   );
 }
 
