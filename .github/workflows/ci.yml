@@ -52,7 +52,9 @@ jobs:
 
       - name: Build registry contract
         working-directory: contract
-        run: stellar contract build
+        run: |
+          rustup target add wasm32-unknown-unknown
+          stellar contract build
 
       - name: Test registry contract
         working-directory: contract
@@ -60,7 +62,9 @@ jobs:
 
       - name: Build agents contract
         working-directory: contract/agents
-        run: stellar contract build
+        run: |
+          rustup target add wasm32-unknown-unknown
+          stellar contract build
 
       - name: Test agents contract
         working-directory: contract/agents
