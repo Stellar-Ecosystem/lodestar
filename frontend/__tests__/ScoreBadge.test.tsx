@@ -59,9 +59,10 @@ describe('ScoreBadge Aria-Live Announcements', () => {
   it('handles invalid score safely and logs error', () => {
     // @ts-ignore - purposefully passing invalid score
     render(<ScoreBadge score={NaN} />);
-    
+
     expect(console.error).toHaveBeenCalled();
-    const logArg = (console.error as jest.Mock).mock.calls[0][0];
-    expect(logArg).toContain('score_announcement_failed');
+    // React may emit its own NaN warning first; find our custom error among all calls
+    const allCalls = (console.error as jest.Mock).mock.calls.map(c => String(c[0]));
+    expect(allCalls).toEqual(expect.arrayContaining([expect.stringContaining('score_announcement_failed')]));
   });
 });

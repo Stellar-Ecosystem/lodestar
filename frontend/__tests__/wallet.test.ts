@@ -29,18 +29,19 @@ import { connectWithWallet, disconnectWallet, WalletError, WalletErrorType, FREI
 import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
 
 describe('wallet connection', () => {
-  const originalWindow = global.window;
-  const originalNavigator = global.navigator;
-
   beforeEach(() => {
     jest.clearAllMocks();
-    (global as any).window = { ...originalWindow };
-    (global as any).navigator = { ...originalNavigator, userAgent: 'Mozilla/5.0' };
+    // Reset module state so initKit() runs each time
+    disconnectWallet();
+    // Ensure window and navigator exist in jsdom
+    if (typeof window === 'undefined') {
+      (globalThis as any).window = globalThis;
+    }
   });
 
-  afterAll(() => {
-    (global as any).window = originalWindow;
-    (global as any).navigator = originalNavigator;
+  afterEach(() => {
+    // Ensure window/navigator globals are restored (jsdom re-injects them)
+    jest.restoreAllMocks();
   });
 
   it('connects successfully', async () => {
@@ -50,17 +51,32 @@ describe('wallet connection', () => {
   });
 
   it('throws UNSUPPORTED_BROWSER when window is undefined', async () => {
-    (global as any).window = undefined;
+    // Use Object.defineProperty to override the window global for typeof checks
+    const origDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', { value: undefined, configurable: true, writable: true });
+
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
       type: WalletErrorType.UNSUPPORTED_BROWSER
     });
+
+    // Restore window (jsdom needs it for subsequent tests)
+    if (origDescriptor) {
+      Object.defineProperty(globalThis, 'window', origDescriptor);
+    }
   });
 
   it('throws UNSUPPORTED_BROWSER on mobile', async () => {
-    (global as any).navigator = { userAgent: 'iPhone' };
+    const origUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+    Object.defineProperty(navigator, 'userAgent', { value: 'iPhone', configurable: true });
+
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
       type: WalletErrorType.UNSUPPORTED_BROWSER
     });
+
+    // Restore
+    if (origUA) {
+      Object.defineProperty(navigator, 'userAgent', origUA);
+    }
   });
 
   it('throws WALLET_NOT_FOUND when extension is missing', async () => {
@@ -86,19 +102,9 @@ describe('wallet connection', () => {
 });
 
 describe('wallet disconnect', () => {
-  const originalWindow = global.window;
-  const originalNavigator = global.navigator;
-
   beforeEach(() => {
     jest.clearAllMocks();
     disconnectWallet();
-    (global as any).window = { ...originalWindow };
-    (global as any).navigator = { ...originalNavigator, userAgent: 'Mozilla/5.0' };
-  });
-
-  afterAll(() => {
-    (global as any).window = originalWindow;
-    (global as any).navigator = originalNavigator;
   });
 
   it('resets kit state so next connect re-initializes', async () => {

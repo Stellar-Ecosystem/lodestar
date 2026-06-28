@@ -1,3 +1,30 @@
+jest.mock('@creit-tech/stellar-wallets-kit/sdk', () => ({
+  StellarWalletsKit: {
+    init: jest.fn(),
+    setWallet: jest.fn(),
+    fetchAddress: jest.fn(),
+  }
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/freighter', () => ({
+  FreighterModule: jest.fn(),
+  FREIGHTER_ID: 'freighter',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/albedo', () => ({
+  AlbedoModule: jest.fn(),
+  ALBEDO_ID: 'albedo',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/xbull', () => ({
+  xBullModule: jest.fn(),
+  XBULL_ID: 'xbull',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/lobstr', () => ({
+  LobstrModule: jest.fn(),
+  LOBSTR_ID: 'lobstr',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/types', () => ({
+  Networks: { TESTNET: 'Test SDF Network ; September 2015' },
+}));
+
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import WalletPickerModal from '../components/WalletPickerModal';
