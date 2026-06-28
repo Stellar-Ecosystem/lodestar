@@ -62,7 +62,130 @@ import {
   parseActivityPagination,
 } from '../lib/activityFeed.js';
 
-const facilitator = new HTTPFacilitatorClient({ url: config.x402.facilitatorUrl });
+// Circuit breaker state machine
+const CIRCUIT_STATE = {
+  CLOSED: 'closed',
+  OPEN: 'open',
+  HALF_OPEN: 'half-open'
+};
+
+let circuitState = CIRCUIT_STATE.CLOSED;
+let consecutiveFailures = 0;
+let circuitOpenUntil = 0;
+const MAX_CONSECUTIVE_FAILURES = 5;
+const CIRCUIT_OPEN_DURATION_MS = 30000; // 30 seconds
+const HALF_OPEN_PROBE_INTERVAL_MS = 10000; // 10 seconds
+
+// Track facilitator health for /healthz
+let lastFacilitatorHealth = {
+  status: 'unknown',
+  latency_ms: null,
+  timestamp: null
+};
+
+// Helper to create timeout promise
+function timeoutPromise(ms) {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('Facilitator request timed out')), ms);
+  });
+}
+
+// Check circuit breaker state
+function isCircuitOpen() {
+  if (circuitState === CIRCUIT_STATE.CLOSED) return false;
+  if (circuitState === CIRCUIT_STATE.OPEN) {
+    if (Date.now() >= circuitOpenUntil) {
+      // Transition to half-open
+      circuitState = CIRCUIT_STATE.HALF_OPEN;
+      logger.info('Circuit breaker transitioning to half-open state');
+    }
+    return circuitState === CIRCUIT_STATE.OPEN;
+  }
+  // Half-open: let one request through
+  return false;
+}
+
+// Record success/failure for circuit breaker
+function recordFacilitatorResult(success) {
+  if (success) {
+    consecutiveFailures = 0;
+    if (circuitState === CIRCUIT_STATE.HALF_OPEN) {
+      circuitState = CIRCUIT_STATE.CLOSED;
+      logger.info('Circuit breaker closed after successful probe');
+    }
+  } else {
+    consecutiveFailures++;
+    if (circuitState === CIRCUIT_STATE.HALF_OPEN ||
+        (circuitState === CIRCUIT_STATE.CLOSED && consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
+      circuitState = CIRCUIT_STATE.OPEN;
+      circuitOpenUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
+      logger.warn({ consecutiveFailures }, 'Circuit breaker opened due to consecutive failures');
+    }
+  }
+}
+
+// Facilitator health check function for /healthz
+export async function checkFacilitatorHealth() {
+  const startTime = Date.now();
+  try {
+    const response = await Promise.race([
+      fetch(`${config.x402.facilitatorUrl}/health`, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(5000)
+      }),
+      timeoutPromise(5000)
+    ]);
+    const latency = Date.now() - startTime;
+    const status = response.ok ? 'ok' : 'degraded';
+    lastFacilitatorHealth = { status, latency_ms: latency, timestamp: new Date().toISOString() };
+    return lastFacilitatorHealth;
+  } catch (err) {
+    const latency = Date.now() - startTime;
+    lastFacilitatorHealth = { status: 'down', latency_ms: latency, timestamp: new Date().toISOString(), error: err.message };
+    return lastFacilitatorHealth;
+  }
+}
+
+// Wrapped facilitator client with timeout, circuit breaker, and logging
+class WrappedFacilitatorClient {
+  constructor(originalClient, timeoutMs) {
+    this.originalClient = originalClient;
+    this.timeoutMs = timeoutMs;
+  }
+
+  async verifyTransaction(...args) {
+    if (isCircuitOpen()) {
+      logger.warn('Circuit breaker open: skipping facilitator call');
+      const error = new Error('FACILITATOR_UNAVAILABLE');
+      error.code = 'FACILITATOR_UNAVAILABLE';
+      error.statusCode = 503;
+      throw error;
+    }
+
+    const startTime = Date.now();
+    try {
+      const result = await Promise.race([
+        this.originalClient.verifyTransaction(...args),
+        timeoutPromise(this.timeoutMs)
+      ]);
+      const latency = Date.now() - startTime;
+      logger.debug({ latency_ms: latency }, 'Facilitator call succeeded');
+      if (latency > 3000) {
+        logger.warn({ latency_ms: latency }, 'Facilitator call exceeded 3 seconds');
+      }
+      recordFacilitatorResult(true);
+      return result;
+    } catch (err) {
+      const latency = Date.now() - startTime;
+      logger.warn({ err, latency_ms: latency }, 'Facilitator call failed');
+      recordFacilitatorResult(false);
+      throw err;
+    }
+  }
+}
+
+const originalFacilitator = new HTTPFacilitatorClient({ url: config.x402.facilitatorUrl });
+const facilitator = new WrappedFacilitatorClient(originalFacilitator, config.x402.facilitatorTimeoutMs);
 const stellarScheme = new ExactStellarScheme();
 
 const paymentConfig = {
