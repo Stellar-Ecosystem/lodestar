@@ -1,11 +1,28 @@
 import React from 'react';
-
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import RegistryPage, { PAGE_SIZE } from '../app/registry/page';
+import { fetchServices } from '../lib/contract';
 
 jest.mock('@/lib/contract', () => ({
   fetchServices: jest.fn(),
   submitReputation: jest.fn(),
 }));
 
+function makeServices(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: i + 1,
+    name: `Service ${i + 1}`,
+    description: `Description ${i + 1}`,
+    endpoint: `https://example.com/${i + 1}`,
+    price_usdc: `${(i + 1) * 0.5}`,
+    category: 'API',
+    provider: `G${String(i + 1).padStart(55, 'A')}`,
+    reputation: i + 1,
+    active: true,
+    registered_at: Date.now(),
+  }));
+}
 
 describe('RegistryPage loading state', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -71,7 +88,7 @@ describe('RegistryPage pagination — basic rendering', () => {
   });
 });
 
-// ── Pagination: Prev / Next buttons ───────────────────────────────────────────
+// ── Pagination: Prev / Next buttons ────────────────────────────────────────────
 
 describe('RegistryPage pagination — Prev / Next buttons', () => {
   beforeEach(() => jest.clearAllMocks());
