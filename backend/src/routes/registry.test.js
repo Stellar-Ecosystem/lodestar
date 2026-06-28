@@ -19,11 +19,6 @@ const mockGetCurrentLedgerSequence = vi.fn();
 const SERVICE_MAX_TTL = 3_110_400;
 const SERVICE_TTL_WARNING_LEDGERS = 311_040;
 
-const mockGetCurrentLedgerSequence = vi.fn();
-
-const SERVICE_MAX_TTL = 3_110_400;
-const SERVICE_TTL_WARNING_LEDGERS = 311_040;
-
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
   listServicesByProvider: (...args) => mockListServicesByProvider(...args),
@@ -65,6 +60,11 @@ beforeAll(async () => {
   app = express();
   app.use(express.json());
   app.use('/api', router);
+});
+
+beforeEach(async () => {
+  const { _resetRegistrationsByIp } = await import('./registry.js');
+  _resetRegistrationsByIp();
 });
 
 function makeService(overrides = {}) {
@@ -401,6 +401,38 @@ describe('POST /api/registry/prepare-register', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('DUPLICATE_SERVICE');
+  });
+
+  it('returns 403 QUOTA_EXCEEDED when IP exceeds MAX_SERVICES_PER_IP', async () => {
+    // Mock successful submit-signed-tx responses to increment the per-IP count.
+    mockValidatePreparedRegistrySubmission.mockReturnValue({ action: 'register' });
+    mockSubmitSignedRegistryTx.mockResolvedValue({ hash: 'txhash', id: 123 });
+
+    // Exhaust the quota: 10 successful submissions (which increment the counter).
+    for (let i = 0; i < 10; i++) {
+      const res = await request(app)
+        .post('/api/registry/submit-signed-tx')
+        .send({ signedXdr: 'AAAA_SIGNED_XDR', submitToken: `token-${i}` });
+      expect(res.status).toBe(200);
+    }
+
+    // The 11th prepare-register attempt (which checks the counter) should be blocked.
+    mockBuildUnsignedRegistryTx.mockResolvedValue({
+      xdr: 'AAAA_XDR',
+      submitToken: 'token-blocked',
+    });
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://blocked.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('QUOTA_EXCEEDED');
   });
 });
 

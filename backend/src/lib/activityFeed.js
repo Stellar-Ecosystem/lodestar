@@ -37,8 +37,32 @@ function saveFeed(feed) {
   writeFileSync(FEED_FILE, JSON.stringify(feed, null, 2), 'utf-8'); // let errors bubble up
 }
 
+const rawMax = Number(process.env.ACTIVITY_FEED_MAX_PER_AGENT);
+const MAX_PER_AGENT = Number.isFinite(rawMax) && rawMax > 0 ? rawMax : 5;
+
 export function recordActivity(entry) {
   const feed = loadFeed();
+  const agent = entry.agent || 'unknown';
+  const maxPerAgent = MAX_PER_AGENT;
+
+  // Count how many consecutive entries from the top belong to this agent
+  let consecutive = 0;
+  for (const e of feed) {
+    if ((e.agent || 'unknown') === agent) {
+      consecutive++;
+    } else {
+      break;
+    }
+  }
+
+  // If this agent already has maxPerAgent consecutive entries at the top,
+  // trim the block to maxPerAgent so no single agent monopolizes the
+  // visible history. This also handles existing persisted feeds that may
+  // already have more than maxPerAgent consecutive entries from one agent.
+  if (consecutive >= maxPerAgent) {
+    feed.splice(maxPerAgent - 1, consecutive - maxPerAgent + 1);
+  }
+
   feed.unshift(entry);
   if (feed.length > ACTIVITY_MAX_ENTRIES) feed.pop();
   try {

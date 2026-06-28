@@ -19,6 +19,7 @@ import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
+import config from "../config.js";
 
 const router = Router();
 
@@ -26,17 +27,23 @@ const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
 const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
-// Appends ttl_warning:true when the entry's estimated remaining TTL falls
-// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
-// is unavailable so callers can always treat absence as "no warning data".
-function annotateTtlWarning(service, currentLedger) {
-  if (currentLedger == null) return service;
-  return {
-    ...service,
-    ttl_warning:
-      currentLedger >=
-      service.registered_at + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS,
-  };
+// Per-registrant quota tracking (only on successful on-chain submission).
+const registrationsByIp = new Map();
+
+export function _resetRegistrationsByIp() {
+  registrationsByIp.clear();
+}
+
+function getIpRegistrationCount(ip) {
+  return registrationsByIp.get(ip) ?? 0;
+}
+
+function incrementIpRegistration(ip) {
+  registrationsByIp.set(ip, getIpRegistrationCount(ip) + 1);
+}
+
+export function getRegistrationsByIpSnapshot() {
+  return new Map(registrationsByIp);
 }
 
 function normalizePriceUsdc(value) {
@@ -127,6 +134,9 @@ router.get("/services", async (req, res) => {
     if (err instanceof ContractError) {
       if (err.code === "SIMULATION_FAILED") {
         return res.status(400).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "QUEUE_OVERLOADED") {
+        return res.status(503).json({ error: err.message, code: err.code });
       }
       if (err.code === "TRANSACTION_TIMEOUT") {
         return res.status(504).json({ error: err.message, code: err.code });
@@ -220,6 +230,9 @@ router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => 
       }
       if (err.code === "ALREADY_INACTIVE") {
         return res.status(409).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "QUEUE_OVERLOADED") {
+        return res.status(503).json({ error: err.message, code: err.code });
       }
       if (err.code === "TRANSACTION_TIMEOUT") {
         return res.status(504).json({ error: err.message, code: err.code });
@@ -329,6 +342,16 @@ router.get("/registry/by-provider/:address", async (req, res) => {
 
 router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) => {
   try {
+    const ip = req.ip;
+    const currentCount = getIpRegistrationCount(ip);
+    if (currentCount >= config.maxServicesPerIp) {
+      logger.warn({ ip, count: currentCount, max: config.maxServicesPerIp }, 'Registration quota exceeded');
+      return res.status(403).json({
+        error: `Registration quota exceeded: maximum ${config.maxServicesPerIp} services per IP.`,
+        code: 'QUOTA_EXCEEDED',
+      });
+    }
+
     const {
       name,
       description,
@@ -371,7 +394,7 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
       category,
       payTo: payTo?.trim(),
     });
-    logger.info({ providerAddress, endpoint, category }, "Built unsigned registry registration tx");
+    logger.info({ providerAddress, endpoint, category, ip }, "Built unsigned registry registration tx");
     res.json(prepared);
   } catch (err) {
     if (err instanceof ContractError) {
@@ -417,14 +440,18 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
     if (!submitToken || typeof submitToken !== "string") {
       return res.status(400).json({ error: "`submitToken` is required", code: "INVALID_BODY" });
     }
-    validatePreparedRegistrySubmission(submitToken, signedXdr);
+    const prepared = validatePreparedRegistrySubmission(submitToken, signedXdr);
 
     const result = await submitSignedRegistryTx(signedXdr);
+    // Only count registrations (not deactivations) toward per-IP quota.
+    if (prepared.action === "register") {
+      incrementIpRegistration(req.ip);
+    }
     logger.info({ hash: result.hash, id: result.id }, "Submitted wallet-signed registry tx");
     res.json({ success: true, ...result });
   } catch (err) {
     if (err instanceof ContractError) {
-      const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
+      const status = err.code === "QUEUE_OVERLOADED" ? 503 : err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
       return res.status(status).json({ error: err.message, code: err.code });
     }
     logger.error({ err }, "POST /api/registry/submit-signed-tx failed");
@@ -476,6 +503,9 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
     if (err instanceof ContractError) {
       if (err.code === "AGENT_NOT_ALLOWED") {
         return res.status(403).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "QUEUE_OVERLOADED") {
+        return res.status(503).json({ error: err.message, code: err.code });
       }
       if (err.code === "TRANSACTION_TIMEOUT") {
         return res.status(504).json({ error: err.message, code: err.code });

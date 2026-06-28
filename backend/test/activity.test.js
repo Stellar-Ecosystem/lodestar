@@ -11,9 +11,10 @@ import {
 
 // recordActivity mutates a module-level store; seed it so the slicing
 // assertions below have a known, full feed to page through.
+// Each entry uses a unique agent to avoid the per-agent consecutive cap.
 function seedFeed(count) {
   for (let i = 0; i < count; i++) {
-    recordActivity({ timestamp: `t-${i}`, service: `svc-${i}` });
+    recordActivity({ timestamp: `t-${i}`, agent: `agent-${i}`, service: `svc-${i}` });
   }
 }
 
@@ -69,5 +70,62 @@ describe('activity feed store', () => {
   it('recordActivity caps the feed at ACTIVITY_MAX_ENTRIES', () => {
     seedFeed(ACTIVITY_MAX_ENTRIES + 25);
     expect(getActivityFeed().length).toBe(ACTIVITY_MAX_ENTRIES);
+  });
+
+  it('limits consecutive entries from the same agent to 5', () => {
+    // Clear feed by overflowing it
+    for (let i = 0; i < ACTIVITY_MAX_ENTRIES + 10; i++) {
+      recordActivity({ timestamp: `clear-${i}`, agent: 'other', service: 'clear' });
+    }
+
+    // Record 10 entries from the same agent — only 5 should remain
+    for (let i = 0; i < 10; i++) {
+      recordActivity({ timestamp: `spam-${i}`, agent: 'GAURU', service: 'spam' });
+    }
+
+    const feed = getActivityFeed();
+    const agentEntries = feed.filter((e) => e.agent === 'GAURU');
+    expect(agentEntries.length).toBeLessThanOrEqual(5);
+
+    // The top entries should be from this agent (it's the most recent), but
+    // no more than 5 in a row at the top
+    let consecutive = 0;
+    for (const e of feed) {
+      if (e.agent === 'GAURU') consecutive++;
+      else break;
+    }
+    expect(consecutive).toBeLessThanOrEqual(5);
+  });
+
+  it('trims an already-oversized top block from persisted data down to 5', async () => {
+    // Simulate a feed that got persisted before per-agent caps existed.
+    // Write 8 consecutive entries from the same agent directly to the feed file.
+    const { writeFileSync } = await import('fs');
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const feedDir = process.env.ACTIVITY_FEED_DIR || join(dirname(fileURLToPath(import.meta.url)), '../src/../data');
+    const feedFile = join(feedDir, 'activityFeed.json');
+
+    const oversized = [];
+    for (let i = 0; i < 8; i++) {
+      oversized.push({ timestamp: `old-${i}`, agent: 'SPAMMER', service: 'legacy' });
+    }
+    for (let i = 0; i < ACTIVITY_MAX_ENTRIES - 8; i++) {
+      oversized.push({ timestamp: `other-${i}`, agent: `other-${i}`, service: 'fill' });
+    }
+    writeFileSync(feedFile, JSON.stringify(oversized, null, 2), 'utf-8');
+
+    // One more write from the same agent should collapse the block
+    recordActivity({ timestamp: 'new', agent: 'SPAMMER', service: 'new' });
+
+    const feed = getActivityFeed();
+    let consecutive = 0;
+    for (const e of feed) {
+      if (e.agent === 'SPAMMER') consecutive++;
+      else break;
+    }
+    expect(consecutive).toBeLessThanOrEqual(5);
+    const totalSpammer = feed.filter((e) => e.agent === 'SPAMMER').length;
+    expect(totalSpammer).toBeLessThanOrEqual(5);
   });
 });

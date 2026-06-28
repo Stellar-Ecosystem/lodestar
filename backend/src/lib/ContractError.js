@@ -9,7 +9,9 @@ export class ContractError extends Error {
 export function handleContractError(err, res, defaultMessage, defaultCode) {
   if (err instanceof ContractError) {
     let status = 400;
-    if (err.code === 'TRANSACTION_TIMEOUT') {
+    if (err.code === 'QUEUE_OVERLOADED') {
+      status = 503;
+    } else if (err.code === 'TRANSACTION_TIMEOUT') {
       status = 504;
     }
     return res.status(status).json({ error: err.message, code: err.code });
