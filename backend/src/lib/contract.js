@@ -63,16 +63,6 @@ export function resetRpcMetrics() {
   rpcMetrics.getTransaction = 0;
 }
 
-// Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
-// Persistent storage entries are extended to this many ledgers on every write.
-export const SERVICE_MAX_TTL = 3_110_400;
-
-// Warn providers when fewer than this many ledgers remain before their listing
-// could expire (~18 days at 5 s/ledger = 10 % of SERVICE_MAX_TTL).
-// Note: any reputation update resets the TTL, so this is a conservative estimate
-// based solely on registered_at; actual expiry may be later.
-export const SERVICE_TTL_WARNING_LEDGERS = 311_040;
-
 const submitQueue = new PQueue({ concurrency: 1 });
 let currentSeqNum = null;
 let lastSeqSyncTime = 0;
@@ -235,6 +225,16 @@ export function simulateAndSubmit(operation, signer) {
   return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
 }
 
+/**
+ * Encode an optional value for a Soroban Option<T> parameter.
+ * null/undefined → ScVal::scvVoid() (the canonical None encoding)
+ * value          → nativeToScVal(value, { type })
+ */
+export function encodeOption(value, type) {
+  if (value === null || value === undefined) return xdr.ScVal.scvVoid();
+  return nativeToScVal(value, { type });
+}
+
 function prunePreparedRegistrySubmissions(now = Date.now()) {
   for (const [token, entry] of preparedRegistrySubmissions.entries()) {
     if (entry.expiresAt <= now) {
@@ -338,15 +338,11 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
   try {
     const contract = getContract();
 
-    const optionArg = category
-      ? nativeToScVal(category, { type: 'string' })
-      : xdr.ScVal.scvVoid();
-
     const callOp = contract.call(
       'list_services_page',
       nativeToScVal(page, { type: 'u32' }),
       nativeToScVal(pageSize, { type: 'u32' }),
-      optionArg,
+      encodeOption(category ?? null, 'string'),
     );
     const retval = await simulateRead(callOp);
     if (!retval) return [];

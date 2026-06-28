@@ -636,3 +636,22 @@ describe('rpcMetrics', () => {
     expect(metrics.simulateTransaction).toBe(0);
   });
 });
+
+describe('encodeOption', () => {
+  it('returns scvVoid for null', () => {
+    const result = contractLib.encodeOption(null, 'string');
+    expect(result).toBeInstanceOf(sdkPkg.xdr.ScVal);
+    expect(result.switch().name).toBe('scvVoid');
+  });
+
+  it('returns scvVoid for undefined', () => {
+    const result = contractLib.encodeOption(undefined, 'string');
+    expect(result.switch().name).toBe('scvVoid');
+  });
+
+  it('encodes a string value with nativeToScVal', () => {
+    const result = contractLib.encodeOption('weather', 'string');
+    expect(result.switch().name).toBe('scvString');
+    expect(result.str()).toBe('weather');
+  });
+});
