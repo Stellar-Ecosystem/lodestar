@@ -553,7 +553,7 @@ router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (r
     logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err, address, caller: req.callerAddress }, 'PUT /agents/:address/policy failed');
+
     return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });

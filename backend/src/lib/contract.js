@@ -63,6 +63,16 @@ export function resetRpcMetrics() {
   rpcMetrics.getTransaction = 0;
 }
 
+// Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
+// Persistent storage entries are extended to this many ledgers on every write.
+export const SERVICE_MAX_TTL = 3_110_400;
+
+// Warn providers when fewer than this many ledgers remain before their listing
+// could expire (~18 days at 5 s/ledger = 10 % of SERVICE_MAX_TTL).
+// Note: any reputation update resets the TTL, so this is a conservative estimate
+// based solely on registered_at; actual expiry may be later.
+export const SERVICE_TTL_WARNING_LEDGERS = 311_040;
+
 const submitQueue = new PQueue({ concurrency: 1 });
 let currentSeqNum = null;
 let lastSeqSyncTime = 0;
