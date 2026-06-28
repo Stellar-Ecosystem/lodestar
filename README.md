@@ -55,9 +55,10 @@ Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. 
 
 ### Provider flow
 1. Deploy any HTTP service that returns `402 Payment Required` with x402 headers
-2. Call `register_service` on the Lodestar Soroban contract with your endpoint, price, and category
-3. If an active service with the same provider and endpoint already exists, registration is rejected to prevent duplicate active entries
-4. Your service is now permanently discoverable by any agent querying the registry
+2. Ask the backend for `POST /api/registry/prepare-register`, which builds an unsigned Soroban transaction using your real Stellar address as `provider`
+3. Sign that XDR in Freighter (or another wallet) and submit it through `POST /api/registry/submit-signed-tx`
+4. If an active service with the same provider and endpoint already exists, registration is rejected to prevent duplicate active entries
+5. Your service is now permanently discoverable by any agent querying the registry
 
 ### Agent flow
 1. Call `list_services(category)` — returns active services sorted by reputation
@@ -135,7 +136,7 @@ npm install
 ### 4. Run seed script
 
 ```sh
-node scripts/seed.js
+SEEDING_MODE=true node scripts/seed.js
 ```
 
 This registers the four demo services (weather, search, and two live Stellar services) into the on-chain registry.

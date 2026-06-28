@@ -9,6 +9,7 @@ const REQUIRED = {
   STELLAR_NETWORK_PASSPHRASE: 'Test',
   FACILITATOR_URL: 'https://facilitator.test',
   USDC_CONTRACT_ID: 'C_USDC',
+  PAYMENT_ADDRESS: 'GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV',
 };
 
 const ORIGINAL_ENV = { ...process.env };
@@ -16,8 +17,9 @@ const ORIGINAL_ENV = { ...process.env };
 async function loadConfig(overrides = {}) {
   vi.resetModules();
   process.env = { ...ORIGINAL_ENV, ...REQUIRED, ...overrides };
-  // Strip any rate-limit/proxy vars not explicitly provided so defaults apply.
+  // Strip optional vars not explicitly provided so defaults apply.
   for (const key of [
+    'AGENTS_CONTRACT_ID',
     'RATE_LIMIT_WINDOW_MS',
     'RATE_LIMIT_MAX',
     'PAYMENT_RATE_LIMIT_WINDOW_MS',
@@ -113,6 +115,48 @@ describe('config demoRun polling env validation', () => {
   });
 });
 
+describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('uses explicit PAYMENT_ADDRESS when set to a valid Stellar address', async () => {
+    const config = await loadConfig({
+  PAYMENT_ADDRESS: 'GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV',
+    });
+    expect(config.x402.payTo).toBe('GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV');
+  });
+
+  it('falls back to SERVER_STELLAR_ADDRESS when PAYMENT_ADDRESS is not set', async () => {
+    // Delete PAYMENT_ADDRESS from the REQUIRED that loadConfig always applies
+    const overrides = {};
+    const env = { ...ORIGINAL_ENV, ...REQUIRED, ...overrides };
+    delete env.PAYMENT_ADDRESS;
+    vi.resetModules();
+    process.env = { ...env };
+    for (const key of [
+      'RATE_LIMIT_WINDOW_MS',
+      'RATE_LIMIT_MAX',
+      'PAYMENT_RATE_LIMIT_WINDOW_MS',
+      'PAYMENT_RATE_LIMIT_MAX',
+      'TRUST_PROXY',
+      'DEMO_RUN_POLL_MAX_WAIT_MS',
+      'DEMO_RUN_POLL_INITIAL_DELAY_MS',
+      'DEMO_RUN_POLL_MAX_DELAY_MS',
+    ]) {
+      delete process.env[key];
+    }
+    const config = (await import('./config.js')).default;
+    expect(config.x402.payTo).toBe('G_TEST');
+  });
+
+  it('throws when PAYMENT_ADDRESS is an invalid Stellar address format', async () => {
+    await expect(loadConfig({ PAYMENT_ADDRESS: 'INVALID' })).rejects.toThrow(
+      'Invalid PAYMENT_ADDRESS',
+    );
+  });
+});
+
 describe('config trustProxy parsing', () => {
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
@@ -135,5 +179,43 @@ describe('config trustProxy parsing', () => {
 
   it('passes through an IP/subnet string', async () => {
     expect((await loadConfig({ TRUST_PROXY: '127.0.0.1' })).trustProxy).toBe('127.0.0.1');
+  });
+});
+
+describe('config AGENTS_CONTRACT_ID startup warning', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+  });
+
+  it('warns when AGENTS_CONTRACT_ID is not set', async () => {
+    await loadConfig();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AGENTS_CONTRACT_ID is not set'),
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AGENTS_NOT_CONFIGURED'),
+    );
+  });
+
+  it('does not warn when AGENTS_CONTRACT_ID is set', async () => {
+    await loadConfig({ AGENTS_CONTRACT_ID: 'C_AGENTS' });
+    expect(console.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('AGENTS_CONTRACT_ID'),
+    );
+  });
+
+  it('sets contract.agentsId to the env value when provided', async () => {
+    const config = await loadConfig({ AGENTS_CONTRACT_ID: 'C_AGENTS_TEST' });
+    expect(config.contract.agentsId).toBe('C_AGENTS_TEST');
+  });
+
+  it('sets contract.agentsId to null when not provided', async () => {
+    const config = await loadConfig();
+    expect(config.contract.agentsId).toBeNull();
   });
 });

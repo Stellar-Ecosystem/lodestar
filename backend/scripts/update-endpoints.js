@@ -3,6 +3,8 @@ import { fileURLToPath } from 'url';
 import { listServices, registerServiceOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 
+process.env.SEEDING_MODE ??= 'true';
+
 const BACKEND_URL = process.env.BACKEND_URL;
 
 if (!BACKEND_URL) {
@@ -12,8 +14,8 @@ if (!BACKEND_URL) {
 
 export async function update() {
   try {
-    const weather = await listServices('weather');
-    const search = await listServices('search');
+    const weather = await listServices({ category: 'weather' });
+    const search = await listServices({ category: 'search' });
     const all = [...weather, ...search];
 
     const needsUpdate = all.filter((s) => s.endpoint.includes('localhost'));

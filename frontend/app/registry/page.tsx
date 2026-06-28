@@ -1,22 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import ServiceCard from '@/components/ServiceCard';
 import ServiceCardSkeleton from '@/components/ServiceCardSkeleton';
+import { CATEGORY_FILTERS, CATEGORY_ICONS } from '@/lib/categoryMeta';
 import { fetchServices } from '@/lib/contract';
-import { filterServices, sortServices } from '@/lib/registry';
+import { filterServices } from '@/lib/registry';
+import { sortServices } from '@/lib/sort';
 import type { Category, SortOption } from '@/lib/types';
-
-const CATEGORIES: { label: string; value: Category | 'all' }[] = [
-  { label: 'All', value: 'all' },
-  { label: 'Search', value: 'search' },
-  { label: 'Weather', value: 'weather' },
-  { label: 'Finance', value: 'finance' },
-  { label: 'AI', value: 'ai' },
-  { label: 'Data', value: 'data' },
-  { label: 'Compute', value: 'compute' },
-];
 
 const SORTS: { label: string; value: SortOption }[] = [
   { label: 'Newest', value: 'newest' },
@@ -113,16 +105,17 @@ export default function RegistryPage() {
 
       {/* Category tabs */}
       <div className="flex flex-wrap gap-2 mb-8">
-        {CATEGORIES.map((c) => (
+        {CATEGORY_FILTERS.map((c) => (
           <button
             key={c.value}
             onClick={() => handleCategoryChange(c.value)}
-            className={`px-4 py-1.5 rounded-full text-sm border transition-colors ${
+            className={`px-4 py-1.5 rounded-full text-sm border transition-colors inline-flex items-center gap-1.5 ${
               activeCategory === c.value
                 ? 'bg-primary text-white border-primary'
                 : 'border-border text-secondary hover:border-primary hover:text-primary'
             }`}
           >
+            {c.value !== 'all' ? CATEGORY_ICONS[c.value] : null}
             {c.label}
           </button>
         ))}

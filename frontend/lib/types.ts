@@ -11,6 +11,7 @@ export interface ServiceEntry {
   reputation: number;
   active: boolean;
   registered_at: number;
+  ttl_warning?: boolean;
 }
 
 export interface ApiResponse<T> {
@@ -88,15 +89,16 @@ export interface AgentEntry {
   description: string;
   owner: string;
   score: number;
-  total_payments: number;
-  successful_payments: number;
-  failed_payments: number;
+  total_payments: string;
+  successful_payments: string;
+  failed_payments: string;
   total_volume_stroops: string;
-  registered_at: number;
-  last_active: number;
+  registered_at: string;
+  last_active: string;
   active: boolean;
   flagged: boolean;
   flag_reason: string;
+  is_demo: boolean;
 }
 
 export interface SpendingPolicy {
@@ -106,7 +108,7 @@ export interface SpendingPolicy {
   allowed_categories: string[];
   min_score_to_earn: number;
   daily_spent_stroops: string;
-  last_reset_ledger: number;
+  last_reset_ledger: string;
 }
 
 export type AgentSortOption = 'score' | 'payments' | 'newest';
@@ -129,6 +131,7 @@ export interface AgentStats {
   avgScore: number;
   topAgent: AgentEntry | null;
   totalVolume: string;
+  totalVolumeStroops: string;
 }
 
 export interface AgentEligibilityResponse {

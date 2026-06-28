@@ -8,6 +8,9 @@ import { scoreTier, TIER_LABELS } from '@/lib/types';
 import ScoreBadge from '@/components/ScoreBadge';
 import SpendingPolicyDisplay from '@/components/SpendingPolicy';
 import { fetchAgentEligibility } from '@/lib/contract';
+import { useWallet } from '@/components/WalletContext';
+import { kitSignTransaction } from '@/lib/wallet';
+import { ScoreHistoryChart } from '@/components/ScoreHistoryChart';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const EXPLORER_URL =
@@ -19,6 +22,38 @@ const ACCESS_TIERS = [
   { label: 'Premium services', minScore: 600 },
   { label: 'Elite services', minScore: 900 },
 ];
+
+/** Build an unsigned tx XDR from the backend, sign with wallet, submit. */
+async function walletSignAndSubmit(
+  address: string,
+  callerAddress: string,
+  action: string,
+  params: Record<string, unknown>
+): Promise<void> {
+  // 1. Build unsigned XDR
+  const buildRes = await fetch(`${API}/api/agents/${address}/build-tx`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-caller-address': callerAddress,
+    },
+    body: JSON.stringify({ action, ...params }),
+  });
+  const buildData = await buildRes.json();
+  if (!buildRes.ok) throw new Error(buildData.error ?? 'Failed to build transaction');
+
+  // 2. Sign with wallet (Freighter)
+  const signedXdr = await kitSignTransaction(buildData.xdr);
+
+  // 3. Submit signed XDR
+  const submitRes = await fetch(`${API}/api/agents/${address}/submit-signed-tx`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signedXdr }),
+  });
+  const submitData = await submitRes.json();
+  if (!submitRes.ok) throw new Error(submitData.error ?? 'Failed to submit transaction');
+}
 
 export default function AgentProfilePage() {
   const { address } = useParams<{ address: string }>();
@@ -95,13 +130,20 @@ export default function AgentProfilePage() {
     );
   }
 
+  const totalPayments = Number(agent.total_payments);
+  const successfulPayments = Number(agent.successful_payments);
+  const failedPayments = Number(agent.failed_payments);
+
   const successRate =
-    agent.total_payments > 0
-      ? Math.round((agent.successful_payments / agent.total_payments) * 100)
+    totalPayments > 0
+      ? Math.round((successfulPayments / totalPayments) * 100)
       : null;
 
   const tier = scoreTier(agent.score);
-  const totalVolumeUsdc = (Number(BigInt(agent.total_volume_stroops)) / 10_000_000).toFixed(4);
+  const totalVolumeStroops = BigInt(agent.total_volume_stroops);
+  const usdcWhole = totalVolumeStroops / 10_000_000n;
+  const usdcCents = totalVolumeStroops % 10_000_000n;
+  const totalVolumeUsdc = `${usdcWhole}.${String(usdcCents).padStart(7, '0').slice(0, 4)}`;
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-12">
@@ -134,7 +176,15 @@ export default function AgentProfilePage() {
               </button>
             </div>
           </div>
-          <ScoreBadge score={agent.score} size="md" />
+          <div className="flex items-center gap-6">
+            <ScoreHistoryChart
+              currentScore={agent.score}
+              totalPayments={totalPayments}
+              successfulPayments={successfulPayments}
+              failedPayments={failedPayments}
+            />
+            <ScoreBadge score={agent.score} size="md" />
+          </div>
         </div>
 
         <p className="text-sm text-secondary leading-relaxed mb-6">{agent.description}</p>
@@ -186,16 +236,16 @@ export default function AgentProfilePage() {
 
         {/* Stats grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatCard label="Total payments" value={agent.total_payments.toLocaleString()} />
+          <StatCard label="Total payments" value={totalPayments.toLocaleString()} />
           <StatCard
             label="Successful"
-            value={agent.successful_payments.toLocaleString()}
+            value={successfulPayments.toLocaleString()}
             color="success"
           />
           <StatCard
             label="Failed"
-            value={agent.failed_payments.toLocaleString()}
-            color={agent.failed_payments > 0 ? 'error' : undefined}
+            value={failedPayments.toLocaleString()}
+            color={failedPayments > 0 ? 'error' : undefined}
           />
           <StatCard
             label="Success rate"
@@ -278,8 +328,8 @@ export default function AgentProfilePage() {
       <div className="card p-5 flex flex-wrap gap-6">
         <MetaItem label="Tier" value={TIER_LABELS[tier]} />
         <MetaItem label="Total volume" value={`$${totalVolumeUsdc} USDC`} />
-        <MetaItem label="Registered at ledger" value={`#${agent.registered_at.toLocaleString()}`} />
-        <MetaItem label="Last active at ledger" value={`#${agent.last_active.toLocaleString()}`} />
+        <MetaItem label="Registered at ledger" value={`#${Number(agent.registered_at).toLocaleString()}`} />
+        <MetaItem label="Last active at ledger" value={`#${Number(agent.last_active).toLocaleString()}`} />
         <MetaItem label="Owner" value={`${agent.owner.slice(0, 6)}…${agent.owner.slice(-4)}`} mono />
       </div>
     </div>

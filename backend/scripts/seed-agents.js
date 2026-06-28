@@ -24,7 +24,7 @@ async function ensureServerVoterRegistered() {
     return;
   }
   logger.info({ address }, 'Registering server key as reputation voter agent…');
-  await registerAgentOnChain(address, 'Lodestar Demo Voter', 'Backend demo agent used to cast reputation votes.');
+  await registerAgentOnChain(address, 'Lodestar Demo Voter', 'Backend demo agent used to cast reputation votes.', true);
   logger.info({ address }, 'Server voter agent registered');
 }
 
@@ -86,16 +86,17 @@ async function seed() {
       const address = agent.keypair.publicKey();
       try {
         logger.info({ name: agent.name, address }, 'Registering agent…');
-        await registerAgentOnChain(address, agent.name, agent.description);
+        await registerAgentOnChain(address, agent.name, agent.description, true);
         logger.info({ name: agent.name }, 'Registered — building payment history…');
 
+        const SERVICE_ID = 1; // Use first registered service (or demo service)
         const AMOUNT = 10_000n; // 0.001 USDC in stroops
 
         for (let i = 0; i < agent.successPayments; i++) {
-          await recordPaymentOnChain(address, AMOUNT, true);
+          await recordPaymentOnChain(address, SERVICE_ID, AMOUNT, true);
         }
         for (let i = 0; i < agent.failPayments; i++) {
-          await recordPaymentOnChain(address, AMOUNT, false);
+          await recordPaymentOnChain(address, SERVICE_ID, AMOUNT, false);
         }
 
         const finalScore = Math.min(

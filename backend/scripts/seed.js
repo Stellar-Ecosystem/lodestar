@@ -2,6 +2,8 @@ import 'dotenv/config';
 import { getServiceCount, registerServiceOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 
+process.env.SEEDING_MODE ??= 'true';
+
 const SERVICES = [
   {
     name: 'Lodestar Weather Service',

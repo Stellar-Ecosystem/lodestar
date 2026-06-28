@@ -43,6 +43,13 @@ export async function fetchServiceById(id: number): Promise<ServiceEntry> {
   return apiFetch<ServiceEntry>(`/api/services/${id}`);
 }
 
+export async function fetchServicesByProvider(address: string): Promise<ServiceEntry[]> {
+  const data = await apiFetch<ServicesResponse>(
+    `/api/registry/by-provider/${encodeURIComponent(address)}`
+  );
+  return data.services;
+}
+
 // Reputation votes are cast on behalf of a registered demo agent; the backend
 // only signs for agents it holds keys for. Configure the public demo agent
 // address the UI votes as via NEXT_PUBLIC_DEMO_AGENT_ADDRESS.
@@ -72,95 +79,64 @@ export interface RegisterFormData {
   category: Category;
 }
 
+interface PreparedRegistryTxResponse {
+  xdr: string;
+  submitToken: string;
+}
+
+interface SubmittedRegistryTxResponse {
+  success: boolean;
+  hash: string;
+  id: number | null;
+}
+
 export async function registerService(
   formData: RegisterFormData,
   walletAddress: string
 ): Promise<{ txHash: string; id: number }> {
-  const stellarSdk = await import('@stellar/stellar-sdk');
-  const sdk = (stellarSdk as unknown as { default: typeof stellarSdk }).default ?? stellarSdk;
-  const {
-    Contract,
-    TransactionBuilder,
-    BASE_FEE,
-    Networks,
-    rpc,
-    nativeToScVal,
-    scValToNative,
-    Address,
-  } = sdk;
-
   const { kitSignTransaction: signTx } = await import('./wallet');
+  const prepared = await apiFetch<PreparedRegistryTxResponse>('/api/registry/prepare-register', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: formData.name,
+      description: formData.description,
+      endpoint: formData.endpoint,
+      priceUsdc: formData.price_usdc,
+      category: formData.category,
+      providerAddress: walletAddress,
+    }),
+  });
 
-  const contractId = process.env.NEXT_PUBLIC_CONTRACT_ID ?? '';
-  const rpcUrl =
-    process.env.NEXT_PUBLIC_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
-  const networkPassphrase = Networks.TESTNET;
+  const signedXdr = await signTx(prepared.xdr);
+  const result = await apiFetch<SubmittedRegistryTxResponse>('/api/registry/submit-signed-tx', {
+    method: 'POST',
+    body: JSON.stringify({ signedXdr, submitToken: prepared.submitToken }),
+  });
 
-  const server = new rpc.Server(rpcUrl);
-  const contract = new Contract(contractId);
-  const account = await server.getAccount(walletAddress);
-
-  const providerAddress = Address.fromString(walletAddress);
-
-  const op = contract.call(
-    'register_service',
-    nativeToScVal(providerAddress, { type: 'address' }),
-    nativeToScVal(formData.name, { type: 'string' }),
-    nativeToScVal(formData.description, { type: 'string' }),
-    nativeToScVal(formData.endpoint, { type: 'string' }),
-    nativeToScVal(formData.price_usdc, { type: 'string' }),
-    nativeToScVal(formData.category, { type: 'string' })
-  );
-
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase,
-  })
-    .addOperation(op)
-    .setTimeout(30)
-    .build();
-
-  const simResult = await server.simulateTransaction(tx);
-  if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Simulation failed: ${simResult.error}`);
+  if (!result.success || result.id == null) {
+    throw new Error('Registration submitted but no service id was returned');
   }
 
-  const preparedTx = rpc.assembleTransaction(tx, simResult).build();
-  const signedXdr = await signTx(preparedTx.toXDR());
-
-  const signedTx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
-
-  const sendResult = await server.sendTransaction(signedTx);
-  if (sendResult.status === 'ERROR') {
-    throw new Error('Transaction submission failed');
-  }
-
-  let getResult = await server.getTransaction(sendResult.hash);
-  for (let i = 0; i < 20 && getResult.status === 'NOT_FOUND'; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    getResult = await server.getTransaction(sendResult.hash);
-  }
-
-  if (getResult.status === 'FAILED') {
-    throw new Error('Transaction failed on-chain');
-  }
-
-  const id =
-    getResult.status === 'SUCCESS' && getResult.returnValue
-      ? Number(scValToNative(getResult.returnValue))
-      : 0;
-  return { txHash: sendResult.hash, id };
+  return { txHash: result.hash, id: result.id };
 }
 
 // ── Agent Credit Scoring ──────────────────────────────────────────────────────
 
+// Contract ID for the LodestarAgents on-chain program.
+// All current agent operations flow through the backend API (see apiFetch above).
+// Wire this into a direct contract call if/when the frontend needs to invoke
+// agent operations without a backend intermediary.
+export const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ?? '';
+
 export async function fetchAgents(
   page = 0,
   pageSize = 12,
-  sort: AgentSortOption = 'score'
+  sort: AgentSortOption = 'score',
+  excludeDemo = false
 ): Promise<AgentsResponse> {
+  const excludeDemoParam = excludeDemo ? '&exclude_demo=true' : '';
   return apiFetch<AgentsResponse>(
-    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`
+    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}${excludeDemoParam}`
   );
 }
 

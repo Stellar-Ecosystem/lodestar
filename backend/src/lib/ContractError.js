@@ -7,7 +7,7 @@ export class ContractError extends Error {
 }
 
 export function handleContractError(err, res, defaultMessage, defaultCode) {
-  if (err.name === 'ContractError') {
+  if (err instanceof ContractError) {
     let status = 400;
     if (err.code === 'TRANSACTION_TIMEOUT') {
       status = 504;

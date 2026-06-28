@@ -8,6 +8,7 @@ import logger from '../lib/logger.js';
 import { getService } from '../lib/contract.js';
 import { waitForActivityTxHash } from '../lib/waitForActivityTxHash.js';
 import { recordActivity, getActivityFeed } from './services.js';
+import { validateDemoEndpoint } from './demoValidate.js';
 
 const router = Router();
 
@@ -36,7 +37,9 @@ function buildHttpClient() {
       headers: { ...(init.headers ?? {}), ...paymentHeaders },
     });
 
-    return { response: paid, txHash: '' };
+    // Extract the transaction hash from response headers if present
+    const txHash = paid.headers.get('x-payment-transaction') || '';
+    return { response: paid, txHash };
   };
 
   return httpClient;
@@ -55,25 +58,32 @@ router.post('/demo-run', async (req, res) => {
       return res.status(404).json({ error: 'Service not found', code: 'NOT_FOUND' });
     }
 
-    // Always use internal loopback — registry may store localhost from seed time
-    const baseUrl = `http://127.0.0.1:${config.port}`;
-    let endpointUrl = service.endpoint.replace(/https?:\/\/[^/]+/, baseUrl);
-
-    if (category === 'weather') {
-      endpointUrl += '?lat=40.7128&lon=-74.0060';
-    } else if (category === 'search') {
-      endpointUrl += '?q=Stellar+blockchain+AI+agents';
+    // Validate and sanitize the endpoint URL to prevent SSRF
+    let endpointUrl;
+    try {
+      endpointUrl = validateDemoEndpoint(service.endpoint, category);
+    } catch (e) {
+      return res.status(400).json({ error: e.message, code: e.code || 'ENDPOINT_NOT_ALLOWED' });
     }
 
     const demoRunId = randomUUID();
     const endpoint = new URL(endpointUrl);
+    
+    // Append category‑specific query parameters
+    if (category === 'weather') {
+      endpoint.searchParams.set('lat', '40.7128');
+      endpoint.searchParams.set('lon', '-74.0060');
+    } else if (category === 'search') {
+      endpoint.searchParams.set('q', 'Stellar blockchain AI agents');
+    }
+    
     endpoint.searchParams.set('demoRunId', demoRunId);
-    endpointUrl = endpoint.toString();
+    const finalEndpointUrl = endpoint.toString();
 
     const httpClient = buildHttpClient();
     const activityCountBefore = getActivityFeed().length;
 
-    const { response } = await httpClient.fetchWithTx(endpointUrl);
+    const { response, txHash: fetchedTxHash } = await httpClient.fetchWithTx(finalEndpointUrl);
 
     if (!response.ok) {
       throw new Error(`Service responded with ${response.status}`);
@@ -81,17 +91,18 @@ router.post('/demo-run', async (req, res) => {
 
     const data = await response.json();
 
-    const txHash = await waitForActivityTxHash(
+    const txHash = fetchedTxHash || (await waitForActivityTxHash(
       getActivityFeed,
       activityCountBefore,
-      config.demoRun,
+      {
+        maxWaitMs: config.demoRun.pollMaxWaitMs,
+        initialDelayMs: config.demoRun.pollInitialDelayMs,
+        maxDelayMs: config.demoRun.pollMaxDelayMs,
+      },
       (entry) => entry.demoRunId === demoRunId,
-    );
+    ));
     if (!txHash) {
-      logger.warn(
-        { serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs },
-        'Activity txHash not found before poll timeout',
-      );
+      logger.warn({ serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs }, 'Activity txHash not found before poll timeout');
     }
 
     recordActivity({
@@ -106,10 +117,7 @@ router.post('/demo-run', async (req, res) => {
     res.json({ data, txHash });
   } catch (err) {
     logger.error({ err }, 'POST /api/demo-run failed');
-    res.status(500).json({
-      error: err instanceof Error ? err.message : 'Demo run failed',
-      code: 'DEMO_ERROR',
-    });
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Demo run failed', code: 'DEMO_ERROR' });
   }
 });
 

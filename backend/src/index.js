@@ -3,6 +3,7 @@ import cors from "cors";
 import config from "./config.js";
 import logger from "./lib/logger.js";
 import { checkRpcHealth } from "./lib/stellar.js";
+import { getSubmitQueueDepth, drainSubmitQueue } from "./lib/contract.js";
 import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
@@ -21,6 +22,7 @@ app.use(express.json({ limit: config.jsonBodyLimit }));
 app.get("/healthz", async (_req, res) => {
   try {
     const health = await checkRpcHealth();
+    const queueDepth = getSubmitQueueDepth();
 
     // Determine HTTP status code based on health status
     let statusCode = 200;
@@ -35,6 +37,7 @@ app.get("/healthz", async (_req, res) => {
       rpc: health.rpc,
       contract: health.contract,
       timestamp: health.timestamp,
+      queueDepth,
       ...(health.error && { error: health.error }),
     });
   } catch (err) {
@@ -68,7 +71,7 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-app.listen(config.port, () => {
+
   logger.info(
     {
       port: config.port,
@@ -78,3 +81,20 @@ app.listen(config.port, () => {
     "Lodestar backend running",
   );
 });
+
+async function shutdown() {
+  logger.info("Shutting down gracefully...");
+  server.close(async () => {
+    logger.info("HTTP server closed.");
+    try {
+      await drainSubmitQueue();
+      logger.info("Submit queue drained.");
+    } catch (err) {
+      logger.error({ err }, "Error draining submit queue");
+    }
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

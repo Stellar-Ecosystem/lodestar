@@ -46,8 +46,8 @@ describe('update-endpoints', () => {
 
     await mod.update();
 
-    expect(mockListServices).toHaveBeenCalledWith('weather');
-    expect(mockListServices).toHaveBeenCalledWith('search');
+    expect(mockListServices).toHaveBeenCalledWith({ category: 'weather' });
+    expect(mockListServices).toHaveBeenCalledWith({ category: 'search' });
     expect(mockRegisterServiceOnChain).toHaveBeenCalledWith(
       'Weather',
       'Weather data',

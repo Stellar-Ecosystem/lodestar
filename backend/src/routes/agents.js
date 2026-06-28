@@ -11,10 +11,15 @@ import {
   isAgentEligible,
   flagAgentOnChain,
   deactivateAgentOnChain,
+  adminDeactivateAgentOnChain,
   updatePolicyOnChain,
+  buildUnsignedAgentTx,
+  submitSignedAgentTx,
+  isAgentRegistered,
 } from '../lib/contract.js';
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
+import { adminAuth } from '../middleware/adminAuth.js';
 import { hmacAuth } from '../middleware/hmacAuth.js';
 import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { writeRateLimiter } from '../middleware/rateLimiter.js';
@@ -39,6 +44,11 @@ const AGENTS_CACHE_TTL = 30_000;
 
 const CACHE_BATCH_SIZE = 50;
 
+export function _resetCache() {
+  agentsCache = null;
+  agentsCacheTime = 0;
+}
+
 async function getCachedAgents() {
   const now = Date.now();
   if (agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) return agentsCache;
@@ -59,8 +69,8 @@ async function getCachedAgents() {
 function sortAgents(agents, sort) {
   return [...agents].sort((a, b) => {
     if (sort === 'score') return b.score - a.score;
-    if (sort === 'payments') return b.total_payments - a.total_payments;
-    return b.registered_at - a.registered_at;
+    if (sort === 'payments') return Number(b.total_payments) - Number(a.total_payments);
+    return Number(b.registered_at) - Number(a.registered_at);
   });
 }
 
@@ -84,8 +94,15 @@ router.get('/agents', requireAgentsContract, async (req, res) => {
     const sort = ['score', 'payments', 'newest'].includes(req.query.sort)
       ? req.query.sort
       : 'score';
+    const excludeDemo = req.query.exclude_demo === 'true';
 
-    const allAgents = await getCachedAgents();
+    let allAgents = await getCachedAgents();
+    
+    // Filter out demo agents if requested
+    if (excludeDemo) {
+      allAgents = allAgents.filter(agent => !agent.is_demo);
+    }
+    
     const sorted = sortAgents(allAgents, sort);
     const total = sorted.length;
     const agents = sorted.slice(page * pageSize, (page + 1) * pageSize);
@@ -115,7 +132,7 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
     const totalAgents = agents.length;
 
     if (totalAgents === 0) {
-      return res.json({ totalAgents: 0, avgScore: 0, topAgent: null, totalVolume: '0' });
+      return res.json({ totalAgents: 0, avgScore: 0, topAgent: null, totalVolume: '0', totalVolumeStroops: '0' });
     }
 
     const avgScore = Math.round(agents.reduce((sum, a) => sum + a.score, 0) / totalAgents);
@@ -125,9 +142,11 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
       (sum, a) => sum + BigInt(a.total_volume_stroops),
       0n
     );
-    const totalVolumeUsdc = (Number(totalVolumeStroops) / 10_000_000).toFixed(2);
+    const usdcWhole = totalVolumeStroops / 10_000_000n;
+    const usdcCents = totalVolumeStroops % 10_000_000n;
+    const totalVolume = `${usdcWhole}.${String(usdcCents).padStart(7, '0').slice(0, 2)}`;
 
-    res.json({ totalAgents, avgScore, topAgent, totalVolume: totalVolumeUsdc });
+    res.json({ totalAgents, avgScore, topAgent, totalVolume, totalVolumeStroops: totalVolumeStroops.toString() });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/stats failed');
     return handleContractError(err, res, 'Failed to fetch stats', 'FETCH_ERROR');
@@ -276,6 +295,12 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
       return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
     }
 
+    const isRegistered = await isAgentRegistered(agentAddress);
+    if (isRegistered) {
+      logger.info({ agentAddress }, 'Attempted to register an already registered agent');
+      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+    }
+
     const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
     agentsCache = null; // invalidate so next request reflects the new agent
     logger.info({ agentAddress, name }, 'Agent registered on-chain');
@@ -283,7 +308,7 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
   } catch (err) {
     logger.error({ err }, 'POST /api/agents/register failed');
     if (err.message?.includes('already registered')) {
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS' });
+      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
     }
     return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
   }
@@ -394,44 +419,153 @@ router.get('/agents/:address/check', requireAgentsContract, async (req, res) => 
   }
 });
 
-// Admin routes for owner actions
-router.post('/agents/:address/flag', requireAgentsContract, ownerAuth, async (req, res) => {
+// ── Owner-signed mutation routes ─────────────────────────────────────────────
+// Two-step flow:
+//   1. POST /api/agents/:address/build-tx  → returns unsigned XDR for Freighter
+//   2. POST /api/agents/:address/submit-signed-tx → submits wallet-signed XDR
+//
+// The ownerAuth middleware verifies x-caller-address matches the on-chain owner
+// before building the XDR, preventing XDR construction for non-owners.
+
+// POST /api/agents/:address/build-tx
+// Body: { action: 'flag'|'deactivate'|'update_policy', ...actionParams }
+router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { action, ...params } = req.body;
+    if (!action || !['deactivate', 'update_policy'].includes(action)) {
+      return res.status(400).json({ error: '`action` must be deactivate or update_policy', code: 'INVALID_BODY' });
+    }
+    if (action === 'update_policy') {
+      if (!params.maxPerTxStroops || (typeof params.maxPerTxStroops !== 'string' && typeof params.maxPerTxStroops !== 'number')) {
+        return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
+      }
+      if (!params.maxPerDayStroops || (typeof params.maxPerDayStroops !== 'string' && typeof params.maxPerDayStroops !== 'number')) {
+        return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+      }
+      if (!Array.isArray(params.allowedCategories)) {
+        return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+      }
+      if (typeof params.minScoreToEarn !== 'number') {
+        return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+      }
+    }
+    const xdrBase64 = await buildUnsignedAgentTx(action, address, params);
+    logger.info({ address, action }, 'Built unsigned agent tx XDR');
+    res.json({ xdr: xdrBase64 });
+  } catch (err) {
+    logger.error({ err }, 'POST /agents/:address/build-tx failed');
+    return handleContractError(err, res, 'Failed to build transaction', 'BUILD_TX_ERROR');
+  }
+});
+
+// POST /api/agents/:address/submit-signed-tx
+// Body: { signedXdr: string }
+router.post('/agents/:address/submit-signed-tx', requireAgentsContract, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { signedXdr } = req.body;
+    if (!signedXdr || typeof signedXdr !== 'string') {
+      return res.status(400).json({ error: '`signedXdr` is required', code: 'INVALID_BODY' });
+    }
+    const hash = await submitSignedAgentTx(signedXdr);
+    agentsCache = null; // invalidate so next read reflects the change
+    logger.info({ address, hash }, 'Submitted wallet-signed agent tx');
+    res.json({ success: true, hash });
+  } catch (err) {
+    logger.error({ err }, 'POST /agents/:address/submit-signed-tx failed');
+    return handleContractError(err, res, 'Failed to submit transaction', 'SUBMIT_TX_ERROR');
+  }
+});
+
+// Legacy direct-action routes kept for backwards-compat (server-side signing).
+// These still work but owner must pass x-caller-address matching the on-chain owner.
+router.post('/agents/:address/flag', requireAgentsContract, adminAuth, async (req, res) => {
+  const { address } = req.params;
+  try {
+    const { reason } = req.body;
+    if (!reason || typeof reason !== 'string') {
+      return res.status(400).json({ error: '`reason` is required', code: 'INVALID_BODY' });
+    }
+    await flagAgentOnChain(address, reason);
+    logger.info({ address, reason }, 'Agent flagged (legacy route)');
+    res.json({ success: true });
+  } catch (err) {
+    logger.error({ err, address }, 'POST /agents/:address/flag failed');
+    return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
+  }
+});
+
+// POST /api/admin/agents/:address/flag — Admin-only agent flagging
+router.post('/admin/agents/:address/flag', requireAgentsContract, adminAuth, async (req, res) => {
   try {
     const { address } = req.params;
     const { reason } = req.body;
     if (!reason || typeof reason !== 'string') {
       return res.status(400).json({ error: '`reason` is required', code: 'INVALID_BODY' });
     }
-    await flagAgentOnChain(address, reason, req.callerAddress);
+    const { address: addr } = req.params;
+    await flagAgentOnChain(addr, reason);
+    logger.info({ address: addr, reason }, 'Agent flagged by admin');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /agents/:address/flag failed');
+    const { address: addr } = req.params;
+    logger.error({ err, address: addr }, 'POST /api/admin/agents/:address/flag failed');
     return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
   }
 });
 
-router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, async (req, res) => {
+// POST /api/admin/agents/:address/deactivate — Admin-only agent deactivation
+router.post('/admin/agents/:address/deactivate', requireAgentsContract, adminAuth, async (req, res) => {
   try {
-    const { address } = req.params;
-    await deactivateAgentOnChain(address, req.callerAddress);
+    const { address: addr } = req.params;
+    await adminDeactivateAgentOnChain(addr);
+    logger.info({ address: addr }, 'Agent deactivated by admin');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /agents/:address/deactivate failed');
+    const { address: addr } = req.params;
+    logger.error({ err, address: addr }, 'POST /api/admin/agents/:address/deactivate failed');
     return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
   }
 });
 
-router.post('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
+router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, async (req, res) => {
+  const { address } = req.params;
+  try {
+    await deactivateAgentOnChain(address, req.callerAddress);
+    logger.info({ address, caller: req.callerAddress }, 'Agent deactivated by owner');
+    res.json({ success: true });
+  } catch (err) {
+    logger.error({ err, address }, 'POST /agents/:address/deactivate failed');
+    return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
+  }
+});
+
+
+router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
   try {
     const { address } = req.params;
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
-    if (!maxPerTxStroops || !maxPerDayStroops || !Array.isArray(allowedCategories) || typeof minScoreToEarn !== 'number') {
-      return res.status(400).json({ error: 'Invalid policy parameters', code: 'INVALID_BODY' });
+
+    // Validation
+    if (!maxPerTxStroops || (typeof maxPerTxStroops !== 'string' && typeof maxPerTxStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
     }
+    if (!maxPerDayStroops || (typeof maxPerDayStroops !== 'string' && typeof maxPerDayStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+    }
+    if (!Array.isArray(allowedCategories)) {
+      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+    }
+    if (typeof minScoreToEarn !== 'number') {
+      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+    }
+
     await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
+    logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err }, 'POST /agents/:address/policy failed');
+
     return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });

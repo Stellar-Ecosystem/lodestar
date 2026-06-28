@@ -1,17 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import type { ServiceEntry, Category } from '@/lib/types';
+import { getCategoryMeta } from '@/lib/categoryMeta';
+import type { ServiceEntry } from '@/lib/types';
 import { submitReputation } from '@/lib/contract';
-
-const CATEGORY_COLORS: Record<Category, string> = {
-  search:  'bg-blue-50 text-blue-700',
-  weather: 'bg-sky-50 text-sky-700',
-  finance: 'bg-emerald-50 text-emerald-700',
-  ai:      'bg-violet-50 text-violet-700',
-  data:    'bg-amber-50 text-amber-700',
-  compute: 'bg-rose-50 text-rose-700',
-};
 
 const EXPLORER_URL =
   process.env.NEXT_PUBLIC_EXPLORER_URL ?? 'https://stellar.expert/explorer/testnet';
@@ -38,6 +30,7 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
   const [copied, setCopied] = useState(false);
   const [reputation, setReputation] = useState(service.reputation);
   const [voting, setVoting] = useState(false);
+  const category = getCategoryMeta(service.category);
 
   function copyEndpoint() {
     navigator.clipboard.writeText(service.endpoint);
@@ -66,8 +59,9 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <h3 className="font-semibold text-base leading-snug">{service.name}</h3>
-        <span className={`badge shrink-0 ${CATEGORY_COLORS[service.category] ?? 'bg-gray-50 text-gray-700'}`}>
-          {service.category}
+        <span className={`badge shrink-0 gap-1 ${category.badgeClass}`}>
+          {category.icon}
+          {category.label}
         </span>
       </div>
 

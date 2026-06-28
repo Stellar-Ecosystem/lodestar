@@ -4,9 +4,46 @@ import { HTTPFacilitatorClient } from '@x402/core/server';
 import { ExactStellarScheme } from '@x402/stellar/exact/server';
 import config from '../config.js';
 import logger from '../lib/logger.js';
-import { recordPaymentOnChain } from '../lib/contract.js';
+import { recordPaymentOnChain, getAgent } from '../lib/contract.js';
+import { isValidStellarAddress } from '../middleware/addressValidator.js';
 
 const router = Router();
+
+// Validates and records a payment on-chain. All three guards (txHash presence,
+// address format, and agent registration) must pass before touching the contract,
+// so a forged or bypass-injected x-payment-address header is silently discarded.
+const WEATHER_SERVICE_ID = 1;
+const SEARCH_SERVICE_ID = 2;
+
+// Validates and records a payment on-chain. All three guards (txHash presence,
+// address format, and agent registration) must pass before touching the contract,
+// so a forged or bypass-injected x-payment-address header is silently discarded.
+async function creditPayment(agentAddress, txHash, serviceId, priceStroops, serviceLabel) {
+  if (!txHash) {
+    logger.warn(
+      { agentAddress },
+      `${serviceLabel} payment skipped: x-payment-transaction header absent (possible middleware bypass)`
+    );
+    return;
+  }
+  if (!isValidStellarAddress(agentAddress)) {
+    logger.warn(
+      { agentAddress },
+      `${serviceLabel} payment skipped: x-payment-address fails Stellar address validation`
+    );
+    return;
+  }
+  const agent = await getAgent(agentAddress);
+  if (!agent) {
+    logger.warn(
+      { agentAddress },
+      `${serviceLabel} payment skipped: agent not registered on-chain`
+    );
+    return;
+  }
+
+  logger.info({ agentAddress, txHash }, `${serviceLabel} payment credited to registered agent`);
+}
 
 // Activity feed lives in its own dependency-free module so the feed and
 // pagination logic stay unit-testable in isolation.
@@ -34,7 +71,7 @@ const paymentConfig = {
       scheme: 'exact',
       price: `$${config.x402.weatherPrice}`,
       network: 'stellar:testnet',
-      payTo: config.server.address,
+      payTo: config.x402.payTo,
     },
     description: 'Real-time weather data via Lodestar',
   },
@@ -43,7 +80,7 @@ const paymentConfig = {
       scheme: 'exact',
       price: `$${config.x402.searchPrice}`,
       network: 'stellar:testnet',
-      payTo: config.server.address,
+      payTo: config.x402.payTo,
     },
     description: 'Web search results via Lodestar',
   },
@@ -102,7 +139,7 @@ router.get('/weather', async (req, res) => {
 
     if (agentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.weatherPrice) * 10_000_000));
-      recordPaymentOnChain(agentAddress, priceStroops, true).catch((err) =>
+      creditPayment(agentAddress, txHash, WEATHER_SERVICE_ID, priceStroops, 'weather').catch((err) =>
         logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
       );
     }
@@ -160,7 +197,7 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.searchPrice) * 10_000_000));
-      recordPaymentOnChain(searchAgentAddress, priceStroops, true).catch((err) =>
+      creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search').catch((err) =>
         logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
       );
     }

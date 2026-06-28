@@ -1,23 +1,95 @@
 import pkg from '@stellar/stellar-sdk';
 const {
+  Account,
   Contract,
   Keypair,
+  Transaction,
   TransactionBuilder,
   BASE_FEE,
   xdr,
   Address,
+  StrKey,
   nativeToScVal,
   scValToNative,
   rpc,
 } = pkg;
+import PQueue from 'p-queue';
+import { randomUUID } from 'node:crypto';
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
 import { ContractError } from './ContractError.js';
-import { recordReputationChange } from './reputationHistory.js';
+import {
+  ReturnValueParseError,
+  SimulationError,
+  TransactionFailedError,
+  TransactionTimeoutError,
+} from './contractErrors.js';
 
 
 const TIMEOUT = 30;
+const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
+
+// Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
+// Persistent storage entries are extended to this many ledgers on every write.
+export const SERVICE_MAX_TTL = 3_110_400;
+
+// Warn providers when fewer than this many ledgers remain before their listing
+// could expire (~18 days at 5 s/ledger = 10 % of SERVICE_MAX_TTL).
+// Note: any reputation update resets the TTL, so this is a conservative estimate
+// based solely on registered_at; actual expiry may be later.
+export const SERVICE_TTL_WARNING_LEDGERS = 311_040;
+
+const rpcMetrics = {
+  getAccount: 0,
+  simulateTransaction: 0,
+  sendTransaction: 0,
+  getTransaction: 0,
+};
+
+function logRpcCall(method, latencyMs) {
+  rpcMetrics[method]++;
+  logger.debug({ method, latencyMs, totalCalls: rpcMetrics[method] }, 'RPC call completed');
+}
+
+export function getRpcMetrics() {
+  return { ...rpcMetrics };
+}
+
+export function resetRpcMetrics() {
+  rpcMetrics.getAccount = 0;
+  rpcMetrics.simulateTransaction = 0;
+  rpcMetrics.sendTransaction = 0;
+  rpcMetrics.getTransaction = 0;
+}
+
+// Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
+// Persistent storage entries are extended to this many ledgers on every write.
+export const SERVICE_MAX_TTL = 3_110_400;
+
+// Warn providers when fewer than this many ledgers remain before their listing
+// could expire (~18 days at 5 s/ledger = 10 % of SERVICE_MAX_TTL).
+// Note: any reputation update resets the TTL, so this is a conservative estimate
+// based solely on registered_at; actual expiry may be later.
+export const SERVICE_TTL_WARNING_LEDGERS = 311_040;
+
+const submitQueue = new PQueue({ concurrency: 1 });
+let currentSeqNum = null;
+let lastSeqSyncTime = 0;
+const preparedRegistrySubmissions = new Map();
+let assembleTransactionForSubmit = rpc.assembleTransaction;
+
+export function __setAssembleTransactionForTest(fn) {
+  assembleTransactionForSubmit = fn ?? rpc.assembleTransaction;
+}
+
+export function getSubmitQueueDepth() {
+  return submitQueue.size + submitQueue.pending;
+}
+
+export async function drainSubmitQueue() {
+  await submitQueue.onIdle();
+}
 
 function getContract() {
   return new Contract(config.contract.id);
@@ -64,13 +136,129 @@ function getServerKeypair() {
   return Keypair.fromSecret(config.server.secret);
 }
 
-async function simulateAndSubmit(operation, signer) {
+async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const server = getStellarServer();
   const keypair = signer ?? getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
-  const account = await server.getAccount(keypair.publicKey());
+  const now = Date.now();
+  if (retryCount > 0 || currentSeqNum === null || (now - lastSeqSyncTime > 5000)) {
+    const acctStart = Date.now();
+    const account = await server.getAccount(keypair.publicKey());
+    logRpcCall('getAccount', Date.now() - acctStart);
+    currentSeqNum = BigInt(account.sequence);
+    lastSeqSyncTime = now;
+  }
 
+  const txAccount = new Account(keypair.publicKey(), currentSeqNum.toString());
+
+  const tx = new TransactionBuilder(txAccount, {
+    fee: BASE_FEE,
+    networkPassphrase: passphrase,
+  })
+    .addOperation(operation)
+    .setTimeout(TIMEOUT)
+    .build();
+
+  const simStart = Date.now();
+  const simResult = await server.simulateTransaction(tx);
+  logRpcCall('simulateTransaction', Date.now() - simStart);
+
+  if (rpc.Api.isSimulationError(simResult)) {
+    throw new SimulationError(`Simulation failed: ${simResult.error}`, simResult.error);
+  }
+
+  const preparedTx = assembleTransactionForSubmit(tx, simResult).build();
+  preparedTx.sign(keypair);
+
+  const sendStart = Date.now();
+  const sendResult = await server.sendTransaction(preparedTx);
+  logRpcCall('sendTransaction', Date.now() - sendStart);
+  if (sendResult.status === 'ERROR') {
+    let isBadSeq = false;
+    if (sendResult.errorResultXdr) {
+      try {
+        const txResult = xdr.TransactionResult.fromXDR(sendResult.errorResultXdr, 'base64');
+        const code = txResult.result().switch().name;
+        if (code === 'txBadSeq' || code === 'txBAD_SEQ') {
+          isBadSeq = true;
+        }
+      } catch (e) {
+        // Ignore parse errors here
+      }
+    }
+    if (!isBadSeq && (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))) {
+      isBadSeq = true;
+    }
+
+    if (isBadSeq && retryCount < 3) {
+      logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
+      return _simulateAndSubmit(operation, signer, retryCount + 1);
+    }
+    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, sendResult.hash, sendResult.errorResult || sendResult);
+  }
+
+  logger.debug({ hash: sendResult.hash }, 'Submitted Soroban transaction');
+
+  let getResult;
+  for (let i = 0; i < 20; i++) {
+    const txStart = Date.now();
+    getResult = await server.getTransaction(sendResult.hash);
+    logRpcCall('getTransaction', Date.now() - txStart);
+    if (getResult.status !== 'NOT_FOUND') break;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  if (!getResult || getResult.status === 'NOT_FOUND') {
+    throw new TransactionTimeoutError(`Transaction not confirmed after polling: ${sendResult.hash}`, sendResult.hash);
+  }
+
+  if (getResult.status === 'FAILED') {
+    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+  }
+
+  if (getResult.returnValue) {
+    try {
+      getResult.nativeReturnValue = scValToNative(getResult.returnValue);
+    } catch (err) {
+      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+    }
+  }
+
+  // Optimistic increment on success
+  currentSeqNum += 1n;
+
+  return getResult;
+}
+
+export function simulateAndSubmit(operation, signer) {
+  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
+}
+
+function prunePreparedRegistrySubmissions(now = Date.now()) {
+  for (const [token, entry] of preparedRegistrySubmissions.entries()) {
+    if (entry.expiresAt <= now) {
+      preparedRegistrySubmissions.delete(token);
+    }
+  }
+}
+
+function createPreparedRegistrySubmission(action, xdrBase64) {
+  prunePreparedRegistrySubmissions();
+  const submitToken = randomUUID();
+  preparedRegistrySubmissions.set(submitToken, {
+    action,
+    expiresAt: Date.now() + REGISTRY_SUBMIT_TOKEN_TTL_MS,
+  });
+  return { xdr: xdrBase64, submitToken };
+}
+
+async function buildUnsignedTx(operation) {
+  const server = getStellarServer();
+  const keypair = getServerKeypair();
+  const passphrase = getNetworkPassphrase();
+
+  const account = await server.getAccount(keypair.publicKey());
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: passphrase,
@@ -80,44 +268,11 @@ async function simulateAndSubmit(operation, signer) {
     .build();
 
   const simResult = await server.simulateTransaction(tx);
-
   if (rpc.Api.isSimulationError(simResult)) {
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
-  const preparedTx = rpc.assembleTransaction(tx, simResult).build();
-  preparedTx.sign(keypair);
-
-  const sendResult = await server.sendTransaction(preparedTx);
-  if (sendResult.status === 'ERROR') {
-    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
-  }
-
-  let getResult;
-  for (let i = 0; i < 20; i++) {
-    try {
-      getResult = await server.getTransaction(sendResult.hash);
-      if (getResult.status !== 'NOT_FOUND') break;
-    } catch (parseErr) {
-      // Protocol-22 XDR parse errors on confirmed txs — treat as SUCCESS
-      if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
-        logger.warn({ hash: sendResult.hash }, 'getTransaction XDR parse error — assuming confirmed');
-        return { status: 'SUCCESS', returnValue: null };
-      }
-      throw parseErr;
-    }
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-
-  if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new ContractError(`Transaction not confirmed after polling: ${sendResult.hash}`, 'TRANSACTION_TIMEOUT');
-  }
-
-  if (getResult.status === 'FAILED') {
-    throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
-  }
-
-  return getResult;
+  return assembleTransactionForSubmit(tx, simResult).build().toXDR();
 }
 
 async function simulateRead(operation) {
@@ -125,7 +280,7 @@ async function simulateRead(operation) {
   const keypair = getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
-  const account = await server.getAccount(keypair.publicKey());
+  const account = new Account(keypair.publicKey(), '0');
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -135,13 +290,47 @@ async function simulateRead(operation) {
     .setTimeout(TIMEOUT)
     .build();
 
+  const simStart = Date.now();
   const simResult = await server.simulateTransaction(tx);
+  logRpcCall('simulateTransaction', Date.now() - simStart);
 
   if (rpc.Api.isSimulationError(simResult)) {
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
   return simResult.result?.retval;
+}
+
+export async function simulateReadBatch(operations) {
+  if (operations.length === 0) return [];
+
+  const server = getStellarServer();
+  const keypair = getServerKeypair();
+  const passphrase = getNetworkPassphrase();
+
+  const results = [];
+  for (const op of operations) {
+    const account = new Account(keypair.publicKey(), '0');
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: passphrase,
+    })
+      .addOperation(op)
+      .setTimeout(TIMEOUT)
+      .build();
+
+    const simStart = Date.now();
+    const simResult = await server.simulateTransaction(tx);
+    logRpcCall('simulateTransaction', Date.now() - simStart);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new ContractError(`Batch simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
+    }
+
+    results.push(simResult.result?.retval);
+  }
+
+  return results;
 }
 
 
@@ -171,6 +360,7 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
       description: item.description,
       endpoint: item.endpoint,
       price_usdc: item.price_usdc,
+      pay_to: item.pay_to,
       category: item.category,
       provider: item.provider?.toString() ?? item.provider,
       reputation: Number(item.reputation),
@@ -196,6 +386,7 @@ export async function getService(id) {
       description: native.description,
       endpoint: native.endpoint,
       price_usdc: native.price_usdc,
+      pay_to: native.pay_to,
       category: native.category,
       provider: native.provider?.toString() ?? native.provider,
       reputation: Number(native.reputation),
@@ -245,18 +436,42 @@ export async function activeServiceExists(provider, endpoint, fetchServices = li
   return contractHelpers.activeServiceExists(provider, endpoint, fetchServices);
 }
 
+export async function listServicesByProvider(provider, fetchServices = listServices) {
+  let page = 0;
+  const pageSize = 20;
+  const matches = [];
+
+  while (true) {
+    const services = await fetchServices({ page, pageSize });
+    if (!services.length) {
+      return matches;
+    }
+
+    matches.push(...services.filter((service) => service.provider === provider));
+    page += 1;
+  }
+}
+
 /**
  * Register a service on-chain.
- * Rejects duplicate active service entries for the same provider and endpoint.
+ * Only available to seed/ops scripts that explicitly opt into SEEDING_MODE.
  */
 export async function registerServiceOnChain(
   name,
   description,
   endpoint,
   priceUsdc,
-  category
+  category,
+  payTo
 ) {
   try {
+    if (process.env.SEEDING_MODE !== 'true') {
+      throw new ContractError(
+        'Server-signed service registration is disabled. Set SEEDING_MODE=true for seed scripts or use the wallet-signed registry flow.',
+        'SEEDING_MODE_REQUIRED'
+      );
+    }
+
     const keypair = getServerKeypair();
     const providerAddress = Address.fromString(keypair.publicKey());
     const provider = providerAddress.toString();
@@ -270,6 +485,8 @@ export async function registerServiceOnChain(
     }
 
     const contract = getContract();
+    const payToAddress = payTo || config.x402.payTo;
+
     const op = contract.call(
       'register_service',
       nativeToScVal(providerAddress, { type: 'address' }),
@@ -277,16 +494,161 @@ export async function registerServiceOnChain(
       nativeToScVal(description, { type: 'string' }),
       nativeToScVal(endpoint, { type: 'string' }),
       nativeToScVal(priceUsdc, { type: 'string' }),
+      nativeToScVal(payToAddress, { type: 'string' }),
       nativeToScVal(category, { type: 'string' })
     );
 
     const result = await simulateAndSubmit(op);
-    const retval = result.returnValue;
-    return retval ? Number(scValToNative(retval)) : null;
+    return result.nativeReturnValue !== undefined ? Number(result.nativeReturnValue) : null;
   } catch (err) {
     logger.error({ err, name }, 'registerServiceOnChain failed');
     throw err;
   }
+}
+
+/**
+ * Deactivate a service on-chain.
+ *
+ * Validates service existence, provider ownership, and active status, then
+ * builds an unsigned transaction XDR for the provider to sign with their
+ * wallet (e.g. Freighter). The contract enforces `provider.require_auth()`
+ * so the transaction must be authorized by the provider's key, not the
+ * server key.
+ *
+ * @param {number} id - The numeric service ID to deactivate
+ * @param {string} providerAddress - Stellar address of the provider who owns the service
+ * @returns {Promise<{xdr: string, submitToken: string}>} prepared tx for wallet signing
+ * @throws {ContractError} if the service is not found, provider doesn't match, or already inactive
+ */
+export async function deactivateServiceOnChain(id, providerAddress) {
+  try {
+    // Read the service directly from chain to distinguish "not found" from
+    // backend/RPC failures — getService() swallows errors and returns null.
+    const contract = getContract();
+    const readOp = contract.call('get_service', nativeToScVal(BigInt(id), { type: 'u64' }));
+    let retval;
+    try {
+      retval = await simulateRead(readOp);
+    } catch (readErr) {
+      // simulateRead threw — this is an RPC/simulation failure, not "not found"
+      logger.error({ err: readErr, id }, 'deactivateServiceOnChain: failed to read service from chain');
+      throw new ContractError(
+        `Failed to read service ${id}: ${readErr.message ?? 'RPC error'}`,
+        'SERVICE_READ_FAILED'
+      );
+    }
+
+    if (!retval) {
+      throw new ContractError(`Service ${id} not found`, 'SERVICE_NOT_FOUND');
+    }
+
+    const native = scValToNative(retval);
+    const serviceProvider = native.provider?.toString() ?? native.provider;
+
+    if (serviceProvider !== providerAddress) {
+      throw new ContractError(
+        'Only the provider that registered this service can deactivate it',
+        'PROVIDER_MISMATCH'
+      );
+    }
+    if (!native.active) {
+      throw new ContractError(`Service ${id} is already deactivated`, 'ALREADY_INACTIVE');
+    }
+
+    // Build unsigned tx — the provider must sign with their wallet to satisfy
+    // the on-chain `provider.require_auth()` check.
+    const prepared = await buildUnsignedRegistryTx('deactivate', providerAddress, { id });
+    logger.info({ id, providerAddress }, 'Built unsigned deactivation tx for provider signing');
+    return prepared;
+  } catch (err) {
+    if (!(err instanceof ContractError)) {
+      logger.error({ err, id, providerAddress }, 'deactivateServiceOnChain failed');
+    }
+    throw err;
+  }
+}
+
+export async function buildUnsignedRegistryTx(action, providerAddress, params = {}) {
+  const contract = getContract();
+  const provider = Address.fromString(providerAddress);
+
+  if (action === 'register') {
+    if (await contractHelpers.activeServiceExists(providerAddress, params.endpoint)) {
+      logger.warn({ provider: providerAddress, endpoint: params.endpoint }, 'Duplicate active service registration blocked');
+      throw new ContractError(
+        'Active service with same provider and endpoint already exists',
+        'DUPLICATE_SERVICE'
+      );
+    }
+
+    const op = contract.call(
+      'register_service',
+      nativeToScVal(provider, { type: 'address' }),
+      nativeToScVal(params.name, { type: 'string' }),
+      nativeToScVal(params.description, { type: 'string' }),
+      nativeToScVal(params.endpoint, { type: 'string' }),
+      nativeToScVal(String(params.priceUsdc), { type: 'string' }),
+      nativeToScVal(params.payTo || config.x402.payTo, { type: 'string' }),
+      nativeToScVal(params.category, { type: 'string' })
+    );
+
+    const xdr = await buildUnsignedTx(op);
+    return createPreparedRegistrySubmission(action, xdr);
+  }
+
+  if (action === 'deactivate') {
+    const op = contract.call(
+      'deactivate_service',
+      nativeToScVal(provider, { type: 'address' }),
+      nativeToScVal(BigInt(params.id), { type: 'u64' })
+    );
+
+    const xdr = await buildUnsignedTx(op);
+    return createPreparedRegistrySubmission(action, xdr);
+  }
+
+  throw new Error(`Unknown registry action: ${action}`);
+}
+
+export function validatePreparedRegistrySubmission(submitToken, signedXdr) {
+  prunePreparedRegistrySubmissions();
+
+  if (!submitToken || typeof submitToken !== 'string') {
+    throw new ContractError('`submitToken` is required', 'INVALID_BODY');
+  }
+
+  const prepared = preparedRegistrySubmissions.get(submitToken);
+  if (!prepared) {
+    throw new ContractError('Registry submission token is missing or expired', 'INVALID_SUBMIT_TOKEN');
+  }
+
+  let tx;
+  try {
+    tx = new Transaction(signedXdr, getNetworkPassphrase());
+  } catch {
+    throw new ContractError('`signedXdr` must be a valid transaction XDR', 'INVALID_BODY');
+  }
+
+  const [operation] = tx.operations;
+  const expectedFunctionName = prepared.action === 'register'
+    ? 'register_service'
+    : 'deactivate_service';
+
+  const isRegistryInvocation = Boolean(
+    operation &&
+    tx.operations.length === 1 &&
+    operation.type === 'invokeHostFunction' &&
+    operation.func.switch().name === 'hostFunctionTypeInvokeContract' &&
+    StrKey.encodeContract(operation.func.invokeContract().contractAddress().contractId()) === config.contract.id &&
+    operation.func.invokeContract().functionName().toString() === expectedFunctionName
+  );
+
+  if (!isRegistryInvocation) {
+    throw new ContractError('signedXdr does not match the prepared registry transaction', 'SUBMISSION_MISMATCH');
+  }
+
+  preparedRegistrySubmissions.delete(submitToken);
+  return prepared;
 }
 
 /**
@@ -364,15 +726,16 @@ export function mapAgent(raw) {
     description: raw.description,
     owner: raw.owner?.toString() ?? raw.owner,
     score: toNumber(raw.score),
-    total_payments: toNumber(raw.total_payments),
-    successful_payments: toNumber(raw.successful_payments),
-    failed_payments: toNumber(raw.failed_payments),
+    total_payments: String(raw.total_payments),
+    successful_payments: String(raw.successful_payments),
+    failed_payments: String(raw.failed_payments),
     total_volume_stroops: String(raw.total_volume_stroops),
-    registered_at: toNumber(raw.registered_at),
-    last_active: toNumber(raw.last_active),
+    registered_at: String(raw.registered_at),
+    last_active: String(raw.last_active),
     active: raw.active,
     flagged: raw.flagged,
     flag_reason: raw.flag_reason ?? '',
+    is_demo: raw.is_demo ?? false,
   };
 }
 
@@ -384,7 +747,7 @@ export function mapPolicy(raw) {
     allowed_categories: Array.isArray(raw.allowed_categories) ? raw.allowed_categories : [],
     min_score_to_earn: toNumber(raw.min_score_to_earn),
     daily_spent_stroops: String(raw.daily_spent_stroops),
-    last_reset_ledger: toNumber(raw.last_reset_ledger),
+    last_reset_ledger: String(raw.last_reset_ledger),
   };
 }
 
@@ -440,6 +803,29 @@ export async function getAgent(agentAddress) {
   }
 }
 
+/**
+ * Checks if an agent is already registered on-chain.
+ * 
+ * @param {string} agentAddress - Stellar address of the agent
+ * @returns {Promise<boolean>} True if registered, false otherwise
+ * @throws {ContractError|Error} If the read call or simulation fails
+ */
+export async function isAgentRegistered(agentAddress) {
+  try {
+    const contract = getAgentsContract();
+    const op = contract.call(
+      'is_registered',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
+    );
+    const retval = await simulateRead(op);
+    if (!retval) return false;
+    return scValToNative(retval);
+  } catch (err) {
+    logger.error({ err, agentAddress }, 'isAgentRegistered failed');
+    throw err;
+  }
+}
+
 export async function getAgentPolicy(agentAddress) {
   try {
     const contract = getAgentsContract();
@@ -487,24 +873,24 @@ export async function getAgentCount() {
   }
 }
 
-export async function registerAgentOnChain(agentAddress, name, description) {
+export async function registerAgentOnChain(agentAddress, name, description, isDemo = false) {
   try {
     const contract = getAgentsContract();
-    const keypair = getServerKeypair();
-    const ownerAddress = Address.fromString(keypair.publicKey());
     const agentAddr = Address.fromString(agentAddress);
+    // owner = the agent's own wallet address (self-owned), not the server key
+    const ownerAddress = agentAddr;
 
     const op = contract.call(
       'register_agent',
       nativeToScVal(agentAddr, { type: 'address' }),
       nativeToScVal(name, { type: 'string' }),
       nativeToScVal(description, { type: 'string' }),
-      nativeToScVal(ownerAddress, { type: 'address' })
+      nativeToScVal(ownerAddress, { type: 'address' }),
+      nativeToScVal(isDemo, { type: 'bool' })
     );
 
     const result = await simulateAndSubmit(op);
-    const retval = result.returnValue;
-    return retval ? Number(scValToNative(retval)) : null;
+    return result.nativeReturnValue !== undefined ? Number(result.nativeReturnValue) : null;
   } catch (err) {
     logger.error({ err, agentAddress, name }, 'registerAgentOnChain failed');
     throw err;
@@ -609,6 +995,26 @@ export async function deactivateAgentOnChain(agentAddress, callerAddress) {
   }
 }
 
+export async function adminDeactivateAgentOnChain(agentAddress) {
+  try {
+    const contract = getAgentsContract();
+    const keypair = getServerKeypair();
+    const caller = Address.fromString(keypair.publicKey());
+
+    const op = contract.call(
+      'admin_deactivate_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(caller, { type: 'address' })
+    );
+
+    await simulateAndSubmit(op);
+    return true;
+  } catch (err) {
+    logger.error({ err, agentAddress }, 'adminDeactivateAgentOnChain failed');
+    throw err;
+  }
+}
+
 export async function updatePolicyOnChain(
   agentAddress,
   maxPerTxStroops,
@@ -627,7 +1033,7 @@ export async function updatePolicyOnChain(
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(maxPerTxStroops), { type: 'i128' }),
       nativeToScVal(BigInt(maxPerDayStroops), { type: 'i128' }),
-      nativeToScVal(allowedCategories, { type: 'string' }),
+      nativeToScVal(allowedCategories ?? []),
       nativeToScVal(minScoreToEarn, { type: 'i32' }),
       nativeToScVal(caller, { type: 'address' })
     );
@@ -638,4 +1044,109 @@ export async function updatePolicyOnChain(
     logger.error({ err, agentAddress }, 'updatePolicyOnChain failed');
     throw err;
   }
+}
+
+/**
+ * Build an unsigned, simulated transaction XDR for a mutating agent operation.
+ * The frontend wallet (Freighter) will sign the returned XDR and POST it back
+ * via submitSignedAgentTx.
+ *
+ * @param {'deactivate'|'update_policy'} action
+ * @param {string} agentAddress  - the agent's Stellar address (also the owner/caller)
+ * @param {object} params        - action-specific params
+ * @returns {Promise<string>}    - base64-encoded transaction XDR ready for signing
+ */
+export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
+  const contract = getAgentsContract();
+  const callerAddr = Address.fromString(agentAddress);
+
+  let op;
+  if (action === 'deactivate') {
+    op = contract.call(
+      'deactivate_agent',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else if (action === 'update_policy') {
+    op = contract.call(
+      'update_policy',
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
+      nativeToScVal(BigInt(params.maxPerTxStroops), { type: 'i128' }),
+      nativeToScVal(BigInt(params.maxPerDayStroops), { type: 'i128' }),
+      nativeToScVal(params.allowedCategories ?? []),
+      nativeToScVal(params.minScoreToEarn ?? 0, { type: 'i32' }),
+      nativeToScVal(callerAddr, { type: 'address' })
+    );
+  } else {
+    throw new Error(`Unknown action: ${action}`);
+  }
+
+  return buildUnsignedTx(op);
+}
+
+async function submitSignedTx(signedXdr) {
+  const server = getStellarServer();
+  const passphrase = getNetworkPassphrase();
+  const keypair = getServerKeypair();
+
+  const tx = new Transaction(signedXdr, passphrase);
+  tx.sign(keypair);
+
+  const sendStart = Date.now();
+  const sendResult = await server.sendTransaction(tx);
+  logRpcCall('sendTransaction', Date.now() - sendStart);
+  if (sendResult.status === 'ERROR') {
+    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
+  }
+
+  logger.debug({ hash: sendResult.hash }, 'Submitted signed Soroban transaction');
+
+  let getResult;
+  for (let i = 0; i < 20; i++) {
+    const txStart = Date.now();
+    getResult = await server.getTransaction(sendResult.hash);
+    logRpcCall('getTransaction', Date.now() - txStart);
+    if (getResult.status !== 'NOT_FOUND') break;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  if (!getResult || getResult.status === 'NOT_FOUND') {
+    throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
+  }
+  if (getResult.status === 'FAILED') {
+    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+  }
+
+  let nativeReturnValue;
+  if (getResult.returnValue) {
+    try {
+      nativeReturnValue = scValToNative(getResult.returnValue);
+    } catch (err) {
+      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+    }
+  }
+
+  return {
+    hash: sendResult.hash,
+    returnValue: getResult.returnValue ?? null,
+    nativeReturnValue,
+  };
+}
+
+/**
+ * Submit a pre-signed transaction XDR (signed by the agent's Freighter wallet).
+ * @param {string} signedXdr - base64-encoded signed transaction XDR
+ * @returns {Promise<string>} - transaction hash
+ */
+export async function submitSignedAgentTx(signedXdr) {
+  const { hash } = await submitSignedTx(signedXdr);
+  return hash;
+}
+
+export async function submitSignedRegistryTx(signedXdr) {
+  const { hash, nativeReturnValue } = await submitSignedTx(signedXdr);
+  return {
+    hash,
+    id: nativeReturnValue !== undefined ? Number(nativeReturnValue) : null,
+  };
 }
