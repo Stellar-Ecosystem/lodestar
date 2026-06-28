@@ -5,7 +5,7 @@ import logger from "./lib/logger.js";
 import { checkRpcHealth } from "./lib/stellar.js";
 import { getSubmitQueueDepth, drainSubmitQueue } from "./lib/contract.js";
 import registryRouter from "./routes/registry.js";
-import servicesRouter from "./routes/services.js";
+import servicesRouter, { checkFacilitatorHealth } from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
 import agentsRouter from "./routes/agents.js";
 
@@ -23,6 +23,7 @@ app.get("/healthz", async (_req, res) => {
   try {
     const health = await checkRpcHealth();
     const queueDepth = getSubmitQueueDepth();
+    const facilitatorHealth = await checkFacilitatorHealth();
 
     // Determine HTTP status code based on health status
     let statusCode = 200;
@@ -38,6 +39,11 @@ app.get("/healthz", async (_req, res) => {
       contract: health.contract,
       timestamp: health.timestamp,
       queueDepth,
+      facilitator: {
+        status: facilitatorHealth.status,
+        latency_ms: facilitatorHealth.latency_ms,
+        ...(facilitatorHealth.error && { error: facilitatorHealth.error })
+      },
       ...(health.error && { error: health.error }),
     });
   } catch (err) {
