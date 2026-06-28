@@ -404,33 +404,33 @@ describe('POST /api/registry/prepare-register', () => {
   });
 
   it('returns 403 QUOTA_EXCEEDED when IP exceeds MAX_SERVICES_PER_IP', async () => {
-    mockBuildUnsignedRegistryTx.mockResolvedValue({
-      xdr: 'AAAA_XDR',
-      submitToken: 'token-123',
-    });
+    // Mock successful submit-signed-tx responses to increment the per-IP count.
+    mockValidatePreparedRegistrySubmission.mockReturnValue({ action: 'register' });
+    mockSubmitSignedRegistryTx.mockResolvedValue({ hash: 'txhash', id: 123 });
 
-    const body = {
-      name: 'Weather Oracle',
-      description: 'Real-time weather data for autonomous agents.',
-      endpoint: 'https://weather.example.com',
-      priceUsdc: '0.001',
-      category: 'weather',
-      providerAddress: VALID_PROVIDER,
-    };
-
-    // Exhaust the quota (10 calls with different provider addresses to avoid
-    // duplicate-endpoint checks, but same IP)
+    // Exhaust the quota: 10 successful submissions (which increment the counter).
     for (let i = 0; i < 10; i++) {
       const res = await request(app)
-        .post('/api/registry/prepare-register')
-        .send({ ...body, endpoint: `https://weather${i}.example.com`, providerAddress: VALID_PROVIDER });
+        .post('/api/registry/submit-signed-tx')
+        .send({ signedXdr: 'AAAA_SIGNED_XDR', submitToken: `token-${i}` });
       expect(res.status).toBe(200);
     }
 
-    // The 11th request should be blocked
+    // The 11th prepare-register attempt (which checks the counter) should be blocked.
+    mockBuildUnsignedRegistryTx.mockResolvedValue({
+      xdr: 'AAAA_XDR',
+      submitToken: 'token-blocked',
+    });
     const res = await request(app)
       .post('/api/registry/prepare-register')
-      .send({ ...body, endpoint: 'https://blocked.example.com', providerAddress: VALID_PROVIDER });
+      .send({
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://blocked.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
     expect(res.status).toBe(403);
     expect(res.body.code).toBe('QUOTA_EXCEEDED');
   });

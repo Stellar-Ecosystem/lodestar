@@ -96,4 +96,36 @@ describe('activity feed store', () => {
     }
     expect(consecutive).toBeLessThanOrEqual(5);
   });
+
+  it('trims an already-oversized top block from persisted data down to 5', async () => {
+    // Simulate a feed that got persisted before per-agent caps existed.
+    // Write 8 consecutive entries from the same agent directly to the feed file.
+    const { writeFileSync } = await import('fs');
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const feedDir = process.env.ACTIVITY_FEED_DIR || join(dirname(fileURLToPath(import.meta.url)), '../src/../data');
+    const feedFile = join(feedDir, 'activityFeed.json');
+
+    const oversized = [];
+    for (let i = 0; i < 8; i++) {
+      oversized.push({ timestamp: `old-${i}`, agent: 'SPAMMER', service: 'legacy' });
+    }
+    for (let i = 0; i < ACTIVITY_MAX_ENTRIES - 8; i++) {
+      oversized.push({ timestamp: `other-${i}`, agent: `other-${i}`, service: 'fill' });
+    }
+    writeFileSync(feedFile, JSON.stringify(oversized, null, 2), 'utf-8');
+
+    // One more write from the same agent should collapse the block
+    recordActivity({ timestamp: 'new', agent: 'SPAMMER', service: 'new' });
+
+    const feed = getActivityFeed();
+    let consecutive = 0;
+    for (const e of feed) {
+      if (e.agent === 'SPAMMER') consecutive++;
+      else break;
+    }
+    expect(consecutive).toBeLessThanOrEqual(5);
+    const totalSpammer = feed.filter((e) => e.agent === 'SPAMMER').length;
+    expect(totalSpammer).toBeLessThanOrEqual(5);
+  });
 });

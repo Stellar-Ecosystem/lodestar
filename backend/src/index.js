@@ -56,8 +56,13 @@ app.get("/healthz", async (_req, res) => {
   }
 });
 
-// Apply read-rate-limiter to simulation-heavy read routes.
-app.use("/api", readRateLimiter());
+// Read-rate-limiter applied only to GET requests on simulation-heavy routes.
+app.use("/api", (req, res, next) => {
+  if (req.method === "GET" && (req.path === "/services" || req.path.startsWith("/services/") || req.path === "/agents" || req.path.startsWith("/agents/"))) {
+    return readRateLimiter()(req, res, next);
+  }
+  next();
+});
 
 app.use("/api", registryRouter);
 app.use("/api", agentsRouter);
@@ -70,7 +75,7 @@ app.get("/api/admin/quota-status", adminAuth, (_req, res) => {
   const perIpCounts = Object.fromEntries(registrationsByIp);
   res.json({
     registrationsByIp: perIpCounts,
-    queueDepth: getSubmitQueuePending(),
+    queueDepth: getSubmitQueueDepth(),
     queuePending: getSubmitQueuePending(),
     timestamp: new Date().toISOString(),
   });
