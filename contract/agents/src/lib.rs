@@ -713,6 +713,7 @@ impl LodestarAgents {
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::Ledger as _;
 
     // Mock registry contract for testing
     #[contract]
@@ -744,6 +745,7 @@ mod test {
             &String::from_str(env, "Test Agent"),
             &String::from_str(env, "A test agent description"),
             owner,
+            &false,
         );
     }
 
