@@ -252,6 +252,12 @@ function buildHttpClient() {
   return httpClient;
 }
 
+const httpClient = buildHttpClient();
+
+export function dispose() {
+  logger.info('Shutting down Lodestar Agent');
+}
+
 // ── Registry helpers ──────────────────────────────────────────────────────────
 
 /**
