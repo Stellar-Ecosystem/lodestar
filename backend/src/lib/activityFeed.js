@@ -39,6 +39,26 @@ function saveFeed(feed) {
 
 export function recordActivity(entry) {
   const feed = loadFeed();
+  const agent = entry.agent || 'unknown';
+  const maxPerAgent = Number(process.env.ACTIVITY_FEED_MAX_PER_AGENT || 5);
+
+  // Count how many consecutive entries from the top belong to this agent
+  let consecutive = 0;
+  for (const e of feed) {
+    if ((e.agent || 'unknown') === agent) {
+      consecutive++;
+    } else {
+      break;
+    }
+  }
+
+  // If this agent already has maxPerAgent consecutive entries at the top,
+  // remove the oldest one in the consecutive block before prepending
+  // so no single agent monopolizes the visible history.
+  if (consecutive >= maxPerAgent) {
+    feed.splice(maxPerAgent - 1, 1);
+  }
+
   feed.unshift(entry);
   if (feed.length > ACTIVITY_MAX_ENTRIES) feed.pop();
   try {

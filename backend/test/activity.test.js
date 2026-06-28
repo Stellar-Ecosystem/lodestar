@@ -11,9 +11,10 @@ import {
 
 // recordActivity mutates a module-level store; seed it so the slicing
 // assertions below have a known, full feed to page through.
+// Each entry uses a unique agent to avoid the per-agent consecutive cap.
 function seedFeed(count) {
   for (let i = 0; i < count; i++) {
-    recordActivity({ timestamp: `t-${i}`, service: `svc-${i}` });
+    recordActivity({ timestamp: `t-${i}`, agent: `agent-${i}`, service: `svc-${i}` });
   }
 }
 
@@ -69,5 +70,30 @@ describe('activity feed store', () => {
   it('recordActivity caps the feed at ACTIVITY_MAX_ENTRIES', () => {
     seedFeed(ACTIVITY_MAX_ENTRIES + 25);
     expect(getActivityFeed().length).toBe(ACTIVITY_MAX_ENTRIES);
+  });
+
+  it('limits consecutive entries from the same agent to 5', () => {
+    // Clear feed by overflowing it
+    for (let i = 0; i < ACTIVITY_MAX_ENTRIES + 10; i++) {
+      recordActivity({ timestamp: `clear-${i}`, agent: 'other', service: 'clear' });
+    }
+
+    // Record 10 entries from the same agent — only 5 should remain
+    for (let i = 0; i < 10; i++) {
+      recordActivity({ timestamp: `spam-${i}`, agent: 'GAURU', service: 'spam' });
+    }
+
+    const feed = getActivityFeed();
+    const agentEntries = feed.filter((e) => e.agent === 'GAURU');
+    expect(agentEntries.length).toBeLessThanOrEqual(5);
+
+    // The top entries should be from this agent (it's the most recent), but
+    // no more than 5 in a row at the top
+    let consecutive = 0;
+    for (const e of feed) {
+      if (e.agent === 'GAURU') consecutive++;
+      else break;
+    }
+    expect(consecutive).toBeLessThanOrEqual(5);
   });
 });

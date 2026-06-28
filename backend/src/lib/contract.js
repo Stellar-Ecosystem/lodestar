@@ -231,7 +231,20 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   return getResult;
 }
 
+export function getSubmitQueuePending() {
+  return submitQueue.size + submitQueue.pending;
+}
+
+export const MAX_QUEUE_DEPTH = 20;
+
 export function simulateAndSubmit(operation, signer) {
+  const depth = getSubmitQueuePending();
+  if (depth >= (config.maxQueueDepth || MAX_QUEUE_DEPTH)) {
+    throw new ContractError(
+      `Server overloaded: submit queue depth (${depth}) exceeds limit (${config.maxQueueDepth || MAX_QUEUE_DEPTH}). Please retry later.`,
+      'QUEUE_OVERLOADED'
+    );
+  }
   return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
 }
 

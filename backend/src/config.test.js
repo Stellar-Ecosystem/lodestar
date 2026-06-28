@@ -22,8 +22,15 @@ async function loadConfig(overrides = {}) {
     'AGENTS_CONTRACT_ID',
     'RATE_LIMIT_WINDOW_MS',
     'RATE_LIMIT_MAX',
+    'GLOBAL_RATE_LIMIT_WINDOW_MS',
+    'GLOBAL_RATE_LIMIT_MAX',
+    'READ_RATE_LIMIT_WINDOW_MS',
+    'READ_RATE_LIMIT_MAX',
     'PAYMENT_RATE_LIMIT_WINDOW_MS',
     'PAYMENT_RATE_LIMIT_MAX',
+    'MAX_SERVICES_PER_IP',
+    'MAX_QUEUE_DEPTH',
+    'ACTIVITY_FEED_MAX_PER_AGENT',
     'TRUST_PROXY',
     'DEMO_RUN_POLL_MAX_WAIT_MS',
     'DEMO_RUN_POLL_INITIAL_DELAY_MS',
@@ -68,6 +75,34 @@ describe('config rate-limit env validation', () => {
     const config = await loadConfig({ RATE_LIMIT_MAX: '0', PAYMENT_RATE_LIMIT_MAX: '-3' });
     expect(config.rateLimit.max).toBe(20);
     expect(config.rateLimit.payment.max).toBe(10);
+  });
+
+  it('uses safe defaults for global rate limit when vars are unset', async () => {
+    const config = await loadConfig();
+    expect(config.rateLimit.global.windowMs).toBe(900_000);
+    expect(config.rateLimit.global.max).toBe(1000);
+  });
+
+  it('uses safe defaults for read rate limit when vars are unset', async () => {
+    const config = await loadConfig();
+    expect(config.rateLimit.read.windowMs).toBe(60_000);
+    expect(config.rateLimit.read.max).toBe(60);
+  });
+
+  it('honors valid global/read rate-limit overrides', async () => {
+    const config = await loadConfig({
+      GLOBAL_RATE_LIMIT_MAX: '500',
+      READ_RATE_LIMIT_MAX: '30',
+    });
+    expect(config.rateLimit.global.max).toBe(500);
+    expect(config.rateLimit.read.max).toBe(30);
+  });
+
+  it('uses safe defaults for maxServicesPerIp, maxQueueDepth, activityFeedMaxPerAgent', async () => {
+    const config = await loadConfig();
+    expect(config.maxServicesPerIp).toBe(10);
+    expect(config.maxQueueDepth).toBe(20);
+    expect(config.activityFeedMaxPerAgent).toBe(5);
   });
 });
 
@@ -137,8 +172,15 @@ describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
     for (const key of [
       'RATE_LIMIT_WINDOW_MS',
       'RATE_LIMIT_MAX',
+      'GLOBAL_RATE_LIMIT_WINDOW_MS',
+      'GLOBAL_RATE_LIMIT_MAX',
+      'READ_RATE_LIMIT_WINDOW_MS',
+      'READ_RATE_LIMIT_MAX',
       'PAYMENT_RATE_LIMIT_WINDOW_MS',
       'PAYMENT_RATE_LIMIT_MAX',
+      'MAX_SERVICES_PER_IP',
+      'MAX_QUEUE_DEPTH',
+      'ACTIVITY_FEED_MAX_PER_AGENT',
       'TRUST_PROXY',
       'DEMO_RUN_POLL_MAX_WAIT_MS',
       'DEMO_RUN_POLL_INITIAL_DELAY_MS',

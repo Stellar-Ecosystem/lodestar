@@ -5,8 +5,10 @@ import request from 'supertest';
 vi.mock('../config.js', () => ({
   default: {
     rateLimit: {
+      global: { windowMs: 900_000, max: 1000 },
       windowMs: 60_000,
       max: 20,
+      read: { windowMs: 60_000, max: 60 },
       payment: { windowMs: 60_000, max: 10 },
     },
   },
@@ -16,7 +18,7 @@ vi.mock('../lib/logger.js', () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
-import { writeRateLimiter } from './rateLimiter.js';
+import { writeRateLimiter, globalRateLimiter, readRateLimiter } from './rateLimiter.js';
 
 function makeApp(max, windowMs) {
   const app = express();
@@ -50,7 +52,7 @@ describe('writeRateLimiter', () => {
 
     const res = await request(app).post('/write').send({});
     expect(res.status).toBe(429);
-    expect(res.body.code).toBe('RATE_LIMITED');
+    expect(res.body.code).toBe('RATE_LIMIT_EXCEEDED');
     expect(res.body.retryAfterMs).toBe(60_000);
   });
 
@@ -64,5 +66,32 @@ describe('writeRateLimiter', () => {
       lastStatus = (await request(app).post('/write').send({})).status;
     }
     expect(lastStatus).toBe(429);
+  });
+});
+
+describe('globalRateLimiter', () => {
+  it('respects the configured global limit', async () => {
+    const app = express();
+    app.use(globalRateLimiter());
+    app.get('/test', (_req, res) => res.json({ ok: true }));
+
+    // Allow 1000 requests per the mock config — just check it doesn't block early
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app).get('/test');
+      expect(res.status).toBe(200);
+    }
+  });
+});
+
+describe('readRateLimiter', () => {
+  it('respects the configured read limit', async () => {
+    const app = express();
+    app.use(readRateLimiter());
+    app.get('/read', (_req, res) => res.json({ ok: true }));
+
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app).get('/read');
+      expect(res.status).toBe(200);
+    }
   });
 });

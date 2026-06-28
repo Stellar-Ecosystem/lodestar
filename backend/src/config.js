@@ -124,15 +124,34 @@ const config = Object.freeze({
 
   // Rate limiting for public write endpoints (anti-spam for on-chain writes).
   rateLimit: {
+    // Global per-IP limit applied to all requests (1000 req / 15 min).
+    global: {
+      windowMs: parsePositiveInt(process.env.GLOBAL_RATE_LIMIT_WINDOW_MS, 900_000, 'GLOBAL_RATE_LIMIT_WINDOW_MS'),
+      max: parsePositiveInt(process.env.GLOBAL_RATE_LIMIT_MAX, 1000, 'GLOBAL_RATE_LIMIT_MAX'),
+    },
     // Generic limit applied to write routes (POST /reputation/:id, POST /agents/register).
     windowMs: parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 60_000, 'RATE_LIMIT_WINDOW_MS'),
     max: parsePositiveInt(process.env.RATE_LIMIT_MAX, 20, 'RATE_LIMIT_MAX'),
+    // Per-IP limit for simulation-heavy read routes (GET /api/services, GET /api/agents).
+    read: {
+      windowMs: parsePositiveInt(process.env.READ_RATE_LIMIT_WINDOW_MS, 60_000, 'READ_RATE_LIMIT_WINDOW_MS'),
+      max: parsePositiveInt(process.env.READ_RATE_LIMIT_MAX, 60, 'READ_RATE_LIMIT_MAX'),
+    },
     // Tighter, per-agent limit for the payment route.
     payment: {
       windowMs: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_WINDOW_MS, 60_000, 'PAYMENT_RATE_LIMIT_WINDOW_MS'),
       max: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_MAX, 10, 'PAYMENT_RATE_LIMIT_MAX'),
     },
   },
+
+  // Per-registrant quota: max services a single IP may register.
+  maxServicesPerIp: parsePositiveInt(process.env.MAX_SERVICES_PER_IP, 10, 'MAX_SERVICES_PER_IP'),
+
+  // Queue depth protection: reject new writes when pending queue depth exceeds this.
+  maxQueueDepth: parsePositiveInt(process.env.MAX_QUEUE_DEPTH, 20, 'MAX_QUEUE_DEPTH'),
+
+  // Activity feed: max consecutive entries a single agentAddress may occupy.
+  activityFeedMaxPerAgent: parsePositiveInt(process.env.ACTIVITY_FEED_MAX_PER_AGENT, 5, 'ACTIVITY_FEED_MAX_PER_AGENT'),
 
   demoRun: {
     pollMaxWaitMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_WAIT_MS, 8_000, 'DEMO_RUN_POLL_MAX_WAIT_MS'),

@@ -19,11 +19,6 @@ const mockGetCurrentLedgerSequence = vi.fn();
 const SERVICE_MAX_TTL = 3_110_400;
 const SERVICE_TTL_WARNING_LEDGERS = 311_040;
 
-const mockGetCurrentLedgerSequence = vi.fn();
-
-const SERVICE_MAX_TTL = 3_110_400;
-const SERVICE_TTL_WARNING_LEDGERS = 311_040;
-
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
   listServicesByProvider: (...args) => mockListServicesByProvider(...args),
@@ -65,6 +60,11 @@ beforeAll(async () => {
   app = express();
   app.use(express.json());
   app.use('/api', router);
+});
+
+beforeEach(async () => {
+  const { _resetRegistrationsByIp } = await import('./registry.js');
+  _resetRegistrationsByIp();
 });
 
 function makeService(overrides = {}) {
@@ -401,6 +401,38 @@ describe('POST /api/registry/prepare-register', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('DUPLICATE_SERVICE');
+  });
+
+  it('returns 403 QUOTA_EXCEEDED when IP exceeds MAX_SERVICES_PER_IP', async () => {
+    mockBuildUnsignedRegistryTx.mockResolvedValue({
+      xdr: 'AAAA_XDR',
+      submitToken: 'token-123',
+    });
+
+    const body = {
+      name: 'Weather Oracle',
+      description: 'Real-time weather data for autonomous agents.',
+      endpoint: 'https://weather.example.com',
+      priceUsdc: '0.001',
+      category: 'weather',
+      providerAddress: VALID_PROVIDER,
+    };
+
+    // Exhaust the quota (10 calls with different provider addresses to avoid
+    // duplicate-endpoint checks, but same IP)
+    for (let i = 0; i < 10; i++) {
+      const res = await request(app)
+        .post('/api/registry/prepare-register')
+        .send({ ...body, endpoint: `https://weather${i}.example.com`, providerAddress: VALID_PROVIDER });
+      expect(res.status).toBe(200);
+    }
+
+    // The 11th request should be blocked
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({ ...body, endpoint: 'https://blocked.example.com', providerAddress: VALID_PROVIDER });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('QUOTA_EXCEEDED');
   });
 });
 

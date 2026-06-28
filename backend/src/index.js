@@ -3,7 +3,10 @@ import cors from "cors";
 import config from "./config.js";
 import logger from "./lib/logger.js";
 import { checkRpcHealth } from "./lib/stellar.js";
-import { getSubmitQueueDepth, drainSubmitQueue } from "./lib/contract.js";
+import { getSubmitQueueDepth, drainSubmitQueue, getSubmitQueuePending } from "./lib/contract.js";
+import { globalRateLimiter, readRateLimiter } from "./middleware/rateLimiter.js";
+import { adminAuth } from "./middleware/adminAuth.js";
+import { getRegistrationsByIpSnapshot } from "./routes/registry.js";
 import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
@@ -18,6 +21,9 @@ app.set("trust proxy", config.trustProxy);
 
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: config.jsonBodyLimit }));
+
+// Global per-IP rate limiter (applied before any route handlers).
+app.use(globalRateLimiter());
 
 app.get("/healthz", async (_req, res) => {
   try {
@@ -50,10 +56,25 @@ app.get("/healthz", async (_req, res) => {
   }
 });
 
+// Apply read-rate-limiter to simulation-heavy read routes.
+app.use("/api", readRateLimiter());
+
 app.use("/api", registryRouter);
 app.use("/api", agentsRouter);
 app.use("/api", demoRouter);
 app.use("/demo", servicesRouter);
+
+// GET /api/admin/quota-status — admin-only visibility into multi-tenancy state
+app.get("/api/admin/quota-status", adminAuth, (_req, res) => {
+  const registrationsByIp = getRegistrationsByIpSnapshot();
+  const perIpCounts = Object.fromEntries(registrationsByIp);
+  res.json({
+    registrationsByIp: perIpCounts,
+    queueDepth: getSubmitQueuePending(),
+    queuePending: getSubmitQueuePending(),
+    timestamp: new Date().toISOString(),
+  });
+});
 
 app.use((err, _req, res, _next) => {
   if (err.type === "entity.too.large") {
@@ -72,6 +93,7 @@ app.use((err, _req, res, _next) => {
 });
 
 
+const server = app.listen(config.port, () => {
   logger.info(
     {
       port: config.port,

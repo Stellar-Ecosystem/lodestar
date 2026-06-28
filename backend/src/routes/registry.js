@@ -26,17 +26,24 @@ const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
 const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
-// Appends ttl_warning:true when the entry's estimated remaining TTL falls
-// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
-// is unavailable so callers can always treat absence as "no warning data".
-function annotateTtlWarning(service, currentLedger) {
-  if (currentLedger == null) return service;
-  return {
-    ...service,
-    ttl_warning:
-      currentLedger >=
-      service.registered_at + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS,
-  };
+// Per-registrant quota tracking
+const registrationsByIp = new Map();
+export const MAX_SERVICES_PER_IP = 10;
+
+export function _resetRegistrationsByIp() {
+  registrationsByIp.clear();
+}
+
+function getIpRegistrationCount(ip) {
+  return registrationsByIp.get(ip) ?? 0;
+}
+
+function incrementIpRegistration(ip) {
+  registrationsByIp.set(ip, getIpRegistrationCount(ip) + 1);
+}
+
+export function getRegistrationsByIpSnapshot() {
+  return new Map(registrationsByIp);
 }
 
 function normalizePriceUsdc(value) {
@@ -329,6 +336,17 @@ router.get("/registry/by-provider/:address", async (req, res) => {
 
 router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) => {
   try {
+    const ip = req.ip;
+    const currentCount = getIpRegistrationCount(ip);
+    const maxServices = Number(process.env.MAX_SERVICES_PER_IP) || MAX_SERVICES_PER_IP;
+    if (currentCount >= maxServices) {
+      logger.warn({ ip, count: currentCount, max: maxServices }, 'Registration quota exceeded');
+      return res.status(403).json({
+        error: `Registration quota exceeded: maximum ${maxServices} services per IP.`,
+        code: 'QUOTA_EXCEEDED',
+      });
+    }
+
     const {
       name,
       description,
@@ -371,7 +389,8 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
       category,
       payTo: payTo?.trim(),
     });
-    logger.info({ providerAddress, endpoint, category }, "Built unsigned registry registration tx");
+    incrementIpRegistration(ip);
+    logger.info({ providerAddress, endpoint, category, ip }, "Built unsigned registry registration tx");
     res.json(prepared);
   } catch (err) {
     if (err instanceof ContractError) {
