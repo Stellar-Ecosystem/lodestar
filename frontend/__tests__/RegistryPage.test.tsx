@@ -30,7 +30,7 @@ describe('RegistryPage loading state', () => {
   it('shows skeleton cards while loading', () => {
     (fetchServices as jest.Mock).mockReturnValue(new Promise(() => {}));
 
-    expect(getAllByTestId('service-card-skeleton')).toHaveLength(4);
+    expect(screen.getAllByTestId('service-card-skeleton')).toHaveLength(4);
   });
 });
 
