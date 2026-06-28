@@ -11,6 +11,7 @@ export interface ServiceEntry {
   reputation: number;
   active: boolean;
   registered_at: number;
+  ttl_warning?: boolean;
 }
 
 export interface ApiResponse<T> {

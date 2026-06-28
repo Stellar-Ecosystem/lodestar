@@ -530,7 +530,9 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
 });
 
 
+router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
   try {
+    const { address } = req.params;
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
 
     // Validation
@@ -551,7 +553,7 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
     logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
     res.json({ success: true });
   } catch (err) {
-
+    logger.error({ err, address, caller: req.callerAddress }, 'PUT /agents/:address/policy failed');
     return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });

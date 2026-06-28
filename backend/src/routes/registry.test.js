@@ -14,6 +14,11 @@ const mockBuildUnsignedRegistryTx = vi.fn();
 const mockValidatePreparedRegistrySubmission = vi.fn();
 const mockSubmitSignedRegistryTx = vi.fn();
 
+const mockGetCurrentLedgerSequence = vi.fn();
+
+const SERVICE_MAX_TTL = 3_110_400;
+const SERVICE_TTL_WARNING_LEDGERS = 311_040;
+
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
   listServicesByProvider: (...args) => mockListServicesByProvider(...args),
@@ -25,6 +30,12 @@ vi.mock('../lib/contract.js', () => ({
   buildUnsignedRegistryTx: (...args) => mockBuildUnsignedRegistryTx(...args),
   validatePreparedRegistrySubmission: (...args) => mockValidatePreparedRegistrySubmission(...args),
   submitSignedRegistryTx: (...args) => mockSubmitSignedRegistryTx(...args),
+  SERVICE_MAX_TTL: 3_110_400,
+  SERVICE_TTL_WARNING_LEDGERS: 311_040,
+}));
+
+vi.mock('../lib/stellar.js', () => ({
+  getCurrentLedgerSequence: (...args) => mockGetCurrentLedgerSequence(...args),
 }));
 
 vi.mock('../lib/reputationHistory.js', () => ({
@@ -805,5 +816,156 @@ describe('GET /api/services/:id/history', () => {
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Failed to fetch reputation history', code: 'FETCH_ERROR' });
+  });
+});
+
+// ── TTL warning annotation ─────────────────────────────────────────────────────
+//
+// registered_at = 1000
+// expiry ledger  = 1000 + SERVICE_MAX_TTL               = 3_111_400
+// warning onset  = 3_111_400 - SERVICE_TTL_WARNING_LEDGERS = 2_800_360
+
+describe('GET /api/services — ttl_warning annotation', () => {
+  const REGISTERED_AT = 1000;
+  const EXPIRY = REGISTERED_AT + SERVICE_MAX_TTL;             // 3_111_400
+  const WARN_ONSET = EXPIRY - SERVICE_TTL_WARNING_LEDGERS;    // 2_800_360
+
+  beforeEach(() => {
+    mockGetCurrentLedgerSequence.mockReset();
+    mockListServices.mockReset();
+  });
+
+  it('sets ttl_warning:false when ledger is well before the warning onset', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET - 1);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(false);
+  });
+
+  it('sets ttl_warning:true exactly at the warning onset ledger', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(true);
+  });
+
+  it('sets ttl_warning:true past the warning onset (including at expiry)', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(EXPIRY);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(true);
+  });
+
+  it('omits ttl_warning when getCurrentLedgerSequence fails (graceful degradation)', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockRejectedValue(new Error('RPC unreachable'));
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect('ttl_warning' in res.body.services[0]).toBe(false);
+  });
+
+  it('annotates every service in the page independently', async () => {
+    mockListServices.mockResolvedValueOnce([
+      makeService({ id: 1, registered_at: REGISTERED_AT }),
+      makeService({ id: 2, registered_at: REGISTERED_AT + 1_000_000 }),
+    ]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(true);
+    expect(res.body.services[1].ttl_warning).toBe(false);
+  });
+});
+
+describe('GET /api/services/:id — ttl_warning annotation', () => {
+  const REGISTERED_AT = 1000;
+  const WARN_ONSET = REGISTERED_AT + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS;
+
+  beforeEach(() => {
+    mockGetCurrentLedgerSequence.mockReset();
+    mockGetService.mockReset();
+  });
+
+  it('includes ttl_warning:false for a fresh entry', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET - 1);
+
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.ttl_warning).toBe(false);
+  });
+
+  it('includes ttl_warning:true when ledger crosses the warning onset', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
+
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.ttl_warning).toBe(true);
+  });
+
+  it('omits ttl_warning when ledger fetch fails (graceful degradation)', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
+    mockGetCurrentLedgerSequence.mockRejectedValue(new Error('timeout'));
+
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(200);
+    expect('ttl_warning' in res.body).toBe(false);
+  });
+});
+
+describe('GET /api/registry/by-provider/:address — ttl_warning annotation', () => {
+  const REGISTERED_AT = 1000;
+  const WARN_ONSET = REGISTERED_AT + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS;
+
+  beforeEach(() => {
+    mockGetCurrentLedgerSequence.mockReset();
+    mockListServicesByProvider.mockReset();
+  });
+
+  it('includes ttl_warning:false for a fresh entry by provider', async () => {
+    mockListServicesByProvider.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET - 1);
+
+    const res = await request(app).get(`/api/registry/by-provider/${VALID_STELLAR_ADDRESS}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(false);
+  });
+
+  it('includes ttl_warning:true when ledger crosses the warning onset by provider', async () => {
+    mockListServicesByProvider.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
+
+    const res = await request(app).get(`/api/registry/by-provider/${VALID_STELLAR_ADDRESS}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(true);
+  });
+
+  it('omits ttl_warning when ledger fetch fails (graceful degradation) by provider', async () => {
+    mockListServicesByProvider.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockRejectedValue(new Error('timeout'));
+
+    const res = await request(app).get(`/api/registry/by-provider/${VALID_STELLAR_ADDRESS}`);
+
+    expect(res.status).toBe(200);
+    expect('ttl_warning' in res.body.services[0]).toBe(false);
   });
 });
