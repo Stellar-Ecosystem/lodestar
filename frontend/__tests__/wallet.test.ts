@@ -28,18 +28,18 @@ jest.mock('@creit-tech/stellar-wallets-kit/types', () => ({
 import { connectWithWallet, disconnectWallet, WalletErrorType, FREIGHTER_ID } from '../lib/wallet';
 import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
 
-// Save original descriptors once at module level
+// Save window descriptor once at module level (navigator.userAgent is a prototype getter, restore differently)
 const _origWindowDesc = Object.getOwnPropertyDescriptor(globalThis, 'window');
-const _origUADesc = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+const _defaultUA = navigator.userAgent; // capture before any test overrides it
 
 function restoreGlobals() {
   // Restore window descriptor if it was overridden
   if (_origWindowDesc) {
     Object.defineProperty(globalThis, 'window', _origWindowDesc);
   }
-  // Restore navigator.userAgent
-  if (_origUADesc) {
-    Object.defineProperty(navigator, 'userAgent', _origUADesc);
+  // navigator.userAgent is a prototype getter in jsdom — delete own-property override to restore it
+  if (Object.getOwnPropertyDescriptor(navigator, 'userAgent')) {
+    delete (navigator as any).userAgent;
   }
 }
 

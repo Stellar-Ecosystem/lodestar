@@ -192,7 +192,7 @@ describe('RegistryPage pagination — result range label', () => {
       expect(
         screen.getByText((_, el) => {
           const t = el?.textContent ?? '';
-          return t.includes('1') && t.includes(`${PAGE_SIZE}`) && t.includes(`${total}`);
+          return t.includes('Showing') && t.includes('1') && t.includes(`${PAGE_SIZE}`) && t.includes(`${total}`);
         })
       ).toBeInTheDocument()
     );
@@ -210,6 +210,7 @@ describe('RegistryPage pagination — result range label', () => {
         screen.getByText((_, el) => {
           const t = el?.textContent ?? '';
           return (
+            t.includes('Showing') &&
             t.includes(`${PAGE_SIZE + 1}`) &&
             t.includes(`${PAGE_SIZE * 2}`) &&
             t.includes(`${total}`)
