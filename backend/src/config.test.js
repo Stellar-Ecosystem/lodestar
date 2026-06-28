@@ -17,8 +17,9 @@ const ORIGINAL_ENV = { ...process.env };
 async function loadConfig(overrides = {}) {
   vi.resetModules();
   process.env = { ...ORIGINAL_ENV, ...REQUIRED, ...overrides };
-  // Strip any rate-limit/proxy vars not explicitly provided so defaults apply.
+  // Strip optional vars not explicitly provided so defaults apply.
   for (const key of [
+    'AGENTS_CONTRACT_ID',
     'RATE_LIMIT_WINDOW_MS',
     'RATE_LIMIT_MAX',
     'PAYMENT_RATE_LIMIT_WINDOW_MS',
@@ -178,5 +179,43 @@ describe('config trustProxy parsing', () => {
 
   it('passes through an IP/subnet string', async () => {
     expect((await loadConfig({ TRUST_PROXY: '127.0.0.1' })).trustProxy).toBe('127.0.0.1');
+  });
+});
+
+describe('config AGENTS_CONTRACT_ID startup warning', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+  });
+
+  it('warns when AGENTS_CONTRACT_ID is not set', async () => {
+    await loadConfig();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AGENTS_CONTRACT_ID is not set'),
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AGENTS_NOT_CONFIGURED'),
+    );
+  });
+
+  it('does not warn when AGENTS_CONTRACT_ID is set', async () => {
+    await loadConfig({ AGENTS_CONTRACT_ID: 'C_AGENTS' });
+    expect(console.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('AGENTS_CONTRACT_ID'),
+    );
+  });
+
+  it('sets contract.agentsId to the env value when provided', async () => {
+    const config = await loadConfig({ AGENTS_CONTRACT_ID: 'C_AGENTS_TEST' });
+    expect(config.contract.agentsId).toBe('C_AGENTS_TEST');
+  });
+
+  it('sets contract.agentsId to null when not provided', async () => {
+    const config = await loadConfig();
+    expect(config.contract.agentsId).toBeNull();
   });
 });

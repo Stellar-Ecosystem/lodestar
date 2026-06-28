@@ -4,6 +4,7 @@ import {
   listServicesByProvider,
   getService,
   getServiceCount,
+  deactivateServiceOnChain,
   updateReputation,
   isAllowedReputationAgent,
   buildUnsignedRegistryTx,
@@ -24,6 +25,19 @@ const router = Router();
 const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
 const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+// Appends ttl_warning:true when the entry's estimated remaining TTL falls
+// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
+// is unavailable so callers can always treat absence as "no warning data".
+function annotateTtlWarning(service, currentLedger) {
+  if (currentLedger == null) return service;
+  return {
+    ...service,
+    ttl_warning:
+      currentLedger >=
+      service.registered_at + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS,
+  };
+}
 
 function normalizePriceUsdc(value) {
   if (typeof value === "number") {
@@ -162,6 +176,64 @@ router.get("/services/:id", async (req, res) => {
   }
 });
 
+/**
+ * POST /api/services/:id/deactivate
+ * Provider-authenticated deactivation. The caller must supply a valid
+ * `providerAddress` that matches the service's registered provider.
+ * The on-chain contract enforces `provider.require_auth()` so the returned
+ * unsigned transaction must be signed by the provider's wallet (e.g.
+ * Freighter) and submitted through POST /api/registry/submit-signed-tx.
+ *
+ * Body: { providerAddress: string }
+ * Returns: { xdr, submitToken } — unsigned tx ready for wallet signing
+ */
+router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => {
+  const parsedId = parsePositiveSafeInteger(req.params.id);
+  if (parsedId == null) {
+    return res
+      .status(400)
+      .json({ error: "Invalid service ID", code: "INVALID_ID" });
+  }
+
+  try {
+    const { providerAddress } = req.body ?? {};
+    if (!isValidStellarAddress(providerAddress)) {
+      return res.status(400).json({
+        error: "`providerAddress` must be a valid Stellar address",
+        code: "INVALID_BODY",
+      });
+    }
+
+    const prepared = await deactivateServiceOnChain(parsedId, providerAddress);
+    logger.info({ id: parsedId, providerAddress }, "Built unsigned deactivation tx");
+    res.json(prepared);
+  } catch (err) {
+    if (err instanceof ContractError) {
+      if (err.code === "SERVICE_NOT_FOUND") {
+        return res.status(404).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "SERVICE_READ_FAILED") {
+        return res.status(502).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "PROVIDER_MISMATCH") {
+        return res.status(403).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "ALREADY_INACTIVE") {
+        return res.status(409).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "TRANSACTION_TIMEOUT") {
+        return res.status(504).json({ error: err.message, code: err.code });
+      }
+      return res.status(400).json({ error: err.message, code: err.code });
+    }
+    logger.error({ err, id: parsedId }, "POST /api/services/:id/deactivate failed");
+    res.status(500).json({
+      error: "Failed to deactivate service",
+      code: "DEACTIVATE_ERROR",
+    });
+  }
+});
+
 router.get("/services/:id/history", async (req, res) => {
   let id;
   try {
@@ -219,7 +291,27 @@ router.get("/registry/by-provider/:address", async (req, res) => {
       });
     }
 
-    const services = await listServicesByProvider(address);
+    const [servicesResult, ledgerResult] = await Promise.allSettled([
+      listServicesByProvider(address),
+      getCurrentLedgerSequence(),
+    ]);
+
+    if (servicesResult.status === "rejected") throw servicesResult.reason;
+
+    if (ledgerResult.status === "rejected") {
+      logger.warn(
+        { err: ledgerResult.reason },
+        "Failed to fetch current ledger for TTL annotation on GET /api/registry/by-provider/:address",
+      );
+    }
+
+    const currentLedger =
+      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
+
+    const services = servicesResult.value.map((s) =>
+      annotateTtlWarning(s, currentLedger),
+    );
+
     res.json({ services, count: services.length });
   } catch (err) {
     if (err instanceof ContractError) {

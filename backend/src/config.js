@@ -74,6 +74,13 @@ const config = Object.freeze({
     agentsId: process.env.AGENTS_CONTRACT_ID ?? null,
   },
 
+  // Warn at startup if AGENTS_CONTRACT_ID is missing so operators spot it
+  // before hitting 503 AGENTS_NOT_CONFIGURED in production.
+  // The distinction: null means "agents contract not deployed yet" (expected for
+  // plain service listings), whereas a malformed ID would cause on-chain failures.
+  // If credit scoring is a requirement for your deployment, set this env var.
+  _agentsConfigured: process.env.AGENTS_CONTRACT_ID !== undefined,
+
   server: {
     address: process.env.SERVER_STELLAR_ADDRESS,
     secret: process.env.SERVER_STELLAR_SECRET,
@@ -135,3 +142,13 @@ const config = Object.freeze({
 });
 
 export default config;
+
+// Warn at startup if AGENTS_CONTRACT_ID is absent.
+// Null agentsId means credit scoring is unavailable — operators should set the
+// env var if they rely on agent credit scoring.
+if (!process.env.AGENTS_CONTRACT_ID) {
+  console.warn(
+    '[config] AGENTS_CONTRACT_ID is not set. Agent credit scoring will return 503 AGENTS_NOT_CONFIGURED. ' +
+    'Set AGENTS_CONTRACT_ID in your environment if credit scoring is required.',
+  );
+}

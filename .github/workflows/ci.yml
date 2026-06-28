@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Soroban contract: build + test ─────────────────────────────────────
+  contract-build:
+    name: Contract build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contract/target
+            contract/agents/target
+          key: rust-${{ runner.os }}-${{ hashFiles('contract/Cargo.lock', 'contract/agents/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Check Rust formatting
+        working-directory: contract
+        run: cargo fmt --all --check
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Build registry contract
+        working-directory: contract
+        run: stellar contract build
+
+      - name: Test registry contract
+        working-directory: contract
+        run: cargo test
+
+      - name: Build agents contract
+        working-directory: contract/agents
+        run: stellar contract build
+
+      - name: Test agents contract
+        working-directory: contract/agents
+        run: cargo test
+
+  # ── Backend: test ─────────────────────────────────────────────────────
+  backend-test:
+    name: Backend test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: backend
+        run: npm test
+
+  # ── Frontend: type-check + build ──────────────────────────────────────
+  frontend-typecheck:
+    name: Frontend type-check & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Run tests
+        working-directory: frontend
+        run: npm test -- --passWithNoTests
+
+  # ── Agent: test ───────────────────────────────────────────────────────
+  agent-test:
+    name: Agent test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+
+      - name: Install dependencies
+        working-directory: agent
+        run: npm ci
+
+      - name: Run tests
+        working-directory: agent
+        run: npm test
