@@ -33,6 +33,7 @@ import {
   markComplete,
   markFailed,
 } from '../lib/idempotency.js';
+import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js';
 
 const router = Router();
 
@@ -394,6 +395,37 @@ router.post(
   }
 );
 
+// GET /api/agents/:address/payment-history
+router.get('/agents/:address/payment-history', requireAgentsContract, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { limit, offset, errors } = parseActivityPagination(req.query);
+
+    if (errors.length > 0) {
+      logger.warn({ query: req.query, errors, address }, 'Invalid payment-history pagination params');
+      return res.status(400).json({ error: errors.join('; '), code: 'INVALID_PAGINATION' });
+    }
+
+    const feed = getActivityFeed();
+    const payments = feed.filter(
+      (entry) => entry.agent === address && typeof entry.txHash === 'string' && entry.txHash.length > 0
+    );
+
+    const total = payments.length;
+    const items = payments.slice(offset, offset + limit);
+    const hasMore = offset + items.length < total;
+
+    logger.info({ address, limit, offset, total, returned: items.length }, 'Payment history served');
+    return res.json({
+      payments: items,
+      pagination: { total, limit, offset, hasMore },
+    });
+  } catch (err) {
+    logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/payment-history failed');
+    return handleContractError(err, res, 'Failed to fetch payment history', 'FETCH_ERROR');
+  }
+});
+
 // GET /api/agents/:address/check?amount=1000000 (legacy stroops endpoint)
 router.get('/agents/:address/check', requireAgentsContract, async (req, res) => {
   try {
@@ -530,6 +562,9 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
 });
 
 
+// POST /api/agents/:address/update-policy
+router.post('/agents/:address/update-policy', requireAgentsContract, ownerAuth, async (req, res) => {
+  const { address } = req.params;
   try {
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
 
@@ -551,7 +586,7 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
     logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
     res.json({ success: true });
   } catch (err) {
-
+    logger.error({ err, address }, 'POST /agents/:address/update-policy failed');
     return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });
