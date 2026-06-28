@@ -1,7 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import RegistryPage, { PAGE_SIZE } from '../app/registry/page';
+import RegistryPage from '../app/registry/page';
+import { PAGE_SIZE } from '../lib/pagination';
 import { fetchServices } from '../lib/contract';
 
 jest.mock('@/lib/contract', () => ({
