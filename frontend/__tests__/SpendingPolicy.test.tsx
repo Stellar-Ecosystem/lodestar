@@ -5,11 +5,11 @@ import type { SpendingPolicy } from '../lib/types';
 
 const mockPolicy: SpendingPolicy = {
   agent_address: 'GTESTADDRESS',
-  max_per_tx_stroops: '1000000',   // 0.1 USDC
-  max_per_day_stroops: '10000000', // 1 USDC
+  max_per_tx_stroops: '1000000',
+  max_per_day_stroops: '10000000',
   allowed_categories: ['search', 'weather'],
   min_score_to_earn: 100,
-  daily_spent_stroops: '500000',   // 0.05 USDC
+  daily_spent_stroops: '500000',
   last_reset_ledger: '500000',
 };
 
@@ -17,9 +17,11 @@ describe('SpendingPolicyDisplay', () => {
   it('renders policy details in read mode', () => {
     render(<SpendingPolicyDisplay policy={mockPolicy} />);
     expect(screen.getByText('Spending Policy')).toBeInTheDocument();
-    expect(screen.getByText('$0 USDC')).toBeInTheDocument();   // max_per_tx: 1000000 / 10000000 = 0
-    expect(screen.getByText('$1 USDC')).toBeInTheDocument();   // max_per_day
-    expect(screen.getByText('100')).toBeInTheDocument();        // min_score_to_earn
+    // 1000000 stroops = 0.1 USDC, 10000000 stroops = 1 USDC, 500000 stroops = 0.05 USDC
+    expect(screen.getByText('$0.1 USDC')).toBeInTheDocument();
+    expect(screen.getByText('$1 USDC')).toBeInTheDocument();
+    expect(screen.getByText('$0.05 / $1 USDC')).toBeInTheDocument();
+    expect(screen.getByText('100')).toBeInTheDocument();
     expect(screen.getByText('search, weather')).toBeInTheDocument();
   });
 
@@ -99,8 +101,8 @@ describe('SpendingPolicyDisplay', () => {
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          maxPerTxStroops: expect.any(String),
-          maxPerDayStroops: expect.any(String),
+          maxPerTxStroops: '1000000',
+          maxPerDayStroops: '10000000',
           allowedCategories: ['search', 'weather'],
           minScoreToEarn: 100,
         }),

@@ -8,8 +8,11 @@ const STROOPS_PER_USDC = 10_000_000;
 const ALL_CATEGORIES: Category[] = ['search', 'weather', 'finance', 'ai', 'data', 'compute'];
 
 function stroopsToUsdc(stroops: string): string {
-  const n = Number(BigInt(stroops) / BigInt(STROOPS_PER_USDC));
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const n = Number(stroops) / STROOPS_PER_USDC;
+  // toFixed(4) then strip trailing zeros, keep at least one decimal if fractional
+  const fixed = n.toFixed(4);
+  const trimmed = fixed.replace(/0+$/, '').replace(/\.$/, '');
+  return trimmed.includes('.') ? trimmed : Number(trimmed).toLocaleString();
 }
 
 function usdcToStroops(usdc: string): string {

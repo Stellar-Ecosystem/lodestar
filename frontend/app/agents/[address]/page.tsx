@@ -147,6 +147,7 @@ export default function AgentProfilePage() {
     // Refresh policy after successful update
     const res = await fetch(`${API}/api/agents/${address}`);
     const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to reload policy');
     if (data.policy) setPolicy(data.policy);
   };
 
