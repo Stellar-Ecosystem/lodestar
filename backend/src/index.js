@@ -123,6 +123,15 @@ async function shutdown() {
   }, config.shutdownTimeoutMs);
   forceExitTimer.unref();
 
+  // If server hasn't been created yet (signal during startup resume) skip close
+  if (!server) {
+    logger.warn("Server was not yet listening — draining queue directly");
+    await doDrainAndDump();
+    clearTimeout(forceExitTimer);
+    process.exit(0);
+    return;
+  }
+
   // Stop accepting new connections
   server.close(async (closeErr) => {
     if (closeErr) {
@@ -131,29 +140,30 @@ async function shutdown() {
       logger.info("HTTP server closed — no longer accepting new connections");
     }
 
-    // Drain the submit queue so in-flight transactions complete their polling
-    try {
-      await drainSubmitQueue();
-      logger.info("Submit queue drained successfully");
-    } catch (err) {
-      logger.error({ err }, "Error draining submit queue");
-    }
-
-    // Log and dump any remaining pending transactions for operator inspection
-    const pending = getPendingTransactions();
-    if (pending.length > 0) {
-      logger.warn(
-        { count: pending.length, hashes: pending.map((t) => t.hash) },
-        "Pending transactions remain after queue drain — dumped to pending-transactions.json for manual verification",
-      );
-      dumpPendingTransactions();
-    } else {
-      logger.info("No pending transactions — clean shutdown");
-    }
-
+    await doDrainAndDump();
     clearTimeout(forceExitTimer);
     process.exit(0);
   });
+}
+
+async function doDrainAndDump() {
+  try {
+    await drainSubmitQueue();
+    logger.info("Submit queue drained successfully");
+  } catch (err) {
+    logger.error({ err }, "Error draining submit queue");
+  }
+
+  const pending = getPendingTransactions();
+  if (pending.length > 0) {
+    logger.warn(
+      { count: pending.length, hashes: pending.map((t) => t.hash) },
+      "Pending transactions remain after queue drain — dumped to pending-transactions.json for manual verification",
+    );
+    dumpPendingTransactions();
+  } else {
+    logger.info("No pending transactions — clean shutdown");
+  }
 }
 
 process.on("SIGTERM", shutdown);

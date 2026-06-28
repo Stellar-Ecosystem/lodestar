@@ -82,6 +82,7 @@ const pendingTransactions = new Map();
 const PENDING_TRANSACTIONS_FILE = 'pending-transactions.json';
 
 function getOperationName(operation) {
+  if (typeof operation === 'string') return operation;
   try {
     if (operation && typeof operation === 'object') {
       if (operation.method) return operation.method;
@@ -152,7 +153,6 @@ export async function resumePendingTransactions() {
     if (!existsSync(PENDING_TRANSACTIONS_FILE)) return;
     const data = readFileSync(PENDING_TRANSACTIONS_FILE, 'utf-8');
     entries = JSON.parse(data);
-    unlinkSync(PENDING_TRANSACTIONS_FILE);
   } catch {
     return;
   }
@@ -180,6 +180,14 @@ export async function resumePendingTransactions() {
       logger.error({ err, hash: entry.hash, operation: entry.operation }, 'Failed to check pending transaction from previous run');
       trackPendingTransaction(entry.hash, { method: entry.operation });
     }
+  }
+
+  // Only delete the file once every entry has been processed and re-tracked.
+  // If the process is killed mid-resume the file remains for the next restart.
+  try {
+    unlinkSync(PENDING_TRANSACTIONS_FILE);
+  } catch {
+    // best-effort — file may already be gone
   }
 
   if (pendingTransactions.size > 0) {
