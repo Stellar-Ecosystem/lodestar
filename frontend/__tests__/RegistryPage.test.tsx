@@ -4,6 +4,7 @@ import '@testing-library/jest-dom';
 import RegistryPage from '../app/registry/page';
 import { PAGE_SIZE } from '../lib/pagination';
 import { fetchServices } from '../lib/contract';
+import { cache } from 'swr';
 
 jest.mock('@/lib/contract', () => ({
   fetchServices: jest.fn(),
@@ -17,7 +18,7 @@ function makeServices(count: number) {
     description: `Description ${i + 1}`,
     endpoint: `https://example.com/${i + 1}`,
     price_usdc: `${(i + 1) * 0.5}`,
-    category: 'API',
+    category: 'ai',
     provider: `G${String(i + 1).padStart(55, 'A')}`,
     reputation: i + 1,
     active: true,
@@ -26,7 +27,10 @@ function makeServices(count: number) {
 }
 
 describe('RegistryPage loading state', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    cache.clear();
+  });
 
   it('shows skeleton cards while loading', () => {
     (fetchServices as jest.Mock).mockReturnValue(new Promise(() => {}));
@@ -39,7 +43,10 @@ describe('RegistryPage loading state', () => {
 // ── Empty state ────────────────────────────────────────────────────────────────
 
 describe('RegistryPage empty state', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    cache.clear();
+  });
 
   it('shows an empty-registry message when no services are returned', async () => {
     (fetchServices as jest.Mock).mockResolvedValue([]);
@@ -53,7 +60,7 @@ describe('RegistryPage empty state', () => {
 // ── Pagination: basic rendering ────────────────────────────────────────────────
 
 describe('RegistryPage pagination — basic rendering', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); cache.clear(); });
 
   it('renders only PAGE_SIZE cards when results exceed one page', async () => {
     (fetchServices as jest.Mock).mockResolvedValue(makeServices(PAGE_SIZE + 5));
@@ -93,7 +100,7 @@ describe('RegistryPage pagination — basic rendering', () => {
 // ── Pagination: Prev / Next buttons ────────────────────────────────────────────
 
 describe('RegistryPage pagination — Prev / Next buttons', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); cache.clear(); });
 
   it('disables the Previous button on the first page', async () => {
     (fetchServices as jest.Mock).mockResolvedValue(makeServices(PAGE_SIZE + 5));
@@ -143,7 +150,7 @@ describe('RegistryPage pagination — Prev / Next buttons', () => {
 // ── Pagination: numbered page buttons ─────────────────────────────────────────
 
 describe('RegistryPage pagination — numbered page buttons', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); cache.clear(); });
 
   it('marks page 1 as current on initial load', async () => {
     (fetchServices as jest.Mock).mockResolvedValue(makeServices(PAGE_SIZE + 5));
@@ -173,7 +180,7 @@ describe('RegistryPage pagination — numbered page buttons', () => {
 // ── Pagination: "Showing X–Y of Z" label ──────────────────────────────────────
 
 describe('RegistryPage pagination — result range label', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); cache.clear(); });
 
   it('shows the correct range on page 1', async () => {
     const total = PAGE_SIZE + 5;
@@ -227,7 +234,7 @@ describe('RegistryPage pagination — result range label', () => {
 // ── Pagination: reset on filter / sort / category change ──────────────────────
 
 describe('RegistryPage pagination — page resets on state change', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); cache.clear(); });
 
   async function goToPage2() {
     fireEvent.click(await screen.findByRole('button', { name: /next page/i }));
@@ -288,7 +295,7 @@ describe('RegistryPage pagination — page resets on state change', () => {
 // ── Pagination: empty search result ───────────────────────────────────────────
 
 describe('RegistryPage pagination — no results after filtering', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); cache.clear(); });
 
   it('shows no-results message and hides pagination when query matches nothing', async () => {
     (fetchServices as jest.Mock).mockResolvedValue(makeServices(PAGE_SIZE + 5));

@@ -25,23 +25,33 @@ jest.mock('@creit-tech/stellar-wallets-kit/types', () => ({
   Networks: { TESTNET: 'Test SDF Network ; September 2015' },
 }));
 
-import { connectWithWallet, disconnectWallet, WalletError, WalletErrorType, FREIGHTER_ID } from '../lib/wallet';
+import { connectWithWallet, disconnectWallet, WalletErrorType, FREIGHTER_ID } from '../lib/wallet';
 import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
+
+// Save original descriptors once at module level
+const _origWindowDesc = Object.getOwnPropertyDescriptor(globalThis, 'window');
+const _origUADesc = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+
+function restoreGlobals() {
+  // Restore window descriptor if it was overridden
+  if (_origWindowDesc) {
+    Object.defineProperty(globalThis, 'window', _origWindowDesc);
+  }
+  // Restore navigator.userAgent
+  if (_origUADesc) {
+    Object.defineProperty(navigator, 'userAgent', _origUADesc);
+  }
+}
 
 describe('wallet connection', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Reset module state so initKit() runs each time
     disconnectWallet();
-    // Ensure window and navigator exist in jsdom
-    if (typeof window === 'undefined') {
-      (globalThis as any).window = globalThis;
-    }
+    restoreGlobals();
   });
 
   afterEach(() => {
-    // Ensure window/navigator globals are restored (jsdom re-injects them)
-    jest.restoreAllMocks();
+    restoreGlobals();
   });
 
   it('connects successfully', async () => {
@@ -51,32 +61,19 @@ describe('wallet connection', () => {
   });
 
   it('throws UNSUPPORTED_BROWSER when window is undefined', async () => {
-    // Use Object.defineProperty to override the window global for typeof checks
-    const origDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
     Object.defineProperty(globalThis, 'window', { value: undefined, configurable: true, writable: true });
 
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
       type: WalletErrorType.UNSUPPORTED_BROWSER
     });
-
-    // Restore window (jsdom needs it for subsequent tests)
-    if (origDescriptor) {
-      Object.defineProperty(globalThis, 'window', origDescriptor);
-    }
   });
 
   it('throws UNSUPPORTED_BROWSER on mobile', async () => {
-    const origUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
     Object.defineProperty(navigator, 'userAgent', { value: 'iPhone', configurable: true });
 
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
       type: WalletErrorType.UNSUPPORTED_BROWSER
     });
-
-    // Restore
-    if (origUA) {
-      Object.defineProperty(navigator, 'userAgent', origUA);
-    }
   });
 
   it('throws WALLET_NOT_FOUND when extension is missing', async () => {
@@ -105,6 +102,7 @@ describe('wallet disconnect', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     disconnectWallet();
+    restoreGlobals();
   });
 
   it('resets kit state so next connect re-initializes', async () => {
