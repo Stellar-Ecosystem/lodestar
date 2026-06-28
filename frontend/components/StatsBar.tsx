@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { fetchStats } from '@/lib/contract';
 import type { StatsResponse } from '@/lib/types';
 
@@ -8,23 +8,23 @@ const REFRESH_INTERVAL_MS = 30_000;
 
 export default function StatsBar() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
-  const inFlight = useRef(false);
 
   useEffect(() => {
     let active = true;
+    let inFlight = false;
 
     async function load() {
       // Skip if a previous refresh is still pending so a fetch slower than
       // the interval can't overlap the next tick.
-      if (inFlight.current) return;
-      inFlight.current = true;
+      if (inFlight) return;
+      inFlight = true;
       try {
         const data = await fetchStats();
         if (active) setStats(data);
       } catch {
         // silently ignore — stats are non-critical
       } finally {
-        inFlight.current = false;
+        inFlight = false;
       }
     }
 
