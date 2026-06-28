@@ -57,6 +57,7 @@ async function walletSignAndSubmit(
 
 export default function AgentProfilePage() {
   const { address } = useParams<{ address: string }>();
+  const { address: walletAddress } = useWallet();
   const [agent, setAgent] = useState<AgentEntry | null>(null);
   const [policy, setPolicy] = useState<SpendingPolicy | null>(null);
   const [loading, setLoading] = useState(true);
@@ -129,6 +130,25 @@ export default function AgentProfilePage() {
       </div>
     );
   }
+
+  const handlePolicyUpdate = async (params: {
+    maxPerTxStroops: string;
+    maxPerDayStroops: string;
+    allowedCategories: string[];
+    minScoreToEarn: number;
+  }) => {
+    if (!address || !walletAddress) throw new Error('Wallet not connected');
+    await walletSignAndSubmit(address, walletAddress, 'update_policy', {
+      maxPerTxStroops: params.maxPerTxStroops,
+      maxPerDayStroops: params.maxPerDayStroops,
+      allowedCategories: params.allowedCategories,
+      minScoreToEarn: params.minScoreToEarn,
+    });
+    // Refresh policy after successful update
+    const res = await fetch(`${API}/api/agents/${address}`);
+    const data = await res.json();
+    if (data.policy) setPolicy(data.policy);
+  };
 
   const totalPayments = Number(agent.total_payments);
   const successfulPayments = Number(agent.successful_payments);
@@ -258,7 +278,12 @@ export default function AgentProfilePage() {
       {/* Spending policy */}
       {policy && (
         <div className="mb-6">
-          <SpendingPolicyDisplay policy={policy} />
+          <SpendingPolicyDisplay
+            policy={policy}
+            walletAddress={walletAddress}
+            agentOwner={agent.owner}
+            onUpdate={handlePolicyUpdate}
+          />
         </div>
       )}
 
