@@ -1,7 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SWRConfig } from 'swr';
-import AgentsPage, { PAGE_SIZE } from '../app/agents/page';
+import AgentsPage from '../app/agents/page';
+import { PAGE_SIZE } from '../lib/pagination';
 import type { AgentEntry, AgentStats } from '@/lib/types';
 
 // Wrap in a fresh SWR cache per render so cached data never leaks between tests,
@@ -44,6 +45,7 @@ const mockAgent: AgentEntry = {
   active: true,
   flagged: false,
   flag_reason: '',
+  is_demo: false,
 };
 
 const mockStats: AgentStats = {

@@ -74,7 +74,6 @@ function parsePositiveSafeInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-
 router.get("/services", async (req, res) => {
   try {
     const { category, q, page: pageStr } = req.query;

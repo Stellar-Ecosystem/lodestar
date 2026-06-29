@@ -10,12 +10,15 @@ interface Props {
 }
 
 export default function ScoreBadge({ score, showScore = true, size = 'md' }: Props) {
+  const safeScore = Number.isFinite(score) ? score : 0;
+  if (!Number.isFinite(score)) {
+    console.error(JSON.stringify({ event: 'score_announcement_failed', error: 'Invalid score value' }));
+  }
   const [announcement, setAnnouncement] = useState('');
-  const previousScoreRef = useRef(score);
+  const previousScoreRef = useRef(safeScore);
 
   useEffect(() => {
-    if (typeof score !== 'number' || isNaN(score)) {
-      console.error(JSON.stringify({ event: 'score_announcement_failed', error: 'Invalid score value' }));
+    if (!Number.isFinite(score)) {
       return;
     }
 
@@ -29,7 +32,7 @@ export default function ScoreBadge({ score, showScore = true, size = 'md' }: Pro
     }
   }, [score]);
 
-  const tier = scoreTier(score);
+  const tier = scoreTier(safeScore);
   const label = TIER_LABELS[tier];
   const colors = TIER_COLORS[tier];
   const textSize = size === 'sm' ? 'text-xs' : 'text-xs';
@@ -55,7 +58,7 @@ export default function ScoreBadge({ score, showScore = true, size = 'md' }: Pro
       />
       {label}
         {showScore && (
-          <span className="opacity-70 font-mono">{score}</span>
+          <span className="opacity-70 font-mono">{safeScore}</span>
         )}
       </span>
       <div aria-live="polite" aria-atomic="true" role="status" className="sr-only">

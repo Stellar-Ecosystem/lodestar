@@ -16,7 +16,7 @@ const SORTS: { label: string; value: SortOption }[] = [
   { label: 'Lowest Price', value: 'price' },
 ];
 
-export const PAGE_SIZE = 12;
+import { PAGE_SIZE } from '@/lib/pagination';
 
 export default function RegistryPage() {
   const [activeCategory, setActive] = useState<Category | 'all'>('all');
