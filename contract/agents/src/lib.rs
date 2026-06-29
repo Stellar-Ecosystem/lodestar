@@ -460,7 +460,7 @@ impl LodestarAgents {
         }
 
         let key = DataKey::Agent(agent_address);
-        let mut agent: AgentEntryStore = env
+        let mut agent: AgentEntry = env
             .storage()
             .persistent()
             .get(&key)
