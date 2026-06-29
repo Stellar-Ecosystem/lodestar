@@ -61,6 +61,9 @@ function parsePositiveSafeInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+// Appends ttl_warning:true when the entry's estimated remaining TTL falls
+// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
+// is unavailable so callers can always treat absence as "no warning data".
 router.get("/services", async (req, res) => {
   try {
     const { category, q, page: pageStr } = req.query;

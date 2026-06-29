@@ -128,6 +128,11 @@ const config = Object.freeze({
     pollInitialDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_INITIAL_DELAY_MS, 250, 'DEMO_RUN_POLL_INITIAL_DELAY_MS'),
     pollMaxDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_DELAY_MS, 2_000, 'DEMO_RUN_POLL_MAX_DELAY_MS'),
   },
+
+  // Graceful shutdown: how long (ms) to wait for the submit queue to drain
+  // and pending transaction checks before force-exiting. Default is just over
+  // the max polling window (30 s) so an in-flight poll can finish.
+  shutdownTimeoutMs: parsePositiveInt(process.env.SHUTDOWN_TIMEOUT_MS, 35_000, 'SHUTDOWN_TIMEOUT_MS'),
 });
 
 export default config;
