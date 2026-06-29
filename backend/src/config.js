@@ -10,11 +10,6 @@ const required = [
   'USDC_CONTRACT_ID',
 ];
 
-for (const key of required) {
-  if (!process.env[key]) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
-}
 
 /**
  * Parse a positive-integer env var, falling back to a safe default when the
@@ -50,12 +45,6 @@ function parseTrustProxy(value) {
   return value;
 }
 
-// Validate PAYMENT_ADDRESS format if explicitly provided (not relying on fallback)
-if (process.env.PAYMENT_ADDRESS && !/^G[A-Z2-7]{55}$/.test(process.env.PAYMENT_ADDRESS)) {
-  throw new Error(
-    `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`,
-  );
-}
 
 const config = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -143,12 +132,46 @@ const config = Object.freeze({
 
 export default config;
 
-// Warn at startup if AGENTS_CONTRACT_ID is absent.
-// Null agentsId means credit scoring is unavailable — operators should set the
-// env var if they rely on agent credit scoring.
-if (!process.env.AGENTS_CONTRACT_ID) {
-  console.warn(
-    '[config] AGENTS_CONTRACT_ID is not set. Agent credit scoring will return 503 AGENTS_NOT_CONFIGURED. ' +
-    'Set AGENTS_CONTRACT_ID in your environment if credit scoring is required.',
-  );
+// Fallback logger used when validateConfig() is called without a pino instance
+// (e.g. the operator dry-run: node -e "import('./src/config.js').then(m => m.validateConfig())")
+const _consoleLog = {
+  fatal: (obj, msg) => console.error(`FATAL: ${msg}`, JSON.stringify(obj)),
+  warn: (msg) => console.warn(`WARN: ${msg}`),
+};
+
+/**
+ * Validate all required environment variables and format constraints in a single
+ * pass. Logs every problem at once before exiting so operators don't have to
+ * restart the process to discover each missing variable one-by-one.
+ *
+ * Pass a pino logger instance so errors are emitted as structured JSON.
+ * Omit it (or call from a script) and it falls back to console output.
+ */
+export function validateConfig(log = _consoleLog) {
+  const missing = required.filter((key) => !process.env[key]);
+  const errors = missing.map((k) => `${k} is not set`);
+
+  if (
+    process.env.PAYMENT_ADDRESS &&
+    !/^G[A-Z2-7]{55}$/.test(process.env.PAYMENT_ADDRESS)
+  ) {
+    errors.push(
+      `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`,
+    );
+  }
+
+  if (errors.length > 0) {
+    log.fatal(
+      { missingVars: missing, errors },
+      `Server startup failed: missing required environment variables: ${missing.join(', ')}`,
+    );
+    process.exit(1);
+  }
+
+  if (!process.env.AGENTS_CONTRACT_ID) {
+    log.warn(
+      'AGENTS_CONTRACT_ID is not set. Agent credit scoring will return 503 AGENTS_NOT_CONFIGURED. ' +
+        'Set AGENTS_CONTRACT_ID in your environment if credit scoring is required.',
+    );
+  }
 }

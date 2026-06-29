@@ -42,6 +42,7 @@ async function creditPayment(agentAddress, txHash, serviceId, priceStroops, serv
     return;
   }
 
+  await recordPaymentOnChain(agentAddress, serviceId, priceStroops, true);
   logger.info({ agentAddress, txHash }, `${serviceLabel} payment credited to registered agent`);
 }
 

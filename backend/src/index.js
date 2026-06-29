@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import config from "./config.js";
+import config, { validateConfig } from "./config.js";
 import logger from "./lib/logger.js";
 import { checkRpcHealth } from "./lib/stellar.js";
 import { getSubmitQueueDepth, drainSubmitQueue } from "./lib/contract.js";
@@ -8,6 +8,36 @@ import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
 import agentsRouter from "./routes/agents.js";
+
+if (process.argv.includes("--print-config")) {
+  console.log(
+    JSON.stringify(
+      {
+        nodeEnv: config.nodeEnv,
+        port: config.port,
+        logLevel: config.logLevel,
+        stellar: config.stellar,
+        contract: config.contract,
+        x402: {
+          facilitatorUrl: config.x402.facilitatorUrl,
+          searchPrice: config.x402.searchPrice,
+          weatherPrice: config.x402.weatherPrice,
+          payTo: config.x402.payTo,
+        },
+        corsOrigin: config.corsOrigin,
+        jsonBodyLimit: config.jsonBodyLimit,
+        trustProxy: config.trustProxy,
+        rateLimit: config.rateLimit,
+        demoRun: config.demoRun,
+      },
+      null,
+      2,
+    ),
+  );
+  process.exit(0);
+}
+
+validateConfig(logger);
 
 const app = express();
 
@@ -71,7 +101,7 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-
+const server = app.listen(config.port, () => {
   logger.info(
     {
       port: config.port,
