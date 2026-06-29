@@ -25,7 +25,7 @@ function makeServices(count: number) {
     provider: `G${'A'.repeat(55)}`,
     reputation: 100,
     active: true,
-    registered_at: 1000,
+
   }));
 }
 

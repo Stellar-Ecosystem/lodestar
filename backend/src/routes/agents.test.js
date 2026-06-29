@@ -197,3 +197,84 @@ describe('POST /admin/agents/:address/deactivate', () => {
     expect(res.status).toBe(500);
   });
 });
+
+const mockGetActivityFeed = vi.fn(() => []);
+const mockParseActivityPagination = vi.fn(() => ({ limit: 20, offset: 0, errors: [] }));
+
+vi.mock('../lib/activityFeed.js', async () => {
+  const actual = await vi.importActual('../lib/activityFeed.js');
+  return {
+    ...actual,
+    getActivityFeed: (...args) => mockGetActivityFeed(...args),
+    parseActivityPagination: (...args) => mockParseActivityPagination(...args),
+  };
+});
+
+const VALID_ADDR = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+
+describe('GET /api/agents/:address/payment-history', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns paginated payment history for a given agent', async () => {
+    mockGetActivityFeed.mockReturnValue([
+      { agent: VALID_ADDR, txHash: 'abc123', service: 'Weather', amount: '0.001', timestamp: '2026-01-01T00:00:00Z' },
+      { agent: VALID_ADDR, txHash: 'def456', service: 'Search', amount: '0.002', timestamp: '2026-01-01T01:00:00Z' },
+      { agent: 'GOTHER', txHash: 'other1', service: 'Weather', amount: '0.001', timestamp: '2026-01-01T02:00:00Z' },
+    ]);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history`);
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toHaveLength(2);
+    expect(res.body.pagination.total).toBe(2);
+    expect(res.body.pagination.hasMore).toBe(false);
+  });
+
+  it('returns empty payments when no activity matches the agent', async () => {
+    mockGetActivityFeed.mockReturnValue([]);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history`);
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toEqual([]);
+    expect(res.body.pagination.total).toBe(0);
+  });
+
+  it('excludes entries without txHash', async () => {
+    mockGetActivityFeed.mockReturnValue([
+      { agent: VALID_ADDR, txHash: '', service: 'Weather', amount: '0.001' },
+      { agent: VALID_ADDR, txHash: 'real123', service: 'Weather', amount: '0.001' },
+      { agent: VALID_ADDR, service: 'NoHash', amount: '0.001' },
+    ]);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history`);
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toHaveLength(1);
+  });
+
+  it('respects pagination params', async () => {
+    const entries = Array.from({ length: 25 }, (_, i) => ({
+      agent: VALID_ADDR,
+      txHash: `tx-${i}`,
+      service: 'Weather',
+      amount: '0.001',
+    }));
+    mockGetActivityFeed.mockReturnValue(entries);
+    mockParseActivityPagination.mockReturnValueOnce({ limit: 10, offset: 5, errors: [] });
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=10&offset=5`);
+    expect(res.status).toBe(200);
+    expect(res.body.payments).toHaveLength(10);
+    expect(res.body.pagination.total).toBe(25);
+    expect(res.body.pagination.hasMore).toBe(true);
+  });
+
+  it('returns 400 when pagination params are invalid', async () => {
+    mockParseActivityPagination.mockReturnValueOnce({ limit: 0, offset: 0, errors: ['`limit` must be a positive integer'] });
+    mockGetActivityFeed.mockReturnValueOnce([]);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_PAGINATION');
+  });
+});

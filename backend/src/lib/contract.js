@@ -556,10 +556,32 @@ export const contractHelpers = {
       page += 1;
     }
   },
+
+  activeServiceExistsByName: async function (provider, name, fetchServices = listServices) {
+    let page = 0;
+    const pageSize = 20;
+
+    while (true) {
+      const services = await fetchServices({ page, pageSize });
+      if (!services.length) {
+        return false;
+      }
+
+      if (services.some((s) => s.provider === provider && s.name === name)) {
+        return true;
+      }
+
+      page += 1;
+    }
+  },
 };
 
 export async function activeServiceExists(provider, endpoint, fetchServices = listServices) {
   return contractHelpers.activeServiceExists(provider, endpoint, fetchServices);
+}
+
+export async function activeServiceExistsByName(provider, name, fetchServices = listServices) {
+  return contractHelpers.activeServiceExistsByName(provider, name, fetchServices);
 }
 
 export async function listServicesByProvider(provider, fetchServices = listServices) {
@@ -607,6 +629,14 @@ export async function registerServiceOnChain(
         'Active service with same provider and endpoint already exists'
       );
       logger.warn({ provider, endpoint }, 'Duplicate active service registration blocked');
+      throw err;
+    }
+
+    if (await contractHelpers.activeServiceExistsByName(provider, name)) {
+      const err = new Error(
+        'Active service with same provider and name already exists'
+      );
+      logger.warn({ provider, name }, 'Duplicate active service registration blocked');
       throw err;
     }
 
@@ -861,7 +891,6 @@ export function mapAgent(raw) {
     active: raw.active,
     flagged: raw.flagged,
     flag_reason: raw.flag_reason ?? '',
-    is_demo: raw.is_demo ?? false,
   };
 }
 
@@ -999,7 +1028,7 @@ export async function getAgentCount() {
   }
 }
 
-export async function registerAgentOnChain(agentAddress, name, description, isDemo = false) {
+export async function registerAgentOnChain(agentAddress, name, description) {
   try {
     const contract = getAgentsContract();
     const agentAddr = Address.fromString(agentAddress);
@@ -1011,8 +1040,7 @@ export async function registerAgentOnChain(agentAddress, name, description, isDe
       nativeToScVal(agentAddr, { type: 'address' }),
       nativeToScVal(name, { type: 'string' }),
       nativeToScVal(description, { type: 'string' }),
-      nativeToScVal(ownerAddress, { type: 'address' }),
-      nativeToScVal(isDemo, { type: 'bool' })
+      nativeToScVal(ownerAddress, { type: 'address' })
     );
 
     const result = await simulateAndSubmit(op);
