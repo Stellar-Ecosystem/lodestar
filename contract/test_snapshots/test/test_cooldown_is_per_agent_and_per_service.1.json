@@ -310,6 +310,51 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "CategoryCounter"
+                },
+                {
+                  "string": "compute"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CategoryCounter"
+                    },
+                    {
+                      "string": "compute"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "u64": 2
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          3110400
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Counter"
                 }
               ]
@@ -770,7 +815,13 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "ServiceIds"
+                  "symbol": "ServiceIdsByCategoryPage"
+                },
+                {
+                  "string": "compute"
+                },
+                {
+                  "u32": 0
                 }
               ]
             },
@@ -787,7 +838,13 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "ServiceIds"
+                      "symbol": "ServiceIdsByCategoryPage"
+                    },
+                    {
+                      "string": "compute"
+                    },
+                    {
+                      "u32": 0
                     }
                   ]
                 },
@@ -816,10 +873,10 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "ServiceIdsByCategory"
+                  "symbol": "ServiceIdsPage"
                 },
                 {
-                  "string": "compute"
+                  "u32": 0
                 }
               ]
             },
@@ -836,10 +893,10 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "ServiceIdsByCategory"
+                      "symbol": "ServiceIdsPage"
                     },
                     {
-                      "string": "compute"
+                      "u32": 0
                     }
                   ]
                 },
