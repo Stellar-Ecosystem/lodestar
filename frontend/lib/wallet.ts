@@ -61,7 +61,7 @@ export async function connectWithWallet(walletId: string): Promise<string> {
     if (typeof window === 'undefined') {
       throw new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'Window is not defined. Are you running on the server?');
     }
-    
+
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     if (isMobile && walletId === FREIGHTER_ID) {
       console.error(JSON.stringify({ event: 'unsupported_browser', walletId }));
@@ -69,8 +69,9 @@ export async function connectWithWallet(walletId: string): Promise<string> {
     }
 
     initKit();
-    StellarWalletsKit.setWallet(walletId);
-    const { address } = await StellarWalletsKit.fetchAddress();
+    await StellarWalletsKit.setWallet(walletId);
+    const result = await StellarWalletsKit.fetchAddress();
+    const address = typeof result === 'string' ? result : result.address;
     return address;
   } catch (error: any) {
     if (error instanceof WalletError) {
