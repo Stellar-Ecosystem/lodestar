@@ -55,12 +55,13 @@ export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT
   }
 }
 
-const isDryRun = process.argv.includes('--dry-run');
+// CLI entry point — only when run directly (not imported)
+const isDirectRun = process.argv[1] && (
+  process.argv[1].endsWith('/boost-scores.js') ||
+  process.argv[1].endsWith('\\boost-scores.js')
+);
 
-if (process.argv[1] && !process.argv[1].includes('vitest')) {
-  if (!process.env.AGENTS_CONTRACT_ID) {
-    logger.error('AGENTS_CONTRACT_ID not set');
-    process.exit(1);
-  }
+if (isDirectRun) {
+  const isDryRun = process.argv.includes('--dry-run');
   boost({ dryRun: isDryRun });
 }
