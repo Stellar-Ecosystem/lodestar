@@ -735,7 +735,6 @@ export function mapAgent(raw) {
     active: raw.active,
     flagged: raw.flagged,
     flag_reason: raw.flag_reason ?? '',
-    is_demo: raw.is_demo ?? false,
   };
 }
 
@@ -873,7 +872,7 @@ export async function getAgentCount() {
   }
 }
 
-export async function registerAgentOnChain(agentAddress, name, description, isDemo = false) {
+export async function registerAgentOnChain(agentAddress, name, description) {
   try {
     const contract = getAgentsContract();
     const agentAddr = Address.fromString(agentAddress);
@@ -885,8 +884,7 @@ export async function registerAgentOnChain(agentAddress, name, description, isDe
       nativeToScVal(agentAddr, { type: 'address' }),
       nativeToScVal(name, { type: 'string' }),
       nativeToScVal(description, { type: 'string' }),
-      nativeToScVal(ownerAddress, { type: 'address' }),
-      nativeToScVal(isDemo, { type: 'bool' })
+      nativeToScVal(ownerAddress, { type: 'address' })
     );
 
     const result = await simulateAndSubmit(op);
