@@ -134,12 +134,8 @@ impl LodestarAgents {
             let mut xdr_bytes = [0u8; 40];
             xdr.copy_into_slice(&mut xdr_bytes);
             slice.copy_from_slice(&xdr_bytes[8..40]);
-        } else if len == 36 {
-            let mut xdr_bytes = [0u8; 36];
-            xdr.copy_into_slice(&mut xdr_bytes);
-            slice.copy_from_slice(&xdr_bytes[4..36]);
         } else {
-            panic!("Unsupported address length");
+            panic!("Unsupported address length: must be an AccountId (40 bytes)");
         }
         BytesN::from_array(env, &slice)
     }
@@ -240,9 +236,12 @@ impl LodestarAgents {
         let agent_bytes = Self::address_to_bytes(&env, &agent_address);
         ids.push_back(agent_bytes);
         env.storage().persistent().set(&ids_key, &ids);
-        env.storage()
-            .persistent()
-            .extend_ttl(&ids_key, MAX_TTL, MAX_TTL);
+        
+        // Extend TTL for all pages to keep old ID pages alive
+        for p in 0..=page_index {
+            let p_key = DataKey::AgentIdsBytesPage(p);
+            env.storage().persistent().extend_ttl(&p_key, MAX_TTL, MAX_TTL);
+        }
 
         // Default spending policy
         let policy = SpendingPolicy {
@@ -583,7 +582,7 @@ impl LodestarAgents {
         let mut result: Vec<AgentEntry> = vec![&env];
         let total = count as usize;
         let start = (page as usize).saturating_mul(page_size as usize);
-        if start >= total {
+        if start >= total || page_size == 0 {
             return result;
         }
         let end = (start + page_size as usize).min(total);

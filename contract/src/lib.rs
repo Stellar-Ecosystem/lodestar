@@ -211,27 +211,20 @@ impl LodestarRegistry {
         category: Option<String>,
     ) -> Vec<ServiceEntry> {
         let page_size = page_size.min(20u32).max(1u32);
-        let start: u32 = page * page_size;
+        let skip_active = (page * page_size) as usize;
 
-        let total = if let Some(ref cat) = category {
-            env.storage().persistent().get(&DataKey::CategoryCounter(cat.clone())).unwrap_or(0u64) as usize
+        let max_page = if let Some(ref cat) = category {
+            let cat_count: u64 = env.storage().persistent().get(&DataKey::CategoryCounter(cat.clone())).unwrap_or(0u64);
+            (cat_count / 500) as u32
         } else {
-            env.storage().persistent().get(&DataKey::Counter).unwrap_or(0u64) as usize
+            let count: u64 = env.storage().persistent().get(&DataKey::Counter).unwrap_or(0u64);
+            (count / 500) as u32
         };
 
-        let end = (start as usize + page_size as usize).min(total);
+        let mut active_count = 0;
         let mut services: Vec<ServiceEntry> = vec![&env];
 
-        if start as usize >= total {
-            return services;
-        }
-
-        let start_page = (start / 500) as u32;
-        let end_page = ((end.saturating_sub(1)) / 500) as u32;
-        
-        let mut current_idx = (start_page as usize) * 500;
-        
-        for p in start_page..=end_page {
+        for p in 0..=max_page {
             let ids: Vec<u64> = if let Some(ref cat) = category {
                 env.storage().persistent().get(&DataKey::ServiceIdsByCategoryPage(cat.clone(), p)).unwrap_or_else(|| vec![&env])
             } else {
@@ -239,17 +232,21 @@ impl LodestarRegistry {
             };
             
             for i in 0..ids.len() {
-                if current_idx >= start as usize && current_idx < end {
-                    if let Some(entry) = env.storage().persistent().get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap())) {
-                        if entry.active {
+                if let Some(entry) = env.storage().persistent().get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap())) {
+                    if entry.active {
+                        if active_count >= skip_active {
                             services.push_back(entry);
+                            if services.len() as u32 == page_size {
+                                break;
+                            }
                         }
+                        active_count += 1;
                     }
                 }
-                current_idx += 1;
-                if current_idx >= end { break; }
             }
-            if current_idx >= end { break; }
+            if services.len() as u32 == page_size {
+                break;
+            }
         }
 
         // Insertion sort by reputation descending
