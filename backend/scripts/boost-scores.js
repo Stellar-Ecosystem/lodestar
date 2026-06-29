@@ -11,17 +11,21 @@ if (!process.env.AGENTS_CONTRACT_ID) {
 const TARGETS = [110, 600, 1000];
 const AMOUNT = 10_000n; // 0.001 USDC
 
-async function boost() {
+export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT } = {}) {
   try {
+    if (dryRun) {
+      logger.info('DRY RUN — no transactions will be submitted');
+    }
+
     const agents = await listAgents(10);
     logger.info({ count: agents.length }, 'Fetched agents');
 
     // Sort by registered_at to get original seed order
     const sorted = [...agents].sort((a, b) => a.registered_at - b.registered_at);
 
-    for (let i = 0; i < Math.min(sorted.length, TARGETS.length); i++) {
+    for (let i = 0; i < Math.min(sorted.length, targets.length); i++) {
       const agent = sorted[i];
-      const target = TARGETS[i];
+      const target = targets[i];
       const currentScore = agent.score;
       const needed = Math.max(0, Math.ceil((target - currentScore) / 10));
 
@@ -33,16 +37,18 @@ async function boost() {
       logger.info({ name: agent.name, currentScore, target, payments: needed }, 'Building score…');
 
       for (let j = 0; j < needed; j++) {
-        await recordPaymentOnChain(agent.address, AMOUNT, true);
+        if (!dryRun) {
+          await recordPaymentOnChain(agent.address, amount, true);
+        }
         if ((j + 1) % 10 === 0) {
           logger.info({ name: agent.name, progress: `${j + 1}/${needed}` }, 'Progress…');
         }
       }
 
-      logger.info({ name: agent.name, targetScore: target }, 'Done');
+      logger.info({ name: agent.name, targetScore: target, skipped: dryRun }, 'Done');
     }
 
-    logger.info('Score boost complete');
+    logger.info({ dryRun }, 'Score boost complete');
     process.exit(0);
   } catch (err) {
     logger.error({ err }, 'boost-scores failed');
@@ -50,4 +56,8 @@ async function boost() {
   }
 }
 
-boost();
+const isDryRun = process.argv.includes('--dry-run');
+
+if (process.argv[1] && !process.argv[1].endsWith('.test.js')) {
+  boost({ dryRun: isDryRun });
+}
