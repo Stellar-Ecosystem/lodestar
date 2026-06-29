@@ -33,6 +33,7 @@ import {
   markComplete,
   markFailed,
 } from '../lib/idempotency.js';
+import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js';
 
 const router = Router();
 
@@ -394,6 +395,37 @@ router.post(
   }
 );
 
+// GET /api/agents/:address/payment-history
+router.get('/agents/:address/payment-history', requireAgentsContract, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { limit, offset, errors } = parseActivityPagination(req.query);
+
+    if (errors.length > 0) {
+      logger.warn({ query: req.query, errors, address }, 'Invalid payment-history pagination params');
+      return res.status(400).json({ error: errors.join('; '), code: 'INVALID_PAGINATION' });
+    }
+
+    const feed = getActivityFeed();
+    const payments = feed.filter(
+      (entry) => entry.agent === address && typeof entry.txHash === 'string' && entry.txHash.length > 0
+    );
+
+    const total = payments.length;
+    const items = payments.slice(offset, offset + limit);
+    const hasMore = offset + items.length < total;
+
+    logger.info({ address, limit, offset, total, returned: items.length }, 'Payment history served');
+    return res.json({
+      payments: items,
+      pagination: { total, limit, offset, hasMore },
+    });
+  } catch (err) {
+    logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/payment-history failed');
+    return handleContractError(err, res, 'Failed to fetch payment history', 'FETCH_ERROR');
+  }
+});
+
 // GET /api/agents/:address/check?amount=1000000 (legacy stroops endpoint)
 router.get('/agents/:address/check', requireAgentsContract, async (req, res) => {
   try {
@@ -530,9 +562,10 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
 });
 
 
-router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
+// POST /api/agents/:address/update-policy
+router.post('/agents/:address/update-policy', requireAgentsContract, ownerAuth, async (req, res) => {
+  const { address } = req.params;
   try {
-    const { address } = req.params;
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
 
     // Validation
@@ -553,7 +586,35 @@ router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (r
     logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
     res.json({ success: true });
   } catch (err) {
+    logger.error({ err, address }, 'POST /agents/:address/update-policy failed');
+    return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
+  }
+});
 
+router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
+  const { address } = req.params;
+  try {
+    const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
+
+    // Validation
+    if (!maxPerTxStroops || (typeof maxPerTxStroops !== 'string' && typeof maxPerTxStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
+    }
+    if (!maxPerDayStroops || (typeof maxPerDayStroops !== 'string' && typeof maxPerDayStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+    }
+    if (!Array.isArray(allowedCategories)) {
+      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+    }
+    if (typeof minScoreToEarn !== 'number') {
+      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+    }
+
+    await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
+    logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
+    res.json({ success: true });
+  } catch (err) {
+    logger.error({ err, address }, 'PUT /agents/:address/policy failed');
     return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
   }
 });
