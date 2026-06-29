@@ -14,13 +14,6 @@ const mockBuildUnsignedRegistryTx = vi.fn();
 const mockValidatePreparedRegistrySubmission = vi.fn();
 const mockSubmitSignedRegistryTx = vi.fn();
 const mockGetCurrentLedgerSequence = vi.fn();
-
-// Must match the exports added to contract.js
-const SERVICE_MAX_TTL = 3_110_400;
-const SERVICE_TTL_WARNING_LEDGERS = 311_040;
-
-const mockGetCurrentLedgerSequence = vi.fn();
-
 const SERVICE_MAX_TTL = 3_110_400;
 const SERVICE_TTL_WARNING_LEDGERS = 311_040;
 

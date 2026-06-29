@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest';
 import { filterServices } from './registry';
 import type { ServiceEntry } from './types';
 

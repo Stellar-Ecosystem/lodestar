@@ -26,7 +26,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32v1-none
           components: rustfmt
 
       - name: Cache Rust build artifacts
@@ -44,12 +44,17 @@ jobs:
         working-directory: contract
         run: cargo fmt --all --check
 
+      - name: Install system dependencies for stellar-cli
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libssl-dev libudev-dev
+
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
+        run: cargo install --locked stellar-cli
 
       - name: Build registry contract
         working-directory: contract
-        run: stellar contract build
+        run: |
+          rustup target add wasm32v1-none
+          stellar contract build
 
       - name: Test registry contract
         working-directory: contract
@@ -57,7 +62,9 @@ jobs:
 
       - name: Build agents contract
         working-directory: contract/agents
-        run: stellar contract build
+        run: |
+          rustup target add wasm32v1-none
+          stellar contract build
 
       - name: Test agents contract
         working-directory: contract/agents
@@ -76,8 +83,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
         working-directory: backend
@@ -100,12 +105,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm ci
+        run: npm install --legacy-peer-deps
 
       - name: Type-check
         working-directory: frontend
