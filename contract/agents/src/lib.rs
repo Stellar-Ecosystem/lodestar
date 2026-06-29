@@ -664,7 +664,6 @@ mod test {
             &String::from_str(env, "Test Agent"),
             &String::from_str(env, "A test agent description"),
             owner,
-            &false,
         );
     }
 
