@@ -33,9 +33,10 @@ pub struct ServiceEntry {
 #[contracttype]
 pub enum DataKey {
     Counter,
-    ServiceIds,
+    ServiceIdsPage(u32),
     Service(u64),
-    ServiceIdsByCategory(String),
+    CategoryCounter(String),
+    ServiceIdsByCategoryPage(String, u32),
     // Address of the LodestarAgents contract, used to verify that a reputation
     // voter is a registered agent via a cross-contract `is_registered` call.
     AgentsContract,
@@ -46,24 +47,33 @@ pub enum DataKey {
 }
 
 fn active_service_exists(env: &Env, provider: &Address, endpoint: &String) -> bool {
-    let ids: Vec<u64> = env
+    let counter: u64 = env
         .storage()
         .persistent()
-        .get(&DataKey::ServiceIds)
-        .unwrap_or_else(|| vec![&env]);
+        .get(&DataKey::Counter)
+        .unwrap_or(0u64);
 
-    let mut i = 0;
-    while i < ids.len() {
-        if let Some(entry) = env
+    let max_page = (counter / 500) as u32;
+    for p in 0..=max_page {
+        let ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap()))
-        {
-            if entry.active && entry.provider == *provider && entry.endpoint == *endpoint {
-                return true;
+            .get(&DataKey::ServiceIdsPage(p))
+            .unwrap_or_else(|| vec![env]);
+
+        let mut i = 0;
+        while i < ids.len() {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap()))
+            {
+                if entry.active && entry.provider == *provider && entry.endpoint == *endpoint {
+                    return true;
+                }
             }
+            i += 1;
         }
-        i += 1;
     }
 
     false
@@ -149,28 +159,37 @@ impl LodestarRegistry {
             .persistent()
             .extend_ttl(&DataKey::Counter, MAX_TTL, MAX_TTL);
 
+        let page_index = (counter / 500) as u32;
+        let ids_key = DataKey::ServiceIdsPage(page_index);
         let mut ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&DataKey::ServiceIds)
+            .get(&ids_key)
             .unwrap_or_else(|| vec![&env]);
         ids.push_back(new_id);
-        env.storage().persistent().set(&DataKey::ServiceIds, &ids);
+        env.storage().persistent().set(&ids_key, &ids);
         env.storage()
             .persistent()
-            .extend_ttl(&DataKey::ServiceIds, MAX_TTL, MAX_TTL);
+            .extend_ttl(&ids_key, MAX_TTL, MAX_TTL);
 
+        let cat_count_key = DataKey::CategoryCounter(cat.clone());
+        let cat_count: u64 = env.storage().persistent().get(&cat_count_key).unwrap_or(0u64);
+        let cat_page_index = (cat_count / 500) as u32;
+        env.storage().persistent().set(&cat_count_key, &(cat_count + 1));
+        env.storage().persistent().extend_ttl(&cat_count_key, MAX_TTL, MAX_TTL);
+
+        let cat_key = DataKey::ServiceIdsByCategoryPage(cat.clone(), cat_page_index);
         let mut cat_ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&DataKey::ServiceIdsByCategory(cat.clone()))
+            .get(&cat_key)
             .unwrap_or_else(|| vec![&env]);
         cat_ids.push_back(new_id);
         env.storage()
             .persistent()
-            .set(&DataKey::ServiceIdsByCategory(cat.clone()), &cat_ids);
+            .set(&cat_key, &cat_ids);
         env.storage().persistent().extend_ttl(
-            &DataKey::ServiceIdsByCategory(cat),
+            &cat_key,
             MAX_TTL,
             MAX_TTL,
         );
@@ -194,34 +213,43 @@ impl LodestarRegistry {
         let page_size = page_size.min(20u32).max(1u32);
         let start: u32 = page * page_size;
 
-        let ids: Vec<u64> = if let Some(ref cat) = category {
-            env.storage()
-                .persistent()
-                .get(&DataKey::ServiceIdsByCategory(cat.clone()))
-                .unwrap_or_else(|| vec![&env])
+        let total = if let Some(ref cat) = category {
+            env.storage().persistent().get(&DataKey::CategoryCounter(cat.clone())).unwrap_or(0u64) as usize
         } else {
-            env.storage()
-                .persistent()
-                .get(&DataKey::ServiceIds)
-                .unwrap_or_else(|| vec![&env])
+            env.storage().persistent().get(&DataKey::Counter).unwrap_or(0u64) as usize
         };
 
-        let total = ids.len();
-        let end = (start + page_size).min(total);
-
+        let end = (start as usize + page_size as usize).min(total);
         let mut services: Vec<ServiceEntry> = vec![&env];
-        let mut i = start;
-        while i < end {
-            if let Some(entry) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap()))
-            {
-                if entry.active {
-                    services.push_back(entry);
+
+        if start as usize >= total {
+            return services;
+        }
+
+        let start_page = (start / 500) as u32;
+        let end_page = ((end.saturating_sub(1)) / 500) as u32;
+        
+        let mut current_idx = (start_page as usize) * 500;
+        
+        for p in start_page..=end_page {
+            let ids: Vec<u64> = if let Some(ref cat) = category {
+                env.storage().persistent().get(&DataKey::ServiceIdsByCategoryPage(cat.clone(), p)).unwrap_or_else(|| vec![&env])
+            } else {
+                env.storage().persistent().get(&DataKey::ServiceIdsPage(p)).unwrap_or_else(|| vec![&env])
+            };
+            
+            for i in 0..ids.len() {
+                if current_idx >= start as usize && current_idx < end {
+                    if let Some(entry) = env.storage().persistent().get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap())) {
+                        if entry.active {
+                            services.push_back(entry);
+                        }
+                    }
                 }
+                current_idx += 1;
+                if current_idx >= end { break; }
             }
-            i += 1;
+            if current_idx >= end { break; }
         }
 
         // Insertion sort by reputation descending
@@ -328,24 +356,7 @@ impl LodestarRegistry {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Service(id), MAX_TTL, MAX_TTL);
-
-        // Remove from category index
-        let cat_key = DataKey::ServiceIdsByCategory(entry.category.clone());
-        let cat_ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&cat_key)
-            .expect("Category index not found");
-        let mut updated: Vec<u64> = vec![&env];
-        for cid in cat_ids.iter() {
-            if cid != id {
-                updated.push_back(cid);
-            }
-        }
-        env.storage().persistent().set(&cat_key, &updated);
-        env.storage()
-            .persistent()
-            .extend_ttl(&cat_key, MAX_TTL, MAX_TTL);
+        // Note: we do not remove the ID from the chunked indices since list_services_page dynamically filters inactive services.
     }
 
     pub fn get_service_count(env: Env) -> u64 {
@@ -394,25 +405,39 @@ mod test {
             .persistent()
             .set(&DataKey::Service(id), &entry);
 
+        // Update Counter
+        let count: u64 = env.storage().persistent().get(&DataKey::Counter).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::Counter, &(count + 1));
+        
+        let page_index = (count / 500) as u32;
+
         // Add to ServiceIds list
+        let ids_key = DataKey::ServiceIdsPage(page_index);
         let mut ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&DataKey::ServiceIds)
+            .get(&ids_key)
             .unwrap_or_else(|| vec![env]);
         ids.push_back(id);
-        env.storage().persistent().set(&DataKey::ServiceIds, &ids);
+        env.storage().persistent().set(&ids_key, &ids);
+
+        // Update CategoryCounter
+        let cat_count_key = DataKey::CategoryCounter(cat.clone());
+        let cat_count: u64 = env.storage().persistent().get(&cat_count_key).unwrap_or(0);
+        let cat_page_index = (cat_count / 500) as u32;
+        env.storage().persistent().set(&cat_count_key, &(cat_count + 1));
 
         // Add to category index
+        let cat_key = DataKey::ServiceIdsByCategoryPage(cat.clone(), cat_page_index);
         let mut cat_ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&DataKey::ServiceIdsByCategory(cat.clone()))
+            .get(&cat_key)
             .unwrap_or_else(|| vec![env]);
         cat_ids.push_back(id);
         env.storage()
             .persistent()
-            .set(&DataKey::ServiceIdsByCategory(cat), &cat_ids);
+            .set(&cat_key, &cat_ids);
     }
 
     #[test]

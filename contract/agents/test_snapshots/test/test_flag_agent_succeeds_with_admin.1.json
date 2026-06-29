@@ -322,7 +322,10 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "AgentIds"
+                  "symbol": "AgentIdsBytesPage"
+                },
+                {
+                  "u32": 0
                 }
               ]
             },
@@ -339,7 +342,10 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "AgentIds"
+                      "symbol": "AgentIdsBytesPage"
+                    },
+                    {
+                      "u32": 0
                     }
                   ]
                 },
@@ -347,7 +353,7 @@
                 "val": {
                   "vec": [
                     {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                      "bytes": "0000000000000000000000000000000000000000000000000000000000000003"
                     }
                   ]
                 }

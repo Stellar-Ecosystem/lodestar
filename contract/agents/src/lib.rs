@@ -1,8 +1,9 @@
+
 #![no_std]
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, vec,
-    Address, Env, IntoVal, String, Symbol, Vec,
+    Address, Env, IntoVal, String, Symbol, Vec, BytesN, Bytes, xdr::{ToXdr, FromXdr},
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ const FLAG_PENALTY: i32 = -200;
 #[derive(Clone)]
 pub enum DataKey {
     AgentCount,
-    AgentIds,
+    AgentIdsBytesPage(u32),
     Agent(Address),
     Policy(Address),
     RegistryContract,
@@ -124,6 +125,33 @@ impl LodestarAgents {
         policy.last_reset_ledger = last_reset;
         policy
     }
+
+    fn address_to_bytes(env: &Env, addr: &Address) -> BytesN<32> {
+        let xdr = addr.to_xdr(env);
+        let len = xdr.len();
+        let mut slice = [0u8; 32];
+        if len == 40 {
+            let mut xdr_bytes = [0u8; 40];
+            xdr.copy_into_slice(&mut xdr_bytes);
+            slice.copy_from_slice(&xdr_bytes[8..40]);
+        } else if len == 36 {
+            let mut xdr_bytes = [0u8; 36];
+            xdr.copy_into_slice(&mut xdr_bytes);
+            slice.copy_from_slice(&xdr_bytes[4..36]);
+        } else {
+            panic!("Unsupported address length");
+        }
+        BytesN::from_array(env, &slice)
+    }
+
+    fn bytes_to_address(env: &Env, pubkey: &BytesN<32>) -> Address {
+        let mut xdr_bytes = [0u8; 40];
+        xdr_bytes[..8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut slice_32 = [0u8; 32];
+        pubkey.copy_into_slice(&mut slice_32);
+        xdr_bytes[8..40].copy_from_slice(&slice_32);
+        Address::from_xdr(env, &Bytes::from_array(env, &xdr_bytes)).unwrap()
+    }
 }
 
 #[contractimpl]
@@ -187,19 +215,6 @@ impl LodestarAgents {
         env.storage().persistent().set(&key, &entry);
         env.storage().persistent().extend_ttl(&key, MAX_TTL, MAX_TTL);
 
-        // Update agent IDs list
-        let ids_key = DataKey::AgentIds;
-        let mut ids: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&ids_key)
-            .unwrap_or_else(|| vec![&env]);
-        ids.push_back(agent_address.clone());
-        env.storage().persistent().set(&ids_key, &ids);
-        env.storage()
-            .persistent()
-            .extend_ttl(&ids_key, MAX_TTL, MAX_TTL);
-
         // Update count
         let count_key = DataKey::AgentCount;
         let count: u64 = env
@@ -212,6 +227,22 @@ impl LodestarAgents {
         env.storage()
             .persistent()
             .extend_ttl(&count_key, MAX_TTL, MAX_TTL);
+
+        // Update agent IDs list
+        let page_index = (count / 500) as u32;
+        let ids_key = DataKey::AgentIdsBytesPage(page_index);
+        let mut ids: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or_else(|| vec![&env]);
+        
+        let agent_bytes = Self::address_to_bytes(&env, &agent_address);
+        ids.push_back(agent_bytes);
+        env.storage().persistent().set(&ids_key, &ids);
+        env.storage()
+            .persistent()
+            .extend_ttl(&ids_key, MAX_TTL, MAX_TTL);
 
         // Default spending policy
         let policy = SpendingPolicy {
@@ -460,7 +491,7 @@ impl LodestarAgents {
         }
 
         let key = DataKey::Agent(agent_address);
-        let mut agent: AgentEntryStore = env
+        let mut agent: AgentEntry = env
             .storage()
             .persistent()
             .get(&key)
@@ -505,23 +536,36 @@ impl LodestarAgents {
 
     // List agents (paginated by limit)
     pub fn list_agents(env: Env, limit: u32) -> Vec<AgentEntry> {
-        let ids_key = DataKey::AgentIds;
-        let ids: Vec<Address> = env
+        let count_key = DataKey::AgentCount;
+        let count: u64 = env
             .storage()
             .persistent()
-            .get(&ids_key)
-            .unwrap_or_else(|| vec![&env]);
+            .get(&count_key)
+            .unwrap_or(0u64);
 
         let mut result: Vec<AgentEntry> = vec![&env];
-        let max = (limit as usize).min(ids.len() as usize);
-        for i in 0..max {
-            let addr = ids.get(i as u32).unwrap();
-            if let Some(agent) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
-            {
-                result.push_back(agent);
+        let max = (limit as usize).min(count as usize);
+        let mut loaded = 0;
+
+        for page in 0.. {
+            if loaded >= max { break; }
+            let ids_key = DataKey::AgentIdsBytesPage(page);
+            if let Some(ids) = env.storage().persistent().get::<DataKey, Vec<BytesN<32>>>(&ids_key) {
+                for i in 0..ids.len() {
+                    if loaded >= max { break; }
+                    let bytes = ids.get(i).unwrap();
+                    let addr = Self::bytes_to_address(&env, &bytes);
+                    if let Some(agent) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
+                    {
+                        result.push_back(agent);
+                    }
+                    loaded += 1;
+                }
+            } else {
+                break;
             }
         }
         result
@@ -529,28 +573,51 @@ impl LodestarAgents {
 
     // List a single page of agents in registration order (avoids O(n) reads for large sets)
     pub fn list_agents_page(env: Env, page: u32, page_size: u32) -> Vec<AgentEntry> {
-        let ids_key = DataKey::AgentIds;
-        let ids: Vec<Address> = env
+        let count_key = DataKey::AgentCount;
+        let count: u64 = env
             .storage()
             .persistent()
-            .get(&ids_key)
-            .unwrap_or_else(|| vec![&env]);
+            .get(&count_key)
+            .unwrap_or(0u64);
 
         let mut result: Vec<AgentEntry> = vec![&env];
-        let total = ids.len() as usize;
+        let total = count as usize;
         let start = (page as usize).saturating_mul(page_size as usize);
         if start >= total {
             return result;
         }
         let end = (start + page_size as usize).min(total);
-        for i in start..end {
-            let addr = ids.get(i as u32).unwrap();
-            if let Some(agent) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
-            {
-                result.push_back(agent);
+        
+        let start_page = (start / 500) as u32;
+        let end_page = ((end - 1) / 500) as u32;
+
+        let mut current_idx = (start_page as usize) * 500;
+        
+        for p in start_page..=end_page {
+            let ids_key = DataKey::AgentIdsBytesPage(p);
+            if let Some(ids) = env.storage().persistent().get::<DataKey, Vec<BytesN<32>>>(&ids_key) {
+                for i in 0..ids.len() {
+                    if current_idx >= start && current_idx < end {
+                        let bytes = ids.get(i).unwrap();
+                        let addr = Self::bytes_to_address(&env, &bytes);
+                        if let Some(agent) = env
+                            .storage()
+                            .persistent()
+                            .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
+                        {
+                            result.push_back(agent);
+                        }
+                    }
+                    current_idx += 1;
+                    if current_idx >= end {
+                        break;
+                    }
+                }
+                if current_idx >= end {
+                    break;
+                }
+            } else {
+                break;
             }
         }
         result
@@ -664,7 +731,6 @@ mod test {
             &String::from_str(env, "Test Agent"),
             &String::from_str(env, "A test agent description"),
             owner,
-            &false,
         );
     }
 
