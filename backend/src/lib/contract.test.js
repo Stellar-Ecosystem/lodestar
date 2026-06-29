@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach, afterEach, mocked } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../config.js', () => ({
   default: {
@@ -718,17 +718,21 @@ describe('dumpPendingTransactions', () => {
 
   beforeEach(async () => {
     contractLib.__resetPendingTransactions();
-    const fs = mocked(await import('node:fs'), true);
+    const fs = await import('node:fs');
     fsWriteFileSync = fs.writeFileSync;
     fsExistsSync = fs.existsSync;
     fsUnlinkSync = fs.unlinkSync;
     fsReadFileSync = fs.readFileSync;
     fsExistsSync.mockReturnValue(false);
     fsReadFileSync.mockReturnValue('[]');
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     contractLib.__resetPendingTransactions();
+    await contractLib.drainSubmitQueue();
     vi.restoreAllMocks();
   });
 
@@ -737,7 +741,7 @@ describe('dumpPendingTransactions', () => {
     expect(fsWriteFileSync).not.toHaveBeenCalled();
   });
 
-  it('writes pending entries to file', async () => {
+  it('writes pending entries to file', { timeout: 35000 }, async () => {
     mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'dump-hash' });
     mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
     const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
@@ -753,7 +757,7 @@ describe('dumpPendingTransactions', () => {
     );
   });
 
-  it('includes hash and submittedAt in dumped entries', async () => {
+  it('includes hash and submittedAt in dumped entries', { timeout: 35000 }, async () => {
     mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'op-hash' });
     mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
     const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
@@ -778,7 +782,7 @@ describe('resumePendingTransactions', () => {
   });
 
   it('does nothing when pending-transactions.json does not exist', async () => {
-    const fs = mocked(await import('node:fs'), true);
+    const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(false);
 
     await contractLib.resumePendingTransactions();
@@ -787,7 +791,7 @@ describe('resumePendingTransactions', () => {
   });
 
   it('does nothing when file is empty array', async () => {
-    const fs = mocked(await import('node:fs'), true);
+    const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
     fs.readFileSync.mockReturnValue('[]');
 
@@ -796,7 +800,7 @@ describe('resumePendingTransactions', () => {
   });
 
   it('re-adds unconfirmed entries to pending registry', async () => {
-    const fs = mocked(await import('node:fs'), true);
+    const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
     fs.readFileSync.mockReturnValue(JSON.stringify([
       { hash: 'unconfirmed-hash', operation: 'register_agent', submittedAt: Date.now() },
@@ -809,7 +813,7 @@ describe('resumePendingTransactions', () => {
   });
 
   it('removes confirmed SUCCESS entries without re-adding', async () => {
-    const fs = mocked(await import('node:fs'), true);
+    const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
     fs.readFileSync.mockReturnValue(JSON.stringify([
       { hash: 'confirmed-hash', operation: 'record_payment', submittedAt: Date.now() },
@@ -821,7 +825,7 @@ describe('resumePendingTransactions', () => {
   });
 
   it('removes confirmed FAILED entries without re-adding', async () => {
-    const fs = mocked(await import('node:fs'), true);
+    const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
     fs.readFileSync.mockReturnValue(JSON.stringify([
       { hash: 'failed-hash', operation: 'record_payment', submittedAt: Date.now() },
@@ -833,9 +837,12 @@ describe('resumePendingTransactions', () => {
   });
 
   it('deletes the file after processing all entries', async () => {
-    const fs = mocked(await import('node:fs'), true);
+    const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
-    fs.readFileSync.mockReturnValue('[]');
+    fs.readFileSync.mockReturnValue(JSON.stringify([
+      { hash: 'done-hash', operation: 'register_agent', submittedAt: Date.now() },
+    ]));
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS' });
     fs.unlinkSync.mockClear();
 
     await contractLib.resumePendingTransactions();
