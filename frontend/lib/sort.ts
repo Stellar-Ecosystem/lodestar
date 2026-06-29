@@ -39,10 +39,10 @@ export function sortAgents(
       return b.score - a.score;
     }
     if (sort === 'payments') {
-      return b.total_payments - a.total_payments;
+      return Number(b.total_payments) - Number(a.total_payments);
     }
     // 'newest' - highest registered_at first
-    return b.registered_at - a.registered_at;
+    return Number(b.registered_at) - Number(a.registered_at);
   });
 }
 
@@ -94,9 +94,9 @@ export function sortAgentsWithTieBreaker(
     if (sort === 'score') {
       result = b.score - a.score;
     } else if (sort === 'payments') {
-      result = b.total_payments - a.total_payments;
+      result = Number(b.total_payments) - Number(a.total_payments);
     } else {
-      result = b.registered_at - a.registered_at;
+      result = Number(b.registered_at) - Number(a.registered_at);
     }
     if (result === 0 && tieBreaker) {
       return tieBreaker(a, b);

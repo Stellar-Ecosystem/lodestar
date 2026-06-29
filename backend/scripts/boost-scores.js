@@ -1,29 +1,14 @@
 import 'dotenv/config';
 import { listAgents, recordPaymentOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
-import config from '../src/config.js';
 
 if (!process.env.AGENTS_CONTRACT_ID) {
   logger.error('AGENTS_CONTRACT_ID not set');
   process.exit(1);
 }
 
-// Safety guard: prevent accidental score inflation on mainnet
-if (config.stellar.network === 'mainnet') {
-  const hasConfirmFlag = process.argv.includes('--mainnet-confirm');
-  if (!hasConfirmFlag) {
-    logger.error(
-      'Refusing to run boost-scores on STELLAR_NETWORK=mainnet without explicit confirmation. ' +
-      'If you really want to inflate scores on production, re-run with --mainnet-confirm flag.'
-    );
-    process.exit(1);
-  }
-  logger.warn('Running boost-scores on MAINNET with --mainnet-confirm flag');
-}
-
 // Target scores: first agent ~110, second ~600, third ~1000
 const TARGETS = [110, 600, 1000];
-const SERVICE_ID = 1; // Use first registered service (or demo service)
 const AMOUNT = 10_000n; // 0.001 USDC
 
 async function boost() {
@@ -48,7 +33,7 @@ async function boost() {
       logger.info({ name: agent.name, currentScore, target, payments: needed }, 'Building score…');
 
       for (let j = 0; j < needed; j++) {
-        await recordPaymentOnChain(agent.address, SERVICE_ID, AMOUNT, true);
+        await recordPaymentOnChain(agent.address, AMOUNT, true);
         if ((j + 1) % 10 === 0) {
           logger.info({ name: agent.name, progress: `${j + 1}/${needed}` }, 'Progress…');
         }
