@@ -37,7 +37,10 @@ process.env.AGENT_STELLAR_SECRET = 'STEST000000000000000000000000000000000000000
 process.env.STELLAR_RPC_URL      = 'https://mock-rpc.example.com';
 process.env.LODESTAR_API_URL     = 'http://localhost:9999';
 
-const mockHttpClient = { encodePaymentSignatureHeader: vi.fn(() => ({})) };
+const mockHttpClient = {
+  encodePaymentSignatureHeader: vi.fn(() => ({})),
+  fetch: (...args) => global.fetch(...args),
+};
 
 const { runTask, main, EVENT } = await import('./agent.js');
 
