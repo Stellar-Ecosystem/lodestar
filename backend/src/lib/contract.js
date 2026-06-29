@@ -225,6 +225,16 @@ export function simulateAndSubmit(operation, signer) {
   return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
 }
 
+/**
+ * Encode an optional value for a Soroban Option<T> parameter.
+ * null/undefined → ScVal::scvVoid() (the canonical None encoding)
+ * value          → nativeToScVal(value, { type })
+ */
+export function encodeOption(value, type) {
+  if (value === null || value === undefined) return xdr.ScVal.scvVoid();
+  return nativeToScVal(value, { type });
+}
+
 function prunePreparedRegistrySubmissions(now = Date.now()) {
   for (const [token, entry] of preparedRegistrySubmissions.entries()) {
     if (entry.expiresAt <= now) {
@@ -328,15 +338,11 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
   try {
     const contract = getContract();
 
-    const optionArg = category
-      ? nativeToScVal(category, { type: 'string' })
-      : xdr.ScVal.scvVoid();
-
     const callOp = contract.call(
       'list_services_page',
       nativeToScVal(page, { type: 'u32' }),
       nativeToScVal(pageSize, { type: 'u32' }),
-      optionArg,
+      encodeOption(category ?? null, 'string'),
     );
     const retval = await simulateRead(callOp);
     if (!retval) return [];
