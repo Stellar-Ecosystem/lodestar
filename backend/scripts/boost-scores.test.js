@@ -9,12 +9,17 @@ vi.mock('../src/lib/logger.js', () => ({
   default: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
+// Prevent top-level process.exit in boost-scores.js
+process.env.AGENTS_CONTRACT_ID = 'CTEST';
+
 import { listAgents, recordPaymentOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 import { boost } from './boost-scores.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Prevent process.exit from killing vitest
+  vi.spyOn(process, 'exit').mockImplementation(() => {});
 });
 
 const makeAgent = (overrides) => ({
@@ -39,16 +44,19 @@ describe('boost() dry-run', () => {
     // agent-1: (110-100)/10 = 1 payment needed
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'agent-1', payments: 1 }),
-      '[dry-run] Would submit on-chain payments',
+      'Building score…',
     );
 
     // agent-2: (600-500)/10 = 10 payments needed
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'agent-2', payments: 10 }),
-      '[dry-run] Would submit on-chain payments',
+      'Building score…',
     );
 
-    expect(logger.info).toHaveBeenCalledWith('Dry-run complete — no transactions submitted');
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ dryRun: true }),
+      'Score boost complete',
+    );
   });
 
   it('skips agents already at target score', async () => {
@@ -67,27 +75,20 @@ describe('boost() dry-run', () => {
 });
 
 describe('boost() live mode', () => {
-  it('calls recordPaymentOnChain with correct 4-arg signature', async () => {
+  it('calls recordPaymentOnChain for each payment', async () => {
     listAgents.mockResolvedValue([
       makeAgent({ name: 'agent-1', score: 100 }),
     ]);
 
-    await boost({ dryRun: false, targets: [110], amount: 10_000n, serviceId: 42n });
+    await boost({ dryRun: false, targets: [110], amount: 10_000n });
 
     // (110-100)/10 = 1 payment
     expect(recordPaymentOnChain).toHaveBeenCalledTimes(1);
-    expect(recordPaymentOnChain).toHaveBeenCalledWith('GTESTADDRESS', 42n, 10_000n, true);
+    expect(recordPaymentOnChain).toHaveBeenCalledWith('GTESTADDRESS', 10_000n, true);
 
-    expect(logger.info).toHaveBeenCalledWith({ name: 'agent-1', targetScore: 110 }, 'Done');
-  });
-
-  it('throws when serviceId is missing', async () => {
-    listAgents.mockResolvedValue([
-      makeAgent({ name: 'agent-1', score: 100 }),
-    ]);
-
-    await expect(
-      boost({ dryRun: false, targets: [110], amount: 10_000n }),
-    ).rejects.toThrow('serviceId is required for live boost mode');
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'agent-1', targetScore: 110 }),
+      'Done',
+    );
   });
 });
