@@ -45,7 +45,6 @@ const mockAgent: AgentEntry = {
   active: true,
   flagged: false,
   flag_reason: '',
-  is_demo: false,
 };
 
 const mockStats: AgentStats = {

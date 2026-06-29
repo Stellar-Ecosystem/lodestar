@@ -30,7 +30,6 @@ const agent = (overrides: Partial<AgentEntry> = {}): AgentEntry => ({
   active: true,
   flagged: false,
   flag_reason: '',
-  is_demo: false,
   ...overrides,
 });
 

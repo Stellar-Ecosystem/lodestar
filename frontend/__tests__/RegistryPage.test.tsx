@@ -31,7 +31,6 @@ function makeServices(count: number) {
     provider: `G${String(i + 1).padStart(55, 'A')}`,
     reputation: i + 1,
     active: true,
-    is_demo: false,
     registered_at: Date.now(),
   }));
 }
