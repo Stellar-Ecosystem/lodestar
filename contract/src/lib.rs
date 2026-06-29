@@ -11,6 +11,9 @@ const MAX_TTL: u32 = 3110400;
 // identity can move a service's reputation, blocking automated inflation loops.
 const VOTE_COOLDOWN_LEDGERS: u64 = 720;
 
+const MAX_REPUTATION: i32 = 10_000;
+const MIN_REPUTATION: i32 = -10_000;
+
 #[contracttype]
 #[derive(Clone)]
 pub struct ServiceEntry {
@@ -286,9 +289,9 @@ impl LodestarRegistry {
             .expect("Service not found");
 
         if positive {
-            entry.reputation += 1;
+            entry.reputation = (entry.reputation + 1).min(MAX_REPUTATION);
         } else {
-            entry.reputation -= 1;
+            entry.reputation = (entry.reputation - 1).max(MIN_REPUTATION);
         }
 
         env.storage()
@@ -350,6 +353,10 @@ impl LodestarRegistry {
             .persistent()
             .get(&DataKey::Counter)
             .unwrap_or(0u64)
+    }
+
+    pub fn get_reputation_bounds(_env: Env) -> (i32, i32) {
+        (MIN_REPUTATION, MAX_REPUTATION)
     }
 }
 
@@ -801,5 +808,68 @@ mod test {
         env.set_auths(&[]);
         assert!(registry.try_update_reputation(&id, &true, &agent).is_err());
         assert_eq!(registry.get_service(&id).reputation, 0);
+    }
+
+    #[test]
+    fn test_update_reputation_clamped_at_max() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let agents_id = env.register(MockAgents, ());
+        let agents = MockAgentsClient::new(&env, &agents_id);
+        let registry_id = env.register(LodestarRegistry, (agents_id,));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        let provider = Address::generate(&env);
+        env.clone().as_contract(&registry_id, || {
+            setup_service(&env, 1, &provider, "compute", MAX_REPUTATION - 1, true);
+        });
+
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+
+        registry.update_reputation(&1u64, &true, &agent);
+        assert_eq!(registry.get_service(&1u64).reputation, MAX_REPUTATION);
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number += VOTE_COOLDOWN_LEDGERS as u32 + 1);
+        registry.update_reputation(&1u64, &true, &agent);
+        assert_eq!(registry.get_service(&1u64).reputation, MAX_REPUTATION);
+    }
+
+    #[test]
+    fn test_update_reputation_clamped_at_min() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let agents_id = env.register(MockAgents, ());
+        let agents = MockAgentsClient::new(&env, &agents_id);
+        let registry_id = env.register(LodestarRegistry, (agents_id,));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        let provider = Address::generate(&env);
+        env.clone().as_contract(&registry_id, || {
+            setup_service(&env, 1, &provider, "compute", MIN_REPUTATION + 1, true);
+        });
+
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+
+        registry.update_reputation(&1u64, &false, &agent);
+        assert_eq!(registry.get_service(&1u64).reputation, MIN_REPUTATION);
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number += VOTE_COOLDOWN_LEDGERS as u32 + 1);
+        registry.update_reputation(&1u64, &false, &agent);
+        assert_eq!(registry.get_service(&1u64).reputation, MIN_REPUTATION);
+    }
+
+    #[test]
+    fn test_get_reputation_bounds() {
+        let env = Env::default();
+        let registry_id = env.register(LodestarRegistry, (Address::generate(&env),));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        let (min, max) = registry.get_reputation_bounds();
+        assert_eq!(min, MIN_REPUTATION);
+        assert_eq!(max, MAX_REPUTATION);
     }
 }
