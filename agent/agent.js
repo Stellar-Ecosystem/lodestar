@@ -19,7 +19,15 @@ const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
+const AGENT_NAME           = process.env.AGENT_NAME ?? 'Lodestar Agent';
+const AGENT_DESC           = process.env.AGENT_DESC ?? 'AI agent powered by Lodestar';
+const MAX_PER_TX           = process.env.MAX_PER_TX_USDC ?? '0.01';
+const MAX_PER_DAY          = process.env.MAX_PER_DAY_USDC ?? '0.10';
+const ALLOWED_CATS         = process.env.ALLOWED_CATEGORIES
+  ? process.env.ALLOWED_CATEGORIES.split(',')
+  : ['weather', 'search'];
 
+const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
 const AGENT_ADDRESS = agentKeypair.publicKey();
 
 const logger = pino({
@@ -155,12 +163,6 @@ async function recordOutcome(amountUsdc, success, serviceId) {
 
 // ── x402 client ───────────────────────────────────────────────────────────────
 
-const httpClient = buildHttpClient();
-
-export function dispose() {
-  logger.info('Shutting down Lodestar Agent');
-}
-
 const STROOPS_PER_USDC = 10_000_000;
 
 function stroopsToUsdcStr(stroops) {
@@ -196,6 +198,12 @@ function buildHttpClient() {
   };
 
   return httpClient;
+}
+
+const httpClient = buildHttpClient();
+
+export function dispose() {
+  logger.info('Shutting down Lodestar Agent');
 }
 
 // ── Registry helpers ──────────────────────────────────────────────────────────
@@ -240,7 +248,7 @@ function selectWeighted(services) {
 
 // ── Agent task ────────────────────────────────────────────────────────────────
 
-
+export async function runTask(category, buildUrl, scoringEnabled, httpClient) {
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
 
@@ -254,7 +262,26 @@ function selectWeighted(services) {
     return { success: false, priceUsdc: null };
   }
 
+  const failed = new Set();
 
+  while (failed.size < services.length) {
+    const candidates = services.filter((s) => !failed.has(s.id));
+    const selected = selectWeighted(candidates);
+
+    // ── Spend check ────────────────────────────────────────────────────────
+    if (scoringEnabled) {
+      const spend = await checkSpend(selected.price_usdc, category);
+      if (!spend.allowed) {
+        logger.warn(
+          { event: EVENT.SPEND_CHECK_BLOCKED, category, serviceId: selected.id, reason: spend.reason },
+          'Spend check blocked this service'
+        );
+        failed.add(selected.id);
+        continue;
+      }
+      logger.debug(
+        { event: EVENT.SPEND_CHECK_PASSED, category, serviceId: selected.id },
+        'Spend check passed'
       );
     }
 
@@ -264,9 +291,41 @@ function selectWeighted(services) {
       'Sending x402 payment on Stellar'
     );
 
+    try {
+      const serviceRes = await httpClient.fetch(endpointUrl, {
+        headers: { 'X-Caller-Address': AGENT_ADDRESS },
+      });
 
+      if (serviceRes.ok) {
+        const body = serviceRes.status !== 204 ? await serviceRes.json().catch(() => ({})) : {};
+        if (scoringEnabled) {
+          await recordOutcome(selected.price_usdc, true, selected.id);
+          await submitReputation(selected.id, true);
+        }
+        logger.info(
+          { event: EVENT.SERVICE_SELECTED, category, serviceId: selected.id, status: serviceRes.status },
+          'Service responded'
+        );
+        return { success: true, priceUsdc: selected.price_usdc };
+      }
 
-    return { success: true, priceUsdc: selected.price_usdc };
+      // Payment failed — try next service
+      failed.add(selected.id);
+      if (scoringEnabled) {
+        await recordOutcome(selected.price_usdc, false, selected.id);
+        await submitReputation(selected.id, false);
+      }
+      logger.warn(
+        { event: EVENT.PAYMENT_FAILED, category, serviceId: selected.id, status: serviceRes.status },
+        'Service rejected — trying next'
+      );
+    } catch (err) {
+      failed.add(selected.id);
+      logger.warn(
+        { event: EVENT.PAYMENT_FAILED, category, serviceId: selected.id, err },
+        'Service failed — trying next'
+      );
+    }
   }
 
   const taskDurationMs = Date.now() - taskStart;

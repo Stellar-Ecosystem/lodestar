@@ -11,6 +11,7 @@ export interface ServiceEntry {
   reputation: number;
   active: boolean;
   registered_at: number;
+  ttl_warning?: boolean;
 }
 
 export interface ApiResponse<T> {
@@ -97,6 +98,7 @@ export interface AgentEntry {
   active: boolean;
   flagged: boolean;
   flag_reason: string;
+  is_demo: boolean;
 }
 
 export interface SpendingPolicy {

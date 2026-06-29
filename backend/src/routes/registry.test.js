@@ -6,23 +6,41 @@ const mockListServices = vi.fn();
 const mockListServicesByProvider = vi.fn();
 const mockGetService = vi.fn();
 const mockGetServiceCount = vi.fn();
+const mockDeactivateServiceOnChain = vi.fn();
 const mockGetReputationHistory = vi.fn();
 const mockUpdateReputation = vi.fn();
 const mockIsAllowedReputationAgent = vi.fn();
 const mockBuildUnsignedRegistryTx = vi.fn();
 const mockValidatePreparedRegistrySubmission = vi.fn();
 const mockSubmitSignedRegistryTx = vi.fn();
+const mockGetCurrentLedgerSequence = vi.fn();
+
+// Must match the exports added to contract.js
+const SERVICE_MAX_TTL = 3_110_400;
+const SERVICE_TTL_WARNING_LEDGERS = 311_040;
+
+const mockGetCurrentLedgerSequence = vi.fn();
+
+const SERVICE_MAX_TTL = 3_110_400;
+const SERVICE_TTL_WARNING_LEDGERS = 311_040;
 
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
   listServicesByProvider: (...args) => mockListServicesByProvider(...args),
   getService: (...args) => mockGetService(...args),
   getServiceCount: (...args) => mockGetServiceCount(...args),
+  deactivateServiceOnChain: (...args) => mockDeactivateServiceOnChain(...args),
   updateReputation: (...args) => mockUpdateReputation(...args),
   isAllowedReputationAgent: (...args) => mockIsAllowedReputationAgent(...args),
   buildUnsignedRegistryTx: (...args) => mockBuildUnsignedRegistryTx(...args),
   validatePreparedRegistrySubmission: (...args) => mockValidatePreparedRegistrySubmission(...args),
   submitSignedRegistryTx: (...args) => mockSubmitSignedRegistryTx(...args),
+  SERVICE_MAX_TTL: 3_110_400,
+  SERVICE_TTL_WARNING_LEDGERS: 311_040,
+}));
+
+vi.mock('../lib/stellar.js', () => ({
+  getCurrentLedgerSequence: (...args) => mockGetCurrentLedgerSequence(...args),
 }));
 
 vi.mock('../lib/reputationHistory.js', () => ({
@@ -607,6 +625,154 @@ describe('POST /api/reputation/:id — authorization', () => {
   });
 });
 
+describe('POST /api/services/:id/deactivate', () => {
+  const VALID_PROVIDER = VALID_STELLAR_ADDRESS;
+
+  beforeEach(() => {
+    mockDeactivateServiceOnChain.mockReset();
+  });
+
+  it('returns unsigned XDR for a valid deactivation request', async () => {
+    mockDeactivateServiceOnChain.mockResolvedValueOnce({
+      xdr: 'AAAA_DEACTIVATE_XDR',
+      submitToken: 'submit-token-deact',
+    });
+
+    const res = await request(app)
+      .post('/api/services/7/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ xdr: 'AAAA_DEACTIVATE_XDR', submitToken: 'submit-token-deact' });
+    expect(mockDeactivateServiceOnChain).toHaveBeenCalledWith(7, VALID_PROVIDER);
+  });
+
+  it('returns 400 for non-numeric service ID', async () => {
+    const res = await request(app)
+      .post('/api/services/abc/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_ID');
+    expect(mockDeactivateServiceOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for partially numeric service ID', async () => {
+    const res = await request(app)
+      .post('/api/services/7abc/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_ID');
+    expect(mockDeactivateServiceOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for invalid provider address', async () => {
+    const res = await request(app)
+      .post('/api/services/1/deactivate')
+      .send({ providerAddress: 'not-an-address' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockDeactivateServiceOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when service is not found', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockDeactivateServiceOnChain.mockRejectedValueOnce(
+      new ContractError('Service 999 not found', 'SERVICE_NOT_FOUND'),
+    );
+
+    const res = await request(app)
+      .post('/api/services/999/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('SERVICE_NOT_FOUND');
+  });
+
+  it('returns 502 when chain read fails', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockDeactivateServiceOnChain.mockRejectedValueOnce(
+      new ContractError('Failed to read service 1: RPC timeout', 'SERVICE_READ_FAILED'),
+    );
+
+    const res = await request(app)
+      .post('/api/services/1/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('SERVICE_READ_FAILED');
+  });
+
+  it('returns 403 when provider does not match', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockDeactivateServiceOnChain.mockRejectedValueOnce(
+      new ContractError('Only the provider that registered this service can deactivate it', 'PROVIDER_MISMATCH'),
+    );
+
+    const res = await request(app)
+      .post('/api/services/7/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('PROVIDER_MISMATCH');
+  });
+
+  it('returns 409 when service is already inactive', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockDeactivateServiceOnChain.mockRejectedValueOnce(
+      new ContractError('Service 7 is already deactivated', 'ALREADY_INACTIVE'),
+    );
+
+    const res = await request(app)
+      .post('/api/services/7/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('ALREADY_INACTIVE');
+  });
+
+  it('returns 400 when on-chain deactivation fails with ContractError', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockDeactivateServiceOnChain.mockRejectedValueOnce(
+      new ContractError('Simulation failed: auth error', 'SIMULATION_FAILED'),
+    );
+
+    const res = await request(app)
+      .post('/api/services/7/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('SIMULATION_FAILED');
+  });
+
+  it('returns 504 when transaction times out', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockDeactivateServiceOnChain.mockRejectedValueOnce(
+      new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT'),
+    );
+
+    const res = await request(app)
+      .post('/api/services/7/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(504);
+    expect(res.body.code).toBe('TRANSACTION_TIMEOUT');
+  });
+
+  it('returns 500 on unexpected error', async () => {
+    mockDeactivateServiceOnChain.mockRejectedValueOnce(new Error('boom'));
+
+    const res = await request(app)
+      .post('/api/services/7/deactivate')
+      .send({ providerAddress: VALID_PROVIDER });
+
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('DEACTIVATE_ERROR');
+  });
+});
+
 describe('GET /api/services/:id/history', () => {
   it('should return empty history for a service with no changes', async () => {
     mockGetService.mockResolvedValueOnce(makeService({ id: 1 }));
@@ -655,5 +821,117 @@ describe('GET /api/services/:id/history', () => {
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Failed to fetch reputation history', code: 'FETCH_ERROR' });
+  });
+});
+
+// ── TTL warning annotation ─────────────────────────────────────────────────────
+//
+// registered_at = 1000
+// expiry ledger  = 1000 + SERVICE_MAX_TTL               = 3_111_400
+// warning onset  = 3_111_400 - SERVICE_TTL_WARNING_LEDGERS = 2_800_360
+
+describe('GET /api/services — ttl_warning annotation', () => {
+  const REGISTERED_AT = 1000;
+  const EXPIRY = REGISTERED_AT + SERVICE_MAX_TTL;             // 3_111_400
+  const WARN_ONSET = EXPIRY - SERVICE_TTL_WARNING_LEDGERS;    // 2_800_360
+
+  beforeEach(() => {
+    mockGetCurrentLedgerSequence.mockReset();
+
+  });
+
+  it('sets ttl_warning:false when ledger is well before the warning onset', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET - 1);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(false);
+  });
+
+  it('sets ttl_warning:true exactly at the warning onset ledger', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(true);
+  });
+
+  it('sets ttl_warning:true past the warning onset (including at expiry)', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockResolvedValue(EXPIRY);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(true);
+  });
+
+  it('omits ttl_warning when getCurrentLedgerSequence fails (graceful degradation)', async () => {
+    mockListServices.mockResolvedValueOnce([makeService({ registered_at: REGISTERED_AT })]);
+    mockGetCurrentLedgerSequence.mockRejectedValue(new Error('RPC unreachable'));
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect('ttl_warning' in res.body.services[0]).toBe(false);
+  });
+
+  it('annotates every service in the page independently', async () => {
+    mockListServices.mockResolvedValueOnce([
+      makeService({ id: 1, registered_at: REGISTERED_AT }),
+      makeService({ id: 2, registered_at: REGISTERED_AT + 1_000_000 }),
+    ]);
+
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
+
+    const res = await request(app).get('/api/services');
+
+    expect(res.status).toBe(200);
+    expect(res.body.services[0].ttl_warning).toBe(true);
+    expect(res.body.services[1].ttl_warning).toBe(false);
+  });
+});
+
+describe('GET /api/services/:id — ttl_warning annotation', () => {
+  const REGISTERED_AT = 1000;
+  const WARN_ONSET = REGISTERED_AT + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS;
+
+  beforeEach(() => {
+    mockGetCurrentLedgerSequence.mockReset();
+
+  });
+
+  it('includes ttl_warning:false for a fresh entry', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET - 1);
+
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.ttl_warning).toBe(false);
+  });
+
+  it('includes ttl_warning:true when ledger crosses the warning onset', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
+
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.ttl_warning).toBe(true);
+  });
+
+  it('omits ttl_warning when ledger fetch fails (graceful degradation)', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
+    mockGetCurrentLedgerSequence.mockRejectedValue(new Error('timeout'));
+
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(200);
+    expect('ttl_warning' in res.body).toBe(false);
   });
 });

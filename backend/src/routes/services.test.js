@@ -195,6 +195,7 @@ describe('payment header validation — weather', () => {
     await vi.waitFor(() => expect(mockRecordPaymentOnChain).toHaveBeenCalled());
     expect(mockRecordPaymentOnChain).toHaveBeenCalledWith(
       VALID_STELLAR_ADDRESS,
+      1,
       expect.any(BigInt),
       true
     );
@@ -236,6 +237,12 @@ describe('payment header validation — search', () => {
       .set('x-payment-transaction', 'searchtx99');
     expect(res.status).toBe(200);
     await vi.waitFor(() => expect(mockRecordPaymentOnChain).toHaveBeenCalled());
+    expect(mockRecordPaymentOnChain).toHaveBeenCalledWith(
+      VALID_STELLAR_ADDRESS,
+      2,
+      expect.any(BigInt),
+      true
+    );
     expect(mockLogger.info).toHaveBeenCalledWith(
       expect.objectContaining({ agentAddress: VALID_STELLAR_ADDRESS, txHash: 'searchtx99' }),
       expect.stringContaining('search payment credited to registered agent')

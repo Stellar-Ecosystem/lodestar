@@ -30,6 +30,16 @@ import {
 const TIMEOUT = 30;
 const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
 
+// Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
+// Persistent storage entries are extended to this many ledgers on every write.
+export const SERVICE_MAX_TTL = 3_110_400;
+
+// Warn providers when fewer than this many ledgers remain before their listing
+// could expire (~18 days at 5 s/ledger = 10 % of SERVICE_MAX_TTL).
+// Note: any reputation update resets the TTL, so this is a conservative estimate
+// based solely on registered_at; actual expiry may be later.
+export const SERVICE_TTL_WARNING_LEDGERS = 311_040;
+
 const rpcMetrics = {
   getAccount: 0,
   simulateTransaction: 0,
@@ -52,6 +62,16 @@ export function resetRpcMetrics() {
   rpcMetrics.sendTransaction = 0;
   rpcMetrics.getTransaction = 0;
 }
+
+// Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
+// Persistent storage entries are extended to this many ledgers on every write.
+export const SERVICE_MAX_TTL = 3_110_400;
+
+// Warn providers when fewer than this many ledgers remain before their listing
+// could expire (~18 days at 5 s/ledger = 10 % of SERVICE_MAX_TTL).
+// Note: any reputation update resets the TTL, so this is a conservative estimate
+// based solely on registered_at; actual expiry may be later.
+export const SERVICE_TTL_WARNING_LEDGERS = 311_040;
 
 const submitQueue = new PQueue({ concurrency: 1 });
 let currentSeqNum = null;
@@ -486,6 +506,68 @@ export async function registerServiceOnChain(
   }
 }
 
+/**
+ * Deactivate a service on-chain.
+ *
+ * Validates service existence, provider ownership, and active status, then
+ * builds an unsigned transaction XDR for the provider to sign with their
+ * wallet (e.g. Freighter). The contract enforces `provider.require_auth()`
+ * so the transaction must be authorized by the provider's key, not the
+ * server key.
+ *
+ * @param {number} id - The numeric service ID to deactivate
+ * @param {string} providerAddress - Stellar address of the provider who owns the service
+ * @returns {Promise<{xdr: string, submitToken: string}>} prepared tx for wallet signing
+ * @throws {ContractError} if the service is not found, provider doesn't match, or already inactive
+ */
+export async function deactivateServiceOnChain(id, providerAddress) {
+  try {
+    // Read the service directly from chain to distinguish "not found" from
+    // backend/RPC failures — getService() swallows errors and returns null.
+    const contract = getContract();
+    const readOp = contract.call('get_service', nativeToScVal(BigInt(id), { type: 'u64' }));
+    let retval;
+    try {
+      retval = await simulateRead(readOp);
+    } catch (readErr) {
+      // simulateRead threw — this is an RPC/simulation failure, not "not found"
+      logger.error({ err: readErr, id }, 'deactivateServiceOnChain: failed to read service from chain');
+      throw new ContractError(
+        `Failed to read service ${id}: ${readErr.message ?? 'RPC error'}`,
+        'SERVICE_READ_FAILED'
+      );
+    }
+
+    if (!retval) {
+      throw new ContractError(`Service ${id} not found`, 'SERVICE_NOT_FOUND');
+    }
+
+    const native = scValToNative(retval);
+    const serviceProvider = native.provider?.toString() ?? native.provider;
+
+    if (serviceProvider !== providerAddress) {
+      throw new ContractError(
+        'Only the provider that registered this service can deactivate it',
+        'PROVIDER_MISMATCH'
+      );
+    }
+    if (!native.active) {
+      throw new ContractError(`Service ${id} is already deactivated`, 'ALREADY_INACTIVE');
+    }
+
+    // Build unsigned tx — the provider must sign with their wallet to satisfy
+    // the on-chain `provider.require_auth()` check.
+    const prepared = await buildUnsignedRegistryTx('deactivate', providerAddress, { id });
+    logger.info({ id, providerAddress }, 'Built unsigned deactivation tx for provider signing');
+    return prepared;
+  } catch (err) {
+    if (!(err instanceof ContractError)) {
+      logger.error({ err, id, providerAddress }, 'deactivateServiceOnChain failed');
+    }
+    throw err;
+  }
+}
+
 export async function buildUnsignedRegistryTx(action, providerAddress, params = {}) {
   const contract = getContract();
   const provider = Address.fromString(providerAddress);
@@ -653,6 +735,7 @@ export function mapAgent(raw) {
     active: raw.active,
     flagged: raw.flagged,
     flag_reason: raw.flag_reason ?? '',
+    is_demo: raw.is_demo ?? false,
   };
 }
 
@@ -790,7 +873,7 @@ export async function getAgentCount() {
   }
 }
 
-export async function registerAgentOnChain(agentAddress, name, description) {
+export async function registerAgentOnChain(agentAddress, name, description, isDemo = false) {
   try {
     const contract = getAgentsContract();
     const agentAddr = Address.fromString(agentAddress);
@@ -802,7 +885,8 @@ export async function registerAgentOnChain(agentAddress, name, description) {
       nativeToScVal(agentAddr, { type: 'address' }),
       nativeToScVal(name, { type: 'string' }),
       nativeToScVal(description, { type: 'string' }),
-      nativeToScVal(ownerAddress, { type: 'address' })
+      nativeToScVal(ownerAddress, { type: 'address' }),
+      nativeToScVal(isDemo, { type: 'bool' })
     );
 
     const result = await simulateAndSubmit(op);
@@ -949,7 +1033,7 @@ export async function updatePolicyOnChain(
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(maxPerTxStroops), { type: 'i128' }),
       nativeToScVal(BigInt(maxPerDayStroops), { type: 'i128' }),
-      nativeToScVal(allowedCategories),
+      nativeToScVal(allowedCategories ?? []),
       nativeToScVal(minScoreToEarn, { type: 'i32' }),
       nativeToScVal(caller, { type: 'address' })
     );

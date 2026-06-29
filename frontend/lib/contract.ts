@@ -122,13 +122,21 @@ export async function registerService(
 
 // ── Agent Credit Scoring ──────────────────────────────────────────────────────
 
+// Contract ID for the LodestarAgents on-chain program.
+// All current agent operations flow through the backend API (see apiFetch above).
+// Wire this into a direct contract call if/when the frontend needs to invoke
+// agent operations without a backend intermediary.
+export const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ?? '';
+
 export async function fetchAgents(
   page = 0,
   pageSize = 12,
-  sort: AgentSortOption = 'score'
+  sort: AgentSortOption = 'score',
+  excludeDemo = false
 ): Promise<AgentsResponse> {
+  const excludeDemoParam = excludeDemo ? '&exclude_demo=true' : '';
   return apiFetch<AgentsResponse>(
-    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`
+    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}${excludeDemoParam}`
   );
 }
 
