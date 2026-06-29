@@ -1,12 +1,12 @@
 {
   "name": "lodestar-frontend",
   "version": "1.0.0",
-  "description": "Lodestar — on-chain service discovery for x402 AI agents",
+  "description": "Lodestar \u2014 on-chain service discovery for x402 AI agents",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "node init && next dev",
+    "build": "node init && next build",
+    "start": "node init && next start",
     "lint": "next lint",
     "test": "jest",
     "test:watch": "jest --watch"
