@@ -1,5 +1,7 @@
 import 'dotenv/config';
-import { getServiceCount, registerServiceOnChain } from '../src/lib/contract.js';
+import { Address } from '@stellar/stellar-sdk';
+import config from '../src/config.js';
+import { listServicesByProvider, registerServiceOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 
 process.env.SEEDING_MODE ??= 'true';
@@ -37,15 +39,21 @@ const SERVICES = [
 
 async function seed() {
   try {
-    const count = await getServiceCount();
-    logger.info({ count }, 'Current service count');
+    const providerAddress = Address.fromString(config.server.address).toString();
+    const existingServices = await listServicesByProvider(providerAddress);
+    const existingNames = new Set(existingServices.map((s) => s.name));
 
-    if (count >= SERVICES.length) {
-      logger.info('Registry already seeded — skipping');
-      process.exit(0);
-    }
+    logger.info({
+      total: SERVICES.length,
+      existing: existingNames.size,
+    }, 'Starting seed idempotency check');
 
     for (const svc of SERVICES) {
+      if (existingNames.has(svc.name)) {
+        logger.info({ name: svc.name }, 'Service already registered — skipping');
+        continue;
+      }
+
       try {
         const id = await registerServiceOnChain(
           svc.name,

@@ -49,10 +49,12 @@ function resetMockServer() {
 
 describe('registerServiceOnChain duplicate checks', () => {
   let activeServiceExistsSpy;
+  let activeServiceExistsByNameSpy;
 
   beforeEach(() => {
     process.env.SEEDING_MODE = 'true';
     activeServiceExistsSpy = vi.spyOn(contractLib.contractHelpers, 'activeServiceExists');
+    activeServiceExistsByNameSpy = vi.spyOn(contractLib.contractHelpers, 'activeServiceExistsByName');
   });
 
   afterEach(() => {
@@ -75,7 +77,22 @@ describe('registerServiceOnChain duplicate checks', () => {
     expect(await contractLib.activeServiceExists('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'https://test.example.com')).toBe(false);
   });
 
-  it('throws when duplicate active service exists during registration', async () => {
+  it('returns true when an active service exists for the same provider and name', async () => {
+    const provider = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const name = 'Test Service';
+    activeServiceExistsByNameSpy.mockResolvedValueOnce(true);
+
+    expect(await contractLib.activeServiceExistsByName(provider, name)).toBe(true);
+    expect(activeServiceExistsByNameSpy).toHaveBeenCalledWith(provider, name, expect.any(Function));
+  });
+
+  it('returns false when no matching active service name exists', async () => {
+    activeServiceExistsByNameSpy.mockResolvedValueOnce(false);
+
+    expect(await contractLib.activeServiceExistsByName('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'Test Service')).toBe(false);
+  });
+
+  it('throws when duplicate active service endpoint exists during registration', async () => {
     activeServiceExistsSpy.mockResolvedValueOnce(true);
 
     await expect(
@@ -83,6 +100,17 @@ describe('registerServiceOnChain duplicate checks', () => {
     ).rejects.toThrow('Active service with same provider and endpoint already exists');
 
     expect(activeServiceExistsSpy).toHaveBeenCalled();
+  });
+
+  it('throws when duplicate active service name exists during registration', async () => {
+    activeServiceExistsSpy.mockResolvedValueOnce(false);
+    activeServiceExistsByNameSpy.mockResolvedValueOnce(true);
+
+    await expect(
+      contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')
+    ).rejects.toThrow('Active service with same provider and name already exists');
+
+    expect(activeServiceExistsByNameSpy).toHaveBeenCalled();
   });
 
   it('rejects server-signed registration when seeding mode is disabled', async () => {
