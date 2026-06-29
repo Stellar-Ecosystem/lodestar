@@ -9,17 +9,13 @@ vi.mock('../src/lib/logger.js', () => ({
   default: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
-// Prevent top-level process.exit in boost-scores.js
-process.env.AGENTS_CONTRACT_ID = 'CTEST';
-
 import { listAgents, recordPaymentOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 import { boost } from './boost-scores.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Prevent process.exit from killing vitest
-  vi.spyOn(process, 'exit').mockImplementation(() => {});
+  process.env.AGENTS_CONTRACT_ID = 'CTEST';
 });
 
 const makeAgent = (overrides) => ({
@@ -41,13 +37,11 @@ describe('boost() dry-run', () => {
 
     expect(recordPaymentOnChain).not.toHaveBeenCalled();
 
-    // agent-1: (110-100)/10 = 1 payment needed
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'agent-1', payments: 1 }),
       'Building score…',
     );
 
-    // agent-2: (600-500)/10 = 10 payments needed
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'agent-2', payments: 10 }),
       'Building score…',

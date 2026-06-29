@@ -2,17 +2,17 @@ import 'dotenv/config';
 import { listAgents, recordPaymentOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 
-if (!process.env.AGENTS_CONTRACT_ID) {
-  logger.error('AGENTS_CONTRACT_ID not set');
-  process.exit(1);
-}
-
 // Target scores: first agent ~110, second ~600, third ~1000
 const TARGETS = [110, 600, 1000];
 const AMOUNT = 10_000n; // 0.001 USDC
 
 export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT } = {}) {
   try {
+    if (!dryRun && !process.env.AGENTS_CONTRACT_ID) {
+      logger.error('AGENTS_CONTRACT_ID not set');
+      process.exit(1);
+    }
+
     if (dryRun) {
       logger.info('DRY RUN — no transactions will be submitted');
     }
@@ -45,11 +45,10 @@ export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT
         }
       }
 
-      logger.info({ name: agent.name, targetScore: target, skipped: dryRun }, 'Done');
+      logger.info({ name: agent.name, targetScore: target }, 'Done');
     }
 
     logger.info({ dryRun }, 'Score boost complete');
-    process.exit(0);
   } catch (err) {
     logger.error({ err }, 'boost-scores failed');
     process.exit(1);
@@ -59,5 +58,9 @@ export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT
 const isDryRun = process.argv.includes('--dry-run');
 
 if (process.argv[1] && !process.argv[1].endsWith('.test.js')) {
+  if (!process.env.AGENTS_CONTRACT_ID) {
+    logger.error('AGENTS_CONTRACT_ID not set');
+    process.exit(1);
+  }
   boost({ dryRun: isDryRun });
 }
