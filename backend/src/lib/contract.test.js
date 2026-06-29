@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach, mocked } from 'vitest';
 
 vi.mock('../config.js', () => ({
   default: {
@@ -30,6 +30,13 @@ vi.mock('./stellar.js', () => ({
     getTransaction: mockGetTransaction,
   }),
   getNetworkPassphrase: () => 'Test SDF Network ; September 2015',
+}));
+
+vi.mock('node:fs', () => ({
+  writeFileSync: vi.fn(),
+  readFileSync: vi.fn(),
+  existsSync: vi.fn(),
+  unlinkSync: vi.fn(),
 }));
 
 import sdkPkg from '@stellar/stellar-sdk';
@@ -700,5 +707,170 @@ describe('pendingTransactions registry', () => {
 
     await contractLib.simulateAndSubmit(contract.call('get_service_count'));
     expect(contractLib.getPendingTransactionCount()).toBe(0);
+  });
+});
+
+describe('dumpPendingTransactions', () => {
+  let fsWriteFileSync;
+  let fsExistsSync;
+  let fsUnlinkSync;
+  let fsReadFileSync;
+
+  beforeEach(async () => {
+    contractLib.__resetPendingTransactions();
+    const fs = mocked(await import('node:fs'), true);
+    fsWriteFileSync = fs.writeFileSync;
+    fsExistsSync = fs.existsSync;
+    fsUnlinkSync = fs.unlinkSync;
+    fsReadFileSync = fs.readFileSync;
+    fsExistsSync.mockReturnValue(false);
+    fsReadFileSync.mockReturnValue('[]');
+  });
+
+  afterEach(() => {
+    contractLib.__resetPendingTransactions();
+    vi.restoreAllMocks();
+  });
+
+  it('writes nothing when there are no pending transactions', () => {
+    contractLib.dumpPendingTransactions();
+    expect(fsWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('writes pending entries to file', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'dump-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toThrow();
+
+    contractLib.dumpPendingTransactions();
+
+    expect(fsWriteFileSync).toHaveBeenCalledWith(
+      'pending-transactions.json',
+      expect.stringContaining('dump-hash'),
+      'utf-8',
+    );
+  });
+
+  it('includes hash and submittedAt in dumped entries', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'op-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toThrow();
+
+    contractLib.dumpPendingTransactions();
+    const written = JSON.parse(fsWriteFileSync.mock.calls[0][1]);
+    expect(written[0].hash).toBe('op-hash');
+    expect(written[0].submittedAt).toBeGreaterThan(0);
+  });
+});
+
+describe('resumePendingTransactions', () => {
+  beforeEach(() => {
+    contractLib.__resetPendingTransactions();
+  });
+
+  afterEach(() => {
+    contractLib.__resetPendingTransactions();
+    vi.restoreAllMocks();
+  });
+
+  it('does nothing when pending-transactions.json does not exist', async () => {
+    const fs = mocked(await import('node:fs'), true);
+    fs.existsSync.mockReturnValue(false);
+
+    await contractLib.resumePendingTransactions();
+
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when file is empty array', async () => {
+    const fs = mocked(await import('node:fs'), true);
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue('[]');
+
+    await contractLib.resumePendingTransactions();
+    expect(contractLib.getPendingTransactionCount()).toBe(0);
+  });
+
+  it('re-adds unconfirmed entries to pending registry', async () => {
+    const fs = mocked(await import('node:fs'), true);
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(JSON.stringify([
+      { hash: 'unconfirmed-hash', operation: 'register_agent', submittedAt: Date.now() },
+    ]));
+    mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
+
+    await contractLib.resumePendingTransactions();
+    expect(contractLib.getPendingTransactionCount()).toBe(1);
+    expect(contractLib.getPendingTransactions()[0].hash).toBe('unconfirmed-hash');
+  });
+
+  it('removes confirmed SUCCESS entries without re-adding', async () => {
+    const fs = mocked(await import('node:fs'), true);
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(JSON.stringify([
+      { hash: 'confirmed-hash', operation: 'record_payment', submittedAt: Date.now() },
+    ]));
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS' });
+
+    await contractLib.resumePendingTransactions();
+    expect(contractLib.getPendingTransactionCount()).toBe(0);
+  });
+
+  it('removes confirmed FAILED entries without re-adding', async () => {
+    const fs = mocked(await import('node:fs'), true);
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(JSON.stringify([
+      { hash: 'failed-hash', operation: 'record_payment', submittedAt: Date.now() },
+    ]));
+    mockGetTransaction.mockResolvedValue({ status: 'FAILED' });
+
+    await contractLib.resumePendingTransactions();
+    expect(contractLib.getPendingTransactionCount()).toBe(0);
+  });
+
+  it('deletes the file after processing all entries', async () => {
+    const fs = mocked(await import('node:fs'), true);
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue('[]');
+    fs.unlinkSync.mockClear();
+
+    await contractLib.resumePendingTransactions();
+    expect(fs.unlinkSync).toHaveBeenCalledWith('pending-transactions.json');
+  });
+});
+
+describe('submitQueue management', () => {
+  beforeEach(() => {
+    contractLib.__resetPendingTransactions();
+    resetMockServer();
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+  });
+
+  afterEach(() => {
+    contractLib.__setAssembleTransactionForTest();
+  });
+
+  it('reports zero queue depth when idle', () => {
+    expect(contractLib.getSubmitQueueDepth()).toBe(0);
+  });
+
+  it('drainSubmitQueue resolves when queue is empty', async () => {
+    await expect(contractLib.drainSubmitQueue()).resolves.toBeUndefined();
+  });
+
+  it('reports positive depth while a transaction is in flight', async () => {
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'depth-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    const promise = contractLib.simulateAndSubmit(contract.call('get_service_count'));
+    expect(contractLib.getSubmitQueueDepth()).toBeGreaterThan(0);
+    await promise;
   });
 });
