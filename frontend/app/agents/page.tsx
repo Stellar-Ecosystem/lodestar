@@ -16,8 +16,7 @@ const SORTS: { label: string; value: AgentSortOption }[] = [
   { label: 'Newest', value: 'newest' },
 ];
 
-export const PAGE_SIZE = 12;
-const PAGE_SIZE_OPTIONS = [6, 12, 24] as const;
+import { PAGE_SIZE, PAGE_SIZE_OPTIONS } from '@/lib/pagination';
 
 export default function AgentsPage() {
   const [sort, setSort] = useState<AgentSortOption>('score');
