@@ -98,7 +98,6 @@ export interface AgentEntry {
   active: boolean;
   flagged: boolean;
   flag_reason: string;
-  is_demo: boolean;
 }
 
 export interface SpendingPolicy {

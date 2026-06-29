@@ -26,7 +26,6 @@ pub enum DataKey {
     AgentCount,
     AgentIds,
     Agent(Address),
-    IsDemo(Address),
     Policy(Address),
     RegistryContract,
     Admin,
@@ -49,12 +48,6 @@ pub struct ServiceEntry {
 }
 
 // ── Data types ───────────────────────────────────────────────────────────────
-/// The on-chain representation of an agent.
-///
-/// NOTE: This struct is used for the contract's public API. To maintain backward
-/// compatibility with existing on-chain data, we do NOT persist the `is_demo`
-/// field within the main `AgentEntry` storage. Instead, `is_demo` is stored
-/// separately under `DataKey::IsDemo(Address)`.
 #[contracttype]
 #[derive(Clone)]
 pub struct AgentEntry {
@@ -72,74 +65,6 @@ pub struct AgentEntry {
     pub active: bool,
     pub flagged: bool,
     pub flag_reason: String,
-    pub is_demo: bool,
-}
-
-/// Internal storage representation of an agent to maintain backward compatibility.
-/// Matches the layout of AgentEntry before the `is_demo` field was added.
-#[contracttype]
-#[derive(Clone)]
-struct AgentEntryStore {
-    pub address: Address,
-    pub name: String,
-    pub description: String,
-    pub owner: Address,
-    pub score: i32,
-    pub total_payments: u64,
-    pub successful_payments: u64,
-    pub failed_payments: u64,
-    pub total_volume_stroops: i128,
-    pub registered_at: u64,
-    pub last_active: u64,
-    pub active: bool,
-    pub flagged: bool,
-    pub flag_reason: String,
-}
-
-impl AgentEntry {
-    fn from_store(env: &Env, store: AgentEntryStore) -> Self {
-        let is_demo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::IsDemo(store.address.clone()))
-            .unwrap_or(false);
-        Self {
-            address: store.address,
-            name: store.name,
-            description: store.description,
-            owner: store.owner,
-            score: store.score,
-            total_payments: store.total_payments,
-            successful_payments: store.successful_payments,
-            failed_payments: store.failed_payments,
-            total_volume_stroops: store.total_volume_stroops,
-            registered_at: store.registered_at,
-            last_active: store.last_active,
-            active: store.active,
-            flagged: store.flagged,
-            flag_reason: store.flag_reason,
-            is_demo,
-        }
-    }
-
-    fn to_store(&self) -> AgentEntryStore {
-        AgentEntryStore {
-            address: self.address.clone(),
-            name: self.name.clone(),
-            description: self.description.clone(),
-            owner: self.owner.clone(),
-            score: self.score,
-            total_payments: self.total_payments,
-            successful_payments: self.successful_payments,
-            failed_payments: self.failed_payments,
-            total_volume_stroops: self.total_volume_stroops,
-            registered_at: self.registered_at,
-            last_active: self.last_active,
-            active: self.active,
-            flagged: self.flagged,
-            flag_reason: self.flag_reason.clone(),
-        }
-    }
 }
 
 #[contracttype]
@@ -233,7 +158,6 @@ impl LodestarAgents {
         name: String,
         description: String,
         owner: Address,
-        is_demo: bool,
     ) -> u64 {
 
         let key = DataKey::Agent(agent_address.clone());
@@ -258,19 +182,10 @@ impl LodestarAgents {
             active: true,
             flagged: false,
             flag_reason: String::from_str(&env, ""),
-            is_demo,
         };
 
-        env.storage().persistent().set(&key, &entry.to_store());
+        env.storage().persistent().set(&key, &entry);
         env.storage().persistent().extend_ttl(&key, MAX_TTL, MAX_TTL);
-
-        if is_demo {
-            let demo_key = DataKey::IsDemo(agent_address.clone());
-            env.storage().persistent().set(&demo_key, &true);
-            env.storage()
-                .persistent()
-                .extend_ttl(&demo_key, MAX_TTL, MAX_TTL);
-        }
 
         // Update agent IDs list
         let ids_key = DataKey::AgentIds;
@@ -321,8 +236,7 @@ impl LodestarAgents {
     pub fn get_agent(env: Env, agent_address: Address) -> Option<AgentEntry> {
         env.storage()
             .persistent()
-            .get::<DataKey, AgentEntryStore>(&DataKey::Agent(agent_address))
-            .map(|store| AgentEntry::from_store(&env, store))
+            .get(&DataKey::Agent(agent_address))
     }
 
     // Get spending policy with automatic daily reset
@@ -342,7 +256,7 @@ impl LodestarAgents {
     pub fn get_score(env: Env, agent_address: Address) -> i32 {
         env.storage()
             .persistent()
-            .get::<DataKey, AgentEntryStore>(&DataKey::Agent(agent_address))
+            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
             .map(|a| a.score)
             .unwrap_or(-1)
     }
@@ -358,7 +272,7 @@ impl LodestarAgents {
     pub fn is_eligible(env: Env, agent_address: Address, min_score: i32) -> bool {
         env.storage()
             .persistent()
-            .get::<DataKey, AgentEntryStore>(&DataKey::Agent(agent_address))
+            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
             .map(|a| a.active && !a.flagged && a.score >= min_score)
             .unwrap_or(false)
     }
@@ -378,7 +292,7 @@ impl LodestarAgents {
         let agent = match env
             .storage()
             .persistent()
-            .get::<DataKey, AgentEntryStore>(&DataKey::Agent(agent_address))
+            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
         {
             Some(a) => a,
             None => return false,
@@ -424,7 +338,7 @@ impl LodestarAgents {
         }
 
         let agent_key = DataKey::Agent(agent_address.clone());
-        let mut agent: AgentEntryStore = env
+        let mut agent: AgentEntry = env
             .storage()
             .persistent()
             .get(&agent_key)
@@ -493,7 +407,7 @@ impl LodestarAgents {
         }
 
         let key = DataKey::Agent(agent_address);
-        let mut agent: AgentEntryStore = env
+        let mut agent: AgentEntry = env
             .storage()
             .persistent()
             .get(&key)
@@ -514,7 +428,7 @@ impl LodestarAgents {
         caller.require_auth();
 
         let key = DataKey::Agent(agent_address);
-        let mut agent: AgentEntryStore = env
+        let mut agent: AgentEntry = env
             .storage()
             .persistent()
             .get(&key)
@@ -605,9 +519,9 @@ impl LodestarAgents {
             if let Some(agent) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, AgentEntryStore>(&DataKey::Agent(addr))
+                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
             {
-                result.push_back(AgentEntry::from_store(&env, agent));
+                result.push_back(agent);
             }
         }
         result
@@ -634,9 +548,9 @@ impl LodestarAgents {
             if let Some(agent) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, AgentEntryStore>(&DataKey::Agent(addr))
+                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
             {
-                result.push_back(AgentEntry::from_store(&env, agent));
+                result.push_back(agent);
             }
         }
         result
@@ -663,7 +577,7 @@ impl LodestarAgents {
         caller.require_auth();
 
         let agent_key = DataKey::Agent(agent_address.clone());
-        let agent: AgentEntryStore = env
+        let agent: AgentEntry = env
             .storage()
             .persistent()
             .get(&agent_key)
