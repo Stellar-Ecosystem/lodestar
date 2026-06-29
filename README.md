@@ -172,8 +172,13 @@ node agent.js
 The agent will:
 - Query the Lodestar registry for weather and search services
 - Select the best by reputation
+- Check spending policy before paying
+- Fail closed by default if the policy check is unreachable
+- Log a warning whenever the backend policy check fails
 - Pay via x402 on Stellar
 - Log the data received and update on-chain reputation
+
+If you explicitly want development-only fail-open behavior, set `AGENT_FAIL_OPEN=true` in [agent/.env.example](agent/.env.example). The agent will still enforce a per-process local fallback limit for the current run.
 
 ---
 

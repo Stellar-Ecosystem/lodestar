@@ -20,20 +20,6 @@ const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
 
-const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
-const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
-const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
-const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
-const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
-  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
-  : ['weather', 'search'];
-
-let agentKeypair;
-try {
-  agentKeypair = Keypair.fromSecret(AGENT_SECRET);
-} catch {
-  throw new Error(`Invalid AGENT_STELLAR_SECRET: unable to parse secret key`);
-}
 const AGENT_ADDRESS = agentKeypair.publicKey();
 
 const logger = pino({
@@ -41,26 +27,13 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
-// ── Canonical event names ─────────────────────────────────────────────────────
 
-export const EVENT = {
-  AGENT_START:         'agent_start',
-  AGENT_REGISTERED:    'agent_registered',
-  TASK_START:          'task_start',
-  SERVICE_SELECTED:    'service_selected',
-  SPEND_CHECK_PASSED:  'spend_check_passed',
-  SPEND_CHECK_BLOCKED: 'spend_check_blocked',
-  PAYMENT_SUCCESS:     'payment_success',
-  PAYMENT_FAILED:      'payment_failed',
-  SCORE_UPDATED:       'score_updated',
-  AGENT_COMPLETE:      'agent_complete',
-};
 
 // ── Credit scoring helpers ────────────────────────────────────────────────────
 
 let currentScore = null;
 
-export async function ensureRegistered() {
+
   try {
     const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
     if (res.status === 503) {
@@ -126,15 +99,33 @@ export async function ensureRegistered() {
 }
 
 async function checkSpend(amountUsdc, category) {
+  const url =
+    `${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/can-spend` +
+    `?amount=${encodeURIComponent(amountUsdc)}&category=${encodeURIComponent(category)}`;
+
   try {
-    const res = await fetch(
-      `${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/can-spend` +
-      `?amount=${encodeURIComponent(amountUsdc)}&category=${encodeURIComponent(category)}`
-    );
-    if (!res.ok) return { allowed: true, reason: 'OK' };
-    return await res.json();
-  } catch {
-    return { allowed: true, reason: 'OK' };
+    const res = await fetch(url);
+    if (!res.ok) {
+      logger.warn({ url, status: res.status }, `${tag()} Spending policy check failed`);
+      return AGENT_FAIL_OPEN
+        ? { allowed: true, reason: 'Policy check unreachable (fail-open enabled)' }
+        : { allowed: false, reason: 'Policy check unreachable' };
+    }
+
+    const data = await res.json();
+    if (typeof data?.allowed !== 'boolean') {
+      logger.warn({ url, status: res.status }, `${tag()} Spending policy check returned invalid payload`);
+      return AGENT_FAIL_OPEN
+        ? { allowed: true, reason: 'Policy check unreachable (fail-open enabled)' }
+        : { allowed: false, reason: 'Policy check unreachable' };
+    }
+
+    return data;
+  } catch (err) {
+    logger.warn({ url, err }, `${tag()} Spending policy check failed`);
+    return AGENT_FAIL_OPEN
+      ? { allowed: true, reason: 'Policy check unreachable (fail-open enabled)' }
+      : { allowed: false, reason: 'Policy check unreachable' };
   }
 }
 
@@ -280,51 +271,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     return { success: false, priceUsdc: null };
   }
 
-  // Top-N candidates by reputation; weighted random selection reduces single-point manipulation.
-  const candidates = [...eligible].sort((a, b) => b.reputation - a.reputation).slice(0, maxRetries);
-  const failed = new Set();
 
-  for (let attempt = 1; attempt <= candidates.length; attempt++) {
-    const available = candidates.filter(s => !failed.has(s.id));
-    if (!available.length) break;
-
-    const selected = selectWeighted(available);
-
-    logger.info(
-      {
-        event: EVENT.SERVICE_SELECTED,
-        category,
-        serviceId: selected.id,
-        serviceName: selected.name,
-        priceUsdc: selected.price_usdc,
-        servicesFound: services.length,
-        attempt,
-      },
-      'Service selected'
-    );
-
-    if (scoringEnabled) {
-      const check = await checkSpend(selected.price_usdc, category);
-      if (!check.allowed) {
-        logger.warn(
-          {
-            event: EVENT.SPEND_CHECK_BLOCKED,
-            category,
-            serviceId: selected.id,
-            serviceName: selected.name,
-            priceUsdc: selected.price_usdc,
-            reason: check.reason,
-          },
-          'Payment blocked by spending policy'
-        );
-        failed.add(selected.id);
-        continue;
-      }
-      logger.info(
-        { event: EVENT.SPEND_CHECK_PASSED, category, serviceId: selected.id, serviceName: selected.name, priceUsdc: selected.price_usdc },
-        'Spending policy check passed'
-      );
-    }
 
     const endpointUrl = buildUrl(selected.endpoint);
     logger.debug(
@@ -395,8 +342,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
 
     await submitReputation(selected.id, true);
 
-    return { success: true, priceUsdc: selected.price_usdc };
-  }
+
 
   const taskDurationMs = Date.now() - taskStart;
   logger.error(
@@ -408,12 +354,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export async function main() {
-  const runStart = Date.now();
-  logger.info(
-    { event: EVENT.AGENT_START, agentAddress: AGENT_ADDRESS, agentName: AGENT_NAME },
-    'Lodestar Agent starting'
-  );
+
 
   const scoringEnabled = await ensureRegistered();
   const scoreAfterRegistration = currentScore;
