@@ -105,8 +105,10 @@ describe("POST /api/agents/register", () => {
   });
 });
 
-const mockGetActivityFeed = vi.fn(() => []);
-const mockParseActivityPagination = vi.fn(() => ({ limit: 20, offset: 0, errors: [] }));
+const { mockGetActivityFeed, mockParseActivityPagination } = vi.hoisted(() => ({
+  mockGetActivityFeed: vi.fn(() => []),
+  mockParseActivityPagination: vi.fn(() => ({ limit: 20, offset: 0, errors: [] })),
+}));
 
 vi.mock('../src/lib/activityFeed.js', async () => {
   const actual = await vi.importActual('../src/lib/activityFeed.js');

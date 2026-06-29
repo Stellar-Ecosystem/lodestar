@@ -19,11 +19,6 @@ const mockGetCurrentLedgerSequence = vi.fn();
 const SERVICE_MAX_TTL = 3_110_400;
 const SERVICE_TTL_WARNING_LEDGERS = 311_040;
 
-const mockGetCurrentLedgerSequence = vi.fn();
-
-const SERVICE_MAX_TTL = 3_110_400;
-const SERVICE_TTL_WARNING_LEDGERS = 311_040;
-
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
   listServicesByProvider: (...args) => mockListServicesByProvider(...args),
