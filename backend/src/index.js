@@ -3,7 +3,14 @@ import cors from "cors";
 import config from "./config.js";
 import logger from "./lib/logger.js";
 import { checkRpcHealth } from "./lib/stellar.js";
-import { getSubmitQueueDepth, drainSubmitQueue } from "./lib/contract.js";
+import {
+  getSubmitQueueDepth,
+  drainSubmitQueue,
+  getPendingTransactionCount,
+  getPendingTransactions,
+  dumpPendingTransactions,
+  resumePendingTransactions,
+} from "./lib/contract.js";
 import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
@@ -32,12 +39,15 @@ app.get("/healthz", async (_req, res) => {
       statusCode = 200; // Still accept requests but indicate degradation
     }
 
+    const pendingTxCount = getPendingTransactionCount();
+
     res.status(statusCode).json({
       status: health.status,
       rpc: health.rpc,
       contract: health.contract,
       timestamp: health.timestamp,
       queueDepth,
+      pendingTransactions: pendingTxCount,
       ...(health.error && { error: health.error }),
     });
   } catch (err) {
@@ -70,31 +80,93 @@ app.use((err, _req, res, _next) => {
     code: "INTERNAL_ERROR",
   });
 });
+let server;
+let shuttingDown = false;
 
+async function start() {
+  // Resume any pending transactions from a previous run before accepting requests
+  try {
+    await resumePendingTransactions();
+  } catch (err) {
+    logger.error({ err }, "Failed to resume pending transactions — continuing startup");
+  }
 
-  logger.info(
-    {
-      port: config.port,
-      network: config.stellar.network,
-      contractId: config.contract.id,
-    },
-    "Lodestar backend running",
-  );
-});
+  server = app.listen(config.port, () => {
+    logger.info(
+      {
+        port: config.port,
+        network: config.stellar.network,
+        contractId: config.contract.id,
+      },
+      "Lodestar backend running",
+    );
+  });
+}
 
 async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
   logger.info("Shutting down gracefully...");
-  server.close(async () => {
-    logger.info("HTTP server closed.");
-    try {
-      await drainSubmitQueue();
-      logger.info("Submit queue drained.");
-    } catch (err) {
-      logger.error({ err }, "Error draining submit queue");
+
+  // Force-exit after the configured timeout so the process never hangs forever
+  const forceExitTimer = setTimeout(() => {
+    const pending = getPendingTransactions();
+    if (pending.length > 0) {
+      logger.warn(
+        { count: pending.length, timeout: config.shutdownTimeoutMs },
+        "Shutdown timeout reached — dumping pending transactions and force-exiting",
+      );
+      dumpPendingTransactions();
     }
+    process.exit(1);
+  }, config.shutdownTimeoutMs);
+  forceExitTimer.unref();
+
+  // If server hasn't been created yet (signal during startup resume) skip close
+  if (!server) {
+    logger.warn("Server was not yet listening — draining queue directly");
+    await doDrainAndDump();
+    clearTimeout(forceExitTimer);
+    process.exit(0);
+    return;
+  }
+
+  // Stop accepting new connections
+  server.close(async (closeErr) => {
+    if (closeErr) {
+      logger.error({ err: closeErr }, "Error closing HTTP server");
+    } else {
+      logger.info("HTTP server closed — no longer accepting new connections");
+    }
+
+    await doDrainAndDump();
+    clearTimeout(forceExitTimer);
     process.exit(0);
   });
 }
 
+async function doDrainAndDump() {
+  try {
+    await drainSubmitQueue();
+    logger.info("Submit queue drained successfully");
+  } catch (err) {
+    logger.error({ err }, "Error draining submit queue");
+  }
+
+  const pending = getPendingTransactions();
+  if (pending.length > 0) {
+    logger.warn(
+      { count: pending.length, hashes: pending.map((t) => t.hash) },
+      "Pending transactions remain after queue drain — dumped to pending-transactions.json for manual verification",
+    );
+    dumpPendingTransactions();
+  } else {
+    logger.info("No pending transactions — clean shutdown");
+  }
+}
+
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+start();
