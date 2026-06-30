@@ -27,6 +27,83 @@ import {
   TransactionTimeoutError,
 } from './contractErrors.js';
 
+/**
+ * Expected return types for every contract function invoked via simulateRead
+ * or simulateAndSubmit. Consumed by parseRetval() to validate the decoded
+ * native value and to correctly detect scvVoid() returns — a truthy JS
+ * object that the old `!retval` guard silently passed through, producing
+ * scValToNative(scvVoid()) → undefined → Number(undefined) → NaN.
+ */
+export const CONTRACT_RETURN_TYPES = {
+  // Registry contract (read)
+  list_services_page: 'struct',
+  get_service:        'struct',
+  get_service_count:  'u64',
+  // Agents contract (read)
+  list_agents:            'struct',
+  list_agents_page:       'struct',
+  get_agent:              'struct',
+  is_registered:          'bool',
+  get_policy:             'struct',
+  // NOTE: on-chain type is i128 (score can be negative); the 'u64' validator
+  // only checks typeof === 'bigint', which holds for both signed and unsigned.
+  get_score:              'u64',
+  get_agent_count:        'u64',
+  is_eligible:            'bool',
+  check_spending_allowed: 'bool',
+  // Mutating (simulateAndSubmit) — returns new ID (u64) or void
+  register_service:  'u64',
+  register_agent:    'u64',
+  update_reputation: 'void',
+  record_payment:    'void',
+  flag_agent:        'void',
+  deactivate_agent:  'void',
+  update_policy:     'void',
+};
+
+/**
+ * Decode a raw ScVal return value from a Soroban contract call into its
+ * native JS equivalent, validating the result type against `expectedType`.
+ *
+ * Handles the scvVoid() edge case: scvVoid() is a **truthy** JS object, so
+ * the old `if (!retval) return null` guard silently passed it through,
+ * causing `scValToNative(scvVoid()) → undefined → Number(undefined) → NaN`
+ * which JSON.stringify silently serialises as `null` in HTTP responses.
+ *
+ * @param {*} retval - Raw ScVal (or null/undefined) from simulateRead
+ * @param {'u64'|'bool'|'struct'|'void'|undefined} expectedType
+ * @returns {*} Native JS value, or null for void / missing results
+ * @throws {ReturnValueParseError} If the decoded type does not match expectedType
+ */
+export function parseRetval(retval, expectedType) {
+  if (retval == null) return null;
+  // scvVoid() is truthy — detect via the XDR discriminant name
+  if (retval?.switch?.()?.name === 'scvVoid' || expectedType === 'void') return null;
+
+  const native = scValToNative(retval);
+
+  if (expectedType === 'u64') {
+    if (typeof native !== 'bigint' && typeof native !== 'number') {
+      throw new ReturnValueParseError(
+        `Expected u64 (bigint), got ${typeof native}: ${String(native)}`
+      );
+    }
+  } else if (expectedType === 'bool') {
+    if (typeof native !== 'boolean') {
+      throw new ReturnValueParseError(
+        `Expected bool, got ${typeof native}: ${String(native)}`
+      );
+    }
+  } else if (expectedType === 'struct') {
+    if (typeof native !== 'object' || native === null) {
+      throw new ReturnValueParseError(
+        `Expected struct (object), got ${typeof native}: ${String(native)}`
+      );
+    }
+  }
+
+  return native;
+}
 
 const TIMEOUT = 30;
 const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -401,7 +478,7 @@ async function buildUnsignedTx(operation) {
   return assembleTransactionForSubmit(tx, simResult).build().toXDR();
 }
 
-async function simulateRead(operation) {
+async function simulateRead(operation, expectedType) {
   const server = getStellarServer();
   const keypair = getServerKeypair();
   const passphrase = getNetworkPassphrase();
@@ -424,7 +501,7 @@ async function simulateRead(operation) {
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
-  return simResult.result?.retval;
+  return parseRetval(simResult.result?.retval, expectedType);
 }
 
 export async function simulateReadBatch(operations) {
@@ -474,10 +551,8 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
       nativeToScVal(pageSize, { type: 'u32' }),
       optionArg,
     );
-    const retval = await simulateRead(callOp);
-    if (!retval) return [];
-
-    const vec = scValToNative(retval);
+    const vec = await simulateRead(callOp, CONTRACT_RETURN_TYPES.list_services_page);
+    if (vec == null) return [];
     if (!Array.isArray(vec)) return [];
 
     return vec.map((item) => ({
@@ -503,9 +578,8 @@ export async function getService(id) {
   try {
     const contract = getContract();
     const op = contract.call('get_service', nativeToScVal(BigInt(id), { type: 'u64' }));
-    const retval = await simulateRead(op);
-    if (!retval) return null;
-    const native = scValToNative(retval);
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.get_service);
+    if (native == null) return null;
     return {
       id: Number(native.id),
       name: native.name,
@@ -529,9 +603,9 @@ export async function getServiceCount() {
   try {
     const contract = getContract();
     const op = contract.call('get_service_count');
-    const retval = await simulateRead(op);
-    if (!retval) return 0;
-    return Number(scValToNative(retval));
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.get_service_count);
+    if (native == null) return 0;
+    return Number(native);
   } catch (err) {
     logger.error({ err }, 'getServiceCount failed');
     return 0;
@@ -682,9 +756,9 @@ export async function deactivateServiceOnChain(id, providerAddress) {
     // backend/RPC failures — getService() swallows errors and returns null.
     const contract = getContract();
     const readOp = contract.call('get_service', nativeToScVal(BigInt(id), { type: 'u64' }));
-    let retval;
+    let native;
     try {
-      retval = await simulateRead(readOp);
+      native = await simulateRead(readOp, CONTRACT_RETURN_TYPES.get_service);
     } catch (readErr) {
       // simulateRead threw — this is an RPC/simulation failure, not "not found"
       logger.error({ err: readErr, id }, 'deactivateServiceOnChain: failed to read service from chain');
@@ -694,11 +768,9 @@ export async function deactivateServiceOnChain(id, providerAddress) {
       );
     }
 
-    if (!retval) {
+    if (native == null) {
       throw new ContractError(`Service ${id} not found`, 'SERVICE_NOT_FOUND');
     }
-
-    const native = scValToNative(retval);
     const serviceProvider = native.provider?.toString() ?? native.provider;
 
     if (serviceProvider !== providerAddress) {
@@ -910,9 +982,8 @@ export async function listAgents(limit = 50) {
   try {
     const contract = getAgentsContract();
     const op = contract.call('list_agents', nativeToScVal(limit, { type: 'u32' }));
-    const retval = await simulateRead(op);
-    if (!retval) return [];
-    const vec = scValToNative(retval);
+    const vec = await simulateRead(op, CONTRACT_RETURN_TYPES.list_agents);
+    if (vec == null) return [];
     if (!Array.isArray(vec)) return [];
     return vec.map(mapAgent);
   } catch (err) {
@@ -929,9 +1000,8 @@ export async function listAgentsPage(page = 0, pageSize = 20) {
       nativeToScVal(page, { type: 'u32' }),
       nativeToScVal(pageSize, { type: 'u32' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return [];
-    const vec = scValToNative(retval);
+    const vec = await simulateRead(op, CONTRACT_RETURN_TYPES.list_agents_page);
+    if (vec == null) return [];
     if (!Array.isArray(vec)) return [];
     return vec.map(mapAgent);
   } catch (err) {
@@ -947,10 +1017,8 @@ export async function getAgent(agentAddress) {
       'get_agent',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return null;
-    const native = scValToNative(retval);
-    if (!native) return null;
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.get_agent);
+    if (native == null) return null;
     return mapAgent(native);
   } catch (err) {
     logger.error({ err, agentAddress }, 'getAgent failed');
@@ -972,9 +1040,9 @@ export async function isAgentRegistered(agentAddress) {
       'is_registered',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return false;
-    return scValToNative(retval);
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.is_registered);
+    if (native == null) return false;
+    return native;
   } catch (err) {
     logger.error({ err, agentAddress }, 'isAgentRegistered failed');
     throw err;
@@ -988,10 +1056,8 @@ export async function getAgentPolicy(agentAddress) {
       'get_policy',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return null;
-    const native = scValToNative(retval);
-    if (!native) return null;
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.get_policy);
+    if (native == null) return null;
     return mapPolicy(native);
   } catch (err) {
     logger.error({ err, agentAddress }, 'getAgentPolicy failed');
@@ -1006,9 +1072,9 @@ export async function getAgentScore(agentAddress) {
       'get_score',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return -1;
-    return Number(scValToNative(retval));
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.get_score);
+    if (native == null) return -1;
+    return Number(native);
   } catch (err) {
     logger.error({ err, agentAddress }, 'getAgentScore failed');
     return -1;
@@ -1019,9 +1085,9 @@ export async function getAgentCount() {
   try {
     const contract = getAgentsContract();
     const op = contract.call('get_agent_count');
-    const retval = await simulateRead(op);
-    if (!retval) return 0;
-    return Number(scValToNative(retval));
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.get_agent_count);
+    if (native == null) return 0;
+    return Number(native);
   } catch (err) {
     logger.error({ err }, 'getAgentCount failed');
     return 0;
@@ -1082,9 +1148,9 @@ export async function isAgentEligible(agentAddress, minScore) {
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(minScore, { type: 'i32' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return false;
-    return Boolean(scValToNative(retval));
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.is_eligible);
+    if (native == null) return false;
+    return Boolean(native);
   } catch (err) {
     logger.error({ err, agentAddress, minScore }, 'isAgentEligible failed');
     return false;
@@ -1099,9 +1165,9 @@ export async function checkSpendingAllowed(agentAddress, amountStroops) {
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(amountStroops), { type: 'i128' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return false;
-    return Boolean(scValToNative(retval));
+    const native = await simulateRead(op, CONTRACT_RETURN_TYPES.check_spending_allowed);
+    if (native == null) return false;
+    return Boolean(native);
   } catch (err) {
     logger.error({ err, agentAddress }, 'checkSpendingAllowed failed');
     return false;
