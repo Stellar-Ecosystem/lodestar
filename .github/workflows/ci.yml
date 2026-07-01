@@ -76,12 +76,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
         working-directory: backend
-        run: npm ci
+        run: npm install
 
       - name: Run tests
         working-directory: backend
@@ -100,12 +98,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm ci
+        run: npm install
 
       - name: Type-check
         working-directory: frontend
@@ -137,7 +133,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: agent
-        run: npm ci
+        run: npm install
 
       - name: Run tests
         working-directory: agent
