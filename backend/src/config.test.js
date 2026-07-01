@@ -150,10 +150,21 @@ describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
     expect(config.x402.payTo).toBe('G_TEST');
   });
 
-  it('throws when PAYMENT_ADDRESS is an invalid Stellar address format', async () => {
-    await expect(loadConfig({ PAYMENT_ADDRESS: 'INVALID' })).rejects.toThrow(
-      'Invalid PAYMENT_ADDRESS',
+  it('calls logger.fatal and exits when PAYMENT_ADDRESS has invalid format', async () => {
+    const log = { fatal: vi.fn(), warn: vi.fn() };
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {});
+    vi.resetModules();
+    process.env = { ...ORIGINAL_ENV, ...REQUIRED, PAYMENT_ADDRESS: 'INVALID' };
+    const { validateConfig } = await import('./config.js');
+    validateConfig(log);
+    expect(log.fatal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errors: expect.arrayContaining([expect.stringContaining('PAYMENT_ADDRESS')]),
+      }),
+      expect.any(String),
     );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
   });
 });
 
@@ -183,30 +194,30 @@ describe('config trustProxy parsing', () => {
 });
 
 describe('config AGENTS_CONTRACT_ID startup warning', () => {
-  beforeEach(() => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-  });
-
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
     vi.restoreAllMocks();
   });
 
-  it('warns when AGENTS_CONTRACT_ID is not set', async () => {
+  it('warns via validateConfig when AGENTS_CONTRACT_ID is not set', async () => {
+    const log = { fatal: vi.fn(), warn: vi.fn() };
     await loadConfig();
-    expect(console.warn).toHaveBeenCalledWith(
+    const { validateConfig } = await import('./config.js');
+    validateConfig(log);
+    expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('AGENTS_CONTRACT_ID is not set'),
     );
-    expect(console.warn).toHaveBeenCalledWith(
+    expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('AGENTS_NOT_CONFIGURED'),
     );
   });
 
-  it('does not warn when AGENTS_CONTRACT_ID is set', async () => {
+  it('does not warn via validateConfig when AGENTS_CONTRACT_ID is set', async () => {
+    const log = { fatal: vi.fn(), warn: vi.fn() };
     await loadConfig({ AGENTS_CONTRACT_ID: 'C_AGENTS' });
-    expect(console.warn).not.toHaveBeenCalledWith(
-      expect.stringContaining('AGENTS_CONTRACT_ID'),
-    );
+    const { validateConfig } = await import('./config.js');
+    validateConfig(log);
+    expect(log.warn).not.toHaveBeenCalled();
   });
 
   it('sets contract.agentsId to the env value when provided', async () => {
@@ -217,5 +228,45 @@ describe('config AGENTS_CONTRACT_ID startup warning', () => {
   it('sets contract.agentsId to null when not provided', async () => {
     const config = await loadConfig();
     expect(config.contract.agentsId).toBeNull();
+  });
+});
+
+describe('validateConfig', () => {
+  let exitSpy;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+    exitSpy.mockRestore();
+  });
+
+  it('does not exit when all required vars are present', async () => {
+    const log = { fatal: vi.fn(), warn: vi.fn() };
+    await loadConfig({ AGENTS_CONTRACT_ID: 'C_AGENTS' });
+    const { validateConfig } = await import('./config.js');
+    validateConfig(log);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(log.fatal).not.toHaveBeenCalled();
+  });
+
+  it('reports all missing vars in a single fatal call', async () => {
+    const log = { fatal: vi.fn(), warn: vi.fn() };
+    vi.resetModules();
+    process.env = { ...ORIGINAL_ENV };
+    for (const key of ['CONTRACT_ID', 'SERVER_STELLAR_SECRET', 'FACILITATOR_URL']) {
+      delete process.env[key];
+    }
+    const { validateConfig } = await import('./config.js');
+    validateConfig(log);
+    expect(log.fatal).toHaveBeenCalledTimes(1);
+    const [obj] = log.fatal.mock.calls[0];
+    expect(obj.missingVars).toContain('CONTRACT_ID');
+    expect(obj.missingVars).toContain('SERVER_STELLAR_SECRET');
+    expect(obj.missingVars).toContain('FACILITATOR_URL');
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

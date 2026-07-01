@@ -61,7 +61,10 @@ describe('ScoreBadge Aria-Live Announcements', () => {
     render(<ScoreBadge score={NaN} />);
     
     expect(console.error).toHaveBeenCalled();
-    const logArg = (console.error as jest.Mock).mock.calls[0][0];
-    expect(logArg).toContain('score_announcement_failed');
+    const calls = (console.error as jest.Mock).mock.calls;
+    const scoreCall = calls.find(([msg]) =>
+      typeof msg === 'string' && msg.includes('score_announcement_failed')
+    );
+    expect(scoreCall).toBeDefined();
   });
 });

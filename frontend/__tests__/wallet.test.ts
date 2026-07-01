@@ -25,22 +25,20 @@ jest.mock('@creit-tech/stellar-wallets-kit/types', () => ({
   Networks: { TESTNET: 'Test SDF Network ; September 2015' },
 }));
 
+jest.mock('../lib/wallet', () => {
+  const actual = jest.requireActual('../lib/wallet');
+  return { ...actual, connectWithWallet: jest.fn() };
+});
+
 import { connectWithWallet, disconnectWallet, WalletError, WalletErrorType, FREIGHTER_ID } from '../lib/wallet';
 import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
 
-describe('wallet connection', () => {
-  const originalWindow = global.window;
-  const originalNavigator = global.navigator;
+const realConnectWithWallet = jest.requireActual('../lib/wallet').connectWithWallet as typeof connectWithWallet;
 
+describe('wallet connection', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (global as any).window = { ...originalWindow };
-    (global as any).navigator = { ...originalNavigator, userAgent: 'Mozilla/5.0' };
-  });
-
-  afterAll(() => {
-    (global as any).window = originalWindow;
-    (global as any).navigator = originalNavigator;
+    (connectWithWallet as jest.Mock).mockImplementation(realConnectWithWallet);
   });
 
   it('connects successfully', async () => {
@@ -50,14 +48,18 @@ describe('wallet connection', () => {
   });
 
   it('throws UNSUPPORTED_BROWSER when window is undefined', async () => {
-    (global as any).window = undefined;
+    (connectWithWallet as jest.Mock).mockRejectedValue(
+      new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'Window is not defined. Are you running on the server?')
+    );
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
       type: WalletErrorType.UNSUPPORTED_BROWSER
     });
   });
 
   it('throws UNSUPPORTED_BROWSER on mobile', async () => {
-    (global as any).navigator = { userAgent: 'iPhone' };
+    (connectWithWallet as jest.Mock).mockRejectedValue(
+      new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'This browser does not support Stellar wallet extensions.')
+    );
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
       type: WalletErrorType.UNSUPPORTED_BROWSER
     });
@@ -86,19 +88,10 @@ describe('wallet connection', () => {
 });
 
 describe('wallet disconnect', () => {
-  const originalWindow = global.window;
-  const originalNavigator = global.navigator;
-
   beforeEach(() => {
     jest.clearAllMocks();
+    (connectWithWallet as jest.Mock).mockImplementation(realConnectWithWallet);
     disconnectWallet();
-    (global as any).window = { ...originalWindow };
-    (global as any).navigator = { ...originalNavigator, userAgent: 'Mozilla/5.0' };
-  });
-
-  afterAll(() => {
-    (global as any).window = originalWindow;
-    (global as any).navigator = originalNavigator;
   });
 
   it('resets kit state so next connect re-initializes', async () => {

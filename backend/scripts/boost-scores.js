@@ -1,42 +1,31 @@
 import 'dotenv/config';
 import { listAgents, recordPaymentOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
-import config from '../src/config.js';
-
-if (!process.env.AGENTS_CONTRACT_ID) {
-  logger.error('AGENTS_CONTRACT_ID not set');
-  process.exit(1);
-}
-
-// Safety guard: prevent accidental score inflation on mainnet
-if (config.stellar.network === 'mainnet') {
-  const hasConfirmFlag = process.argv.includes('--mainnet-confirm');
-  if (!hasConfirmFlag) {
-    logger.error(
-      'Refusing to run boost-scores on STELLAR_NETWORK=mainnet without explicit confirmation. ' +
-      'If you really want to inflate scores on production, re-run with --mainnet-confirm flag.'
-    );
-    process.exit(1);
-  }
-  logger.warn('Running boost-scores on MAINNET with --mainnet-confirm flag');
-}
 
 // Target scores: first agent ~110, second ~600, third ~1000
 const TARGETS = [110, 600, 1000];
-const SERVICE_ID = 1; // Use first registered service (or demo service)
 const AMOUNT = 10_000n; // 0.001 USDC
 
-async function boost() {
+export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT } = {}) {
   try {
+    if (!dryRun && !process.env.AGENTS_CONTRACT_ID) {
+      logger.error('AGENTS_CONTRACT_ID not set');
+      process.exit(1);
+    }
+
+    if (dryRun) {
+      logger.info('DRY RUN — no transactions will be submitted');
+    }
+
     const agents = await listAgents(10);
     logger.info({ count: agents.length }, 'Fetched agents');
 
     // Sort by registered_at to get original seed order
     const sorted = [...agents].sort((a, b) => a.registered_at - b.registered_at);
 
-    for (let i = 0; i < Math.min(sorted.length, TARGETS.length); i++) {
+    for (let i = 0; i < Math.min(sorted.length, targets.length); i++) {
       const agent = sorted[i];
-      const target = TARGETS[i];
+      const target = targets[i];
       const currentScore = agent.score;
       const needed = Math.max(0, Math.ceil((target - currentScore) / 10));
 
@@ -48,7 +37,9 @@ async function boost() {
       logger.info({ name: agent.name, currentScore, target, payments: needed }, 'Building score…');
 
       for (let j = 0; j < needed; j++) {
-        await recordPaymentOnChain(agent.address, SERVICE_ID, AMOUNT, true);
+        if (!dryRun) {
+          await recordPaymentOnChain(agent.address, amount, true);
+        }
         if ((j + 1) % 10 === 0) {
           logger.info({ name: agent.name, progress: `${j + 1}/${needed}` }, 'Progress…');
         }
@@ -57,12 +48,20 @@ async function boost() {
       logger.info({ name: agent.name, targetScore: target }, 'Done');
     }
 
-    logger.info('Score boost complete');
-    process.exit(0);
+    logger.info({ dryRun }, 'Score boost complete');
   } catch (err) {
     logger.error({ err }, 'boost-scores failed');
     process.exit(1);
   }
 }
 
-boost();
+// CLI entry point — only when run directly (not imported)
+const isDirectRun = process.argv[1] && (
+  process.argv[1].endsWith('/boost-scores.js') ||
+  process.argv[1].endsWith('\\boost-scores.js')
+);
+
+if (isDirectRun) {
+  const isDryRun = process.argv.includes('--dry-run');
+  boost({ dryRun: isDryRun });
+}

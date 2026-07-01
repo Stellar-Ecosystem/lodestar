@@ -26,19 +26,6 @@ const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
 const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
-// Appends ttl_warning:true when the entry's estimated remaining TTL falls
-// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
-// is unavailable so callers can always treat absence as "no warning data".
-function annotateTtlWarning(service, currentLedger) {
-  if (currentLedger == null) return service;
-  return {
-    ...service,
-    ttl_warning:
-      currentLedger >=
-      service.registered_at + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS,
-  };
-}
-
 function normalizePriceUsdc(value) {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) return null;
@@ -77,16 +64,6 @@ function parsePositiveSafeInteger(value) {
 // Appends ttl_warning:true when the entry's estimated remaining TTL falls
 // below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
 // is unavailable so callers can always treat absence as "no warning data".
-function annotateTtlWarning(service, currentLedger) {
-  if (currentLedger == null) return service;
-  return {
-    ...service,
-    ttl_warning:
-      currentLedger >=
-      service.registered_at + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS,
-  };
-}
-
 router.get("/services", async (req, res) => {
   try {
     const { category, q, page: pageStr } = req.query;

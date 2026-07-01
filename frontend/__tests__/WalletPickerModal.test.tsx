@@ -8,6 +8,33 @@ jest.mock('../components/WalletContext', () => ({
   useWallet: jest.fn(),
 }));
 
+jest.mock('@/lib/wallet', () => {
+  class MockWalletError extends Error {
+    type: string;
+    constructor(type: string, message: string) {
+      super(message);
+      this.name = 'WalletError';
+      this.type = type;
+    }
+  }
+
+  return {
+    WALLET_OPTIONS: [
+      { id: 'freighter', name: 'Freighter' },
+      { id: 'albedo',    name: 'Albedo' },
+      { id: 'xbull',     name: 'xBull' },
+      { id: 'lobstr',    name: 'Lobstr' },
+    ],
+    WalletError: MockWalletError,
+    WalletErrorType: {
+      WALLET_NOT_FOUND: 'WALLET_NOT_FOUND',
+      UNSUPPORTED_BROWSER: 'UNSUPPORTED_BROWSER',
+      USER_REJECTED: 'USER_REJECTED',
+      CONNECTION_FAILED: 'CONNECTION_FAILED',
+    },
+  };
+});
+
 describe('WalletPickerModal', () => {
   const mockConnect = jest.fn();
   const mockOnClose = jest.fn();

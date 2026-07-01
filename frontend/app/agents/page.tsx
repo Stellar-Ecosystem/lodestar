@@ -16,14 +16,12 @@ const SORTS: { label: string; value: AgentSortOption }[] = [
   { label: 'Newest', value: 'newest' },
 ];
 
-export const PAGE_SIZE = 12;
-const PAGE_SIZE_OPTIONS = [6, 12, 24] as const;
+import { PAGE_SIZE, PAGE_SIZE_OPTIONS } from '@/lib/pagination';
 
 export default function AgentsPage() {
   const [sort, setSort] = useState<AgentSortOption>('score');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE);
-  const [excludeDemo, setExcludeDemo] = useState(true);
 
   // SWR replaces the manual setInterval poll: it dedupes concurrent requests,
   // revalidates every 30s, and only re-renders when the returned data changes.
@@ -35,8 +33,8 @@ export default function AgentsPage() {
     isValidating,
     mutate,
   } = useSWR<AgentsResponse>(
-    ['agents', page, pageSize, sort, excludeDemo],
-    () => fetchAgents(page, pageSize, sort, excludeDemo),
+    ['agents', page, pageSize, sort],
+    () => fetchAgents(page, pageSize, sort),
     { refreshInterval: 30_000, revalidateOnFocus: false, keepPreviousData: true }
   );
 
@@ -82,11 +80,6 @@ export default function AgentsPage() {
     setPage(0);
   }
 
-  function handleExcludeDemoChange() {
-    setExcludeDemo(prev => !prev);
-    setPage(0);
-  }
-
   return (
     <div className="max-w-6xl mx-auto px-6 py-12">
       {/* Header */}
@@ -102,16 +95,7 @@ export default function AgentsPage() {
             On-chain trust scores for x402 AI agents. Every payment recorded. Every reputation earned.
           </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0 flex-wrap">
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <input
-              type="checkbox"
-              checked={excludeDemo}
-              onChange={handleExcludeDemoChange}
-              className="rounded border-border focus:ring-1 focus:ring-primary"
-            />
-            <span className="text-secondary">Hide demo agents</span>
-          </label>
+        <div className="flex items-center gap-3 shrink-0">
           <select
             value={sort}
             onChange={(e) => handleSortChange(e.target.value as AgentSortOption)}
