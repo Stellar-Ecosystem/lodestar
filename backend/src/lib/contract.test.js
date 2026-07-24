@@ -616,6 +616,7 @@ describe('simulateAndSubmit transaction polling', () => {
   it('uses exponential backoff until the configured deadline and logs timeout context', async () => {
     vi.useFakeTimers();
     try {
+      const deadlineAt = Date.now() + 10_000;
       mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
       const promise = contractLib.simulateAndSubmit(contract.call('get_service_count'));
       const rejection = expect(promise).rejects.toMatchObject({
@@ -635,9 +636,28 @@ describe('simulateAndSubmit transaction polling', () => {
       await vi.advanceTimersByTimeAsync(5_500);
       await rejection;
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({ hash: 'txhash123', maxWaitMs: 10_000, pollCount: 3 }),
+        expect.objectContaining({ hash: 'txhash123', maxWaitMs: 10_000, deadlineAt, pollCount: 3 }),
         expect.stringContaining('remains pending'),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('releases the submit queue when transaction lookup never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      mockGetTransaction.mockReturnValue(new Promise(() => {}));
+      const promise = contractLib.simulateAndSubmit(contract.call('get_service_count'));
+      const rejection = expect(promise).rejects.toMatchObject({
+        code: 'TRANSACTION_TIMEOUT',
+        hash: 'txhash123',
+      });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(mockGetTransaction).toHaveBeenCalledTimes(1);
+      expect(contractLib.getSubmitQueueDepth()).toBe(0);
     } finally {
       vi.useRealTimers();
     }

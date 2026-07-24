@@ -31,6 +31,7 @@ import {
 const TIMEOUT = 30;
 const TRANSACTION_POLL_INITIAL_DELAY_MS = 1_500;
 const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
+const POLL_DEADLINE_EXCEEDED = Symbol('POLL_DEADLINE_EXCEEDED');
 
 // Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
 // Persistent storage entries are extended to this many ledgers on every write.
@@ -54,22 +55,61 @@ function logRpcCall(method, latencyMs) {
   logger.debug({ method, latencyMs, totalCalls: rpcMetrics[method] }, 'RPC call completed');
 }
 
+async function getTransactionWithDeadline(server, hash, deadlineAt) {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) return POLL_DEADLINE_EXCEEDED;
+
+  const controller = new AbortController();
+  const clientDefaults = server.httpClient?.defaults;
+  const previousTimeout = clientDefaults?.timeout;
+  const previousSignal = clientDefaults?.signal;
+  let timeoutId;
+
+  if (clientDefaults) {
+    clientDefaults.timeout = remainingMs;
+    clientDefaults.signal = controller.signal;
+  }
+
+  try {
+    return await Promise.race([
+      server.getTransaction(hash),
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          resolve(POLL_DEADLINE_EXCEEDED);
+        }, remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (clientDefaults) {
+      clientDefaults.timeout = previousTimeout;
+      clientDefaults.signal = previousSignal;
+    }
+  }
+}
+
 async function pollForTransaction(server, hash) {
   const maxWaitMs = config.contract.txPollMaxWaitMs;
   const startedAt = Date.now();
+  const deadlineAt = startedAt + maxWaitMs;
   let delayMs = TRANSACTION_POLL_INITIAL_DELAY_MS;
   let pollCount = 0;
   let getResult;
 
-  while (pollCount === 0 || Date.now() - startedAt < maxWaitMs) {
+  while (pollCount === 0 || Date.now() < deadlineAt) {
     const txStart = Date.now();
-    getResult = await server.getTransaction(hash);
+    getResult = await getTransactionWithDeadline(server, hash, deadlineAt);
+    if (getResult === POLL_DEADLINE_EXCEEDED) {
+      getResult = undefined;
+      break;
+    }
     logRpcCall('getTransaction', Date.now() - txStart);
     pollCount += 1;
 
     if (getResult.status !== 'NOT_FOUND') break;
 
-    const remainingMs = maxWaitMs - (Date.now() - startedAt);
+    const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) break;
 
     await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, remainingMs)));
@@ -78,7 +118,7 @@ async function pollForTransaction(server, hash) {
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
     logger.warn(
-      { hash, maxWaitMs, elapsedMs: Date.now() - startedAt, pollCount },
+      { hash, maxWaitMs, deadlineAt, elapsedMs: Date.now() - startedAt, pollCount },
       'Transaction confirmation polling timed out; transaction remains pending and should be checked on-chain',
     );
   }
