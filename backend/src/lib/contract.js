@@ -29,6 +29,7 @@ import {
 
 
 const TIMEOUT = 30;
+const SERVICE_LIST_CACHE_TTL_MS = 5 * 1000;
 const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
 
 // Must match `const MAX_TTL: u32 = 3110400` in contract/src/lib.rs.
@@ -80,6 +81,38 @@ let assembleTransactionForSubmit = rpc.assembleTransaction;
 
 const pendingTransactions = new Map();
 const PENDING_TRANSACTIONS_FILE = 'pending-transactions.json';
+
+const serviceListCache = new Map();
+let serviceListCacheTtlMs = SERVICE_LIST_CACHE_TTL_MS;
+
+function getServiceListCacheKey(category, page, pageSize) {
+  return `${category ?? ''}:${page}:${pageSize}`;
+}
+
+function getServiceListCache(key) {
+  const cached = serviceListCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    serviceListCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+function setServiceListCache(key, value) {
+  serviceListCache.set(key, {
+    expiresAt: Date.now() + serviceListCacheTtlMs,
+    value,
+  });
+}
+
+export function __resetServiceListCache() {
+  serviceListCache.clear();
+}
+
+export function __setServiceListCacheTtlForTest(ms) {
+  serviceListCacheTtlMs = ms;
+}
 
 function getOperationName(operation) {
   if (typeof operation === 'string') return operation;
@@ -462,6 +495,13 @@ export async function simulateReadBatch(operations) {
 
 export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
   try {
+    const cacheKey = getServiceListCacheKey(category, page, pageSize);
+    const cached = getServiceListCache(cacheKey);
+    if (cached) {
+      logger.debug({ category, page, pageSize }, 'Returning cached listServices response');
+      return cached;
+    }
+
     const contract = getContract();
 
     const optionArg = category
@@ -480,7 +520,7 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
     const vec = scValToNative(retval);
     if (!Array.isArray(vec)) return [];
 
-    return vec.map((item) => ({
+    const services = vec.map((item) => ({
       id: Number(item.id),
       name: item.name,
       description: item.description,
@@ -493,48 +533,12 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
       active: item.active,
       registered_at: Number(item.registered_at),
     }));
+
+    setServiceListCache(cacheKey, services);
+    return services;
   } catch (err) {
     logger.error({ err }, 'listServices failed');
     throw err;
-  }
-}
-
-export async function getService(id) {
-  try {
-    const contract = getContract();
-    const op = contract.call('get_service', nativeToScVal(BigInt(id), { type: 'u64' }));
-    const retval = await simulateRead(op);
-    if (!retval) return null;
-    const native = scValToNative(retval);
-    return {
-      id: Number(native.id),
-      name: native.name,
-      description: native.description,
-      endpoint: native.endpoint,
-      price_usdc: native.price_usdc,
-      pay_to: native.pay_to,
-      category: native.category,
-      provider: native.provider?.toString() ?? native.provider,
-      reputation: Number(native.reputation),
-      active: native.active,
-      registered_at: Number(native.registered_at),
-    };
-  } catch (err) {
-    logger.error({ err, id }, 'getService failed');
-    return null;
-  }
-}
-
-export async function getServiceCount() {
-  try {
-    const contract = getContract();
-    const op = contract.call('get_service_count');
-    const retval = await simulateRead(op);
-    if (!retval) return 0;
-    return Number(scValToNative(retval));
-  } catch (err) {
-    logger.error({ err }, 'getServiceCount failed');
-    return 0;
   }
 }
 
