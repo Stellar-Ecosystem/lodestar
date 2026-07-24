@@ -1,8 +1,12 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import sdkPkg from '@stellar/stellar-sdk';
+
+const { StrKey } = sdkPkg;
+const VALID_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32));
 
 vi.mock('../config.js', () => ({
   default: {
-    contract: { id: 'mock', agentsId: 'mock' },
+    contract: { id: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4', agentsId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4' },
     server: { address: 'mock', secret: 'SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2' },
     stellar: { network: 'testnet', rpcUrl: 'https://mock', networkPassphrase: 'mock', usdcContractId: 'mock' },
     x402: { facilitatorUrl: 'https://mock', searchPrice: '0.001', weatherPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
@@ -39,11 +43,9 @@ vi.mock('node:fs', () => ({
   unlinkSync: vi.fn(),
 }));
 
-import sdkPkg from '@stellar/stellar-sdk';
 import * as contractLib from './contract.js';
 
-const { StrKey } = sdkPkg;
-const VALID_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32));
+const VALID_STELLAR_ADDRESS = 'G' + 'A'.repeat(55);
 
 const { mapAgent, mapPolicy } = contractLib;
 
@@ -641,6 +643,66 @@ describe('simulateReadBatch', () => {
     const results = await contractLib.simulateReadBatch(ops);
 
     expect(results).toEqual(['result_1', 'result_2']);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('listServices cache', () => {
+  const serviceEntry = {
+    id: 1,
+    name: 'Cached Service',
+    description: 'A service returned from cache',
+    endpoint: 'https://cached.example.com',
+    price_usdc: '0.500',
+    pay_to: 'G_TESTPAYTO',
+    category: 'data',
+    provider: VALID_STELLAR_ADDRESS,
+    reputation: 10,
+    active: true,
+    registered_at: 1000,
+  };
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contractLib.__resetServiceListCache();
+    contractLib.__setServiceListCacheTtlForTest(50);
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+  });
+
+  it('returns cached listServices results for repeated identical queries', async () => {
+    mockSimulateTransaction.mockResolvedValueOnce({
+      result: { retval: sdkPkg.nativeToScVal([serviceEntry]) },
+    });
+
+    const first = await contractLib.listServices({ page: 0, pageSize: 20 });
+    expect(first).toEqual([serviceEntry]);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+
+    const second = await contractLib.listServices({ page: 0, pageSize: 20 });
+    expect(second).toEqual([serviceEntry]);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires cached listServices results after the TTL and refreshes', async () => {
+    contractLib.__setServiceListCacheTtlForTest(20);
+    mockSimulateTransaction.mockResolvedValueOnce({
+      result: { retval: sdkPkg.nativeToScVal([serviceEntry]) },
+    });
+
+    const first = await contractLib.listServices({ page: 0, pageSize: 20 });
+    expect(first).toEqual([serviceEntry]);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const refreshedServiceEntry = { ...serviceEntry, id: 2, name: 'Refreshed Service' };
+    mockSimulateTransaction.mockResolvedValueOnce({
+      result: { retval: sdkPkg.nativeToScVal([refreshedServiceEntry]) },
+    });
+
+    const second = await contractLib.listServices({ page: 0, pageSize: 20 });
+    expect(second).toEqual([refreshedServiceEntry]);
     expect(mockSimulateTransaction).toHaveBeenCalledTimes(2);
   });
 });
