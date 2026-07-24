@@ -357,6 +357,60 @@ describe('POST /api/registry/prepare-register', () => {
       },
     ],
     [
+      'priceUsdc (empty string)',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'priceUsdc (whitespace)',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '  0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'priceUsdc (negative)',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '-0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'priceUsdc (missing)',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'priceUsdc (special chars)',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '$0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
       'category',
       {
         name: 'Weather Oracle',
@@ -375,6 +429,37 @@ describe('POST /api/registry/prepare-register', () => {
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
     expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['0.001', '0.001'],
+    ['100', '100'],
+    ['0.0001', '0.0001'],
+    ['1.234567', '1.234567'],
+    ['999999.99', '999999.99'],
+  ])('accepts valid priceUsdc %s and passes %s to buildUnsignedRegistryTx', async (input, expected) => {
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
+      xdr: 'AAAA_TEST_XDR',
+      submitToken: 'submit-token-1',
+    });
+
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: input,
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith(
+      'register',
+      VALID_PROVIDER,
+      expect.objectContaining({ priceUsdc: expected }),
+    );
   });
 
   it('surfaces duplicate-service conflicts as 409', async () => {
