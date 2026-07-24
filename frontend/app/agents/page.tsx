@@ -4,9 +4,8 @@ import { useEffect, useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import type { AgentsResponse, AgentStats, AgentSortOption, ScoreTier } from '@/lib/types';
-import { scoreTier, TIER_LABELS } from '@/lib/types';
+import { TIER_LABELS } from '@/lib/types';
 import { fetchAgents, fetchAgentStats } from '@/lib/contract';
-import { sortAgents } from '@/lib/sort';
 import AgentCard from '@/components/AgentCard';
 import AgentCardSkeleton from '@/components/AgentCardSkeleton';
 import ScoreBadge from '@/components/ScoreBadge';
@@ -43,8 +42,8 @@ export default function AgentsPage() {
     isValidating,
     mutate,
   } = useSWR<AgentsResponse>(
-    ['agents', page, pageSize, sort],
-    () => fetchAgents(page, pageSize, sort),
+    ['agents', page, pageSize, sort, activeTier],
+    () => fetchAgents(page, pageSize, sort, activeTier),
     { refreshInterval: 30_000, revalidateOnFocus: false, keepPreviousData: true }
   );
 
@@ -59,6 +58,7 @@ export default function AgentsPage() {
 
   const agents = data?.agents ?? [];
   const total = data?.total ?? 0;
+  const hasAnyAgents = (stats?.totalAgents ?? 0) > 0;
   const loading = isLoading && !data;
   const refreshing = isValidating && !isLoading;
   const error = agentsError
@@ -67,11 +67,7 @@ export default function AgentsPage() {
       : 'Failed to load'
     : null;
 
-  const filteredAgents =
-    activeTier === 'all' ? agents : agents.filter((agent) => scoreTier(agent.score) === activeTier);
-
-  const sortedAgents = sortAgents(filteredAgents, sort);
-  const visibleCount = sortedAgents.length;
+  const visibleCount = total;
 
   // Clamp the page if the filtered dataset shrank (e.g. agents removed or tier changed).
   useEffect(() => {
@@ -81,7 +77,7 @@ export default function AgentsPage() {
 
   const totalPages = Math.max(1, Math.ceil(visibleCount / pageSize));
   const pageStart = page * pageSize;
-  const pagedAgents = sortedAgents.slice(pageStart, pageStart + pageSize);
+  const pagedAgents = agents;
 
   function handleSortChange(next: AgentSortOption) {
     setSort(next);
@@ -211,7 +207,7 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {!loading && !error && total === 0 && (
+      {!loading && !error && !hasAnyAgents && (
         <div className="card p-12 text-center">
           <p className="text-secondary text-sm mb-4">No agents registered yet.</p>
           <Link href="/agents/register" className="btn-primary px-5 py-2.5 text-sm">
@@ -220,7 +216,7 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {!loading && !error && total > 0 && visibleCount === 0 && (
+      {!loading && !error && hasAnyAgents && total === 0 && (
         <div className="card p-12 text-center">
           <p className="text-secondary text-sm mb-4">No agents match the selected tier.</p>
           <button
@@ -233,7 +229,7 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {!loading && !error && total > 0 && visibleCount > 0 && (
+      {!loading && !error && hasAnyAgents && total > 0 && (
         <div className={refreshing ? 'opacity-60 transition-opacity duration-150' : ''}>
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
             {pagedAgents.map((agent) => (
