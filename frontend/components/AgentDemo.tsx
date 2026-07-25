@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import type { AgentStep } from '@/lib/types';
+import { useState, useRef } from 'react';
+import type { AgentStep, Category } from '@/lib/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const EXPLORER_URL =
@@ -9,11 +9,13 @@ const EXPLORER_URL =
 // Registered demo agent the backend signs reputation votes as.
 const DEMO_AGENT_ADDRESS = process.env.NEXT_PUBLIC_DEMO_AGENT_ADDRESS ?? '';
 
-type ServiceNeed = 'weather' | 'search';
-
-const SERVICE_OPTIONS: { label: string; value: ServiceNeed }[] = [
+const SERVICE_OPTIONS: { label: string; value: Category }[] = [
   { label: 'Weather Data', value: 'weather' },
   { label: 'Web Search', value: 'search' },
+  { label: 'Financial Data', value: 'finance' },
+  { label: 'AI Models', value: 'ai' },
+  { label: 'Data Datasets', value: 'data' },
+  { label: 'Compute Resources', value: 'compute' },
 ];
 
 interface DemoResult {
@@ -36,11 +38,12 @@ function StepIndicator({ status }: { status: AgentStep['status'] }) {
 }
 
 export default function AgentDemo() {
-  const [need, setNeed] = useState<ServiceNeed>('weather');
+  const [need, setNeed] = useState<Category>('weather');
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<DemoResult | null>(null);
   const [error, setError] = useState('');
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   function pushStep(label: string, status: AgentStep['status'], detail?: string) {
     setSteps((prev) => [...prev, { label, status, detail }]);
@@ -62,9 +65,12 @@ export default function AgentDemo() {
     setError('');
 
     try {
+      abortControllerRef.current = new AbortController();
+      const { signal } = abortControllerRef.current;
+
       // Step 1 — query registry
       pushStep('Querying Lodestar registry…', 'active');
-      const servicesRes = await fetch(`${API_URL}/api/services?category=${need}`);
+      const servicesRes = await fetch(`${API_URL}/api/services?category=${need}`, { signal });
       const servicesData = (await servicesRes.json()) as { services: Array<{ id: number; name: string; endpoint: string; price_usdc: string; reputation: number }> };
       const services = servicesData.services;
       completeLastStep();
@@ -92,6 +98,7 @@ export default function AgentDemo() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ serviceId: best.id, category: need }),
+        signal,
       });
 
       if (!demoRes.ok) {
@@ -120,20 +127,23 @@ export default function AgentDemo() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ positive: true, agent: DEMO_AGENT_ADDRESS }),
+          signal,
         }).catch(() => {});
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Agent run failed');
+    } catch (err: any) {
+      const isAbort = err.name === 'AbortError';
+      setError(isAbort ? 'Agent run was cancelled.' : (err instanceof Error ? err.message : 'Agent run failed'));
       setSteps((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last && last.status === 'active') {
-          next[next.length - 1] = { ...last, status: 'error' };
+          next[next.length - 1] = { ...last, status: 'error', detail: isAbort ? 'Cancelled' : last.detail };
         }
         return next;
       });
     } finally {
       setRunning(false);
+      abortControllerRef.current = null;
     }
   }
 
@@ -145,7 +155,7 @@ export default function AgentDemo() {
         <div className="flex gap-3">
           <select
             value={need}
-            onChange={(e) => setNeed(e.target.value as ServiceNeed)}
+            onChange={(e) => setNeed(e.target.value as Category)}
             disabled={running}
             className="flex-1 border border-border rounded-lg px-3 py-2.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
           >
@@ -163,6 +173,14 @@ export default function AgentDemo() {
           >
             {running ? 'Running…' : 'Run Agent'}
           </button>
+          {running && (
+            <button
+              onClick={() => abortControllerRef.current?.abort()}
+              className="px-4 py-2.5 rounded-lg bg-error/10 text-error border border-error/20 hover:bg-error/20 transition-colors text-sm font-medium shrink-0"
+            >
+              Cancel
+            </button>
+          )}
         </div>
       </div>
 
