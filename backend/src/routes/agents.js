@@ -266,10 +266,10 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
   }
 });
 
-// POST /api/agents/register — Body: { agentAddress, name, description }
+// POST /api/agents/register — Body: { agentAddress, name, description, maxPerTxUsdc, maxPerDayUsdc, allowedCategories }
 router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
   try {
-    const { agentAddress, name, description } = req.body;
+    const { agentAddress, name, description, maxPerTxUsdc, maxPerDayUsdc, allowedCategories } = req.body;
 
     if (!agentAddress || typeof agentAddress !== 'string') {
       return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
@@ -291,6 +291,27 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
     }
 
     const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
+
+    // Apply custom policy if spending limits or allowed categories were supplied in the registration request
+    if (maxPerTxUsdc !== undefined || maxPerDayUsdc !== undefined || allowedCategories !== undefined) {
+      const maxTxStroops = maxPerTxUsdc !== undefined 
+        ? Math.round(parseFloat(String(maxPerTxUsdc)) * 10_000_000).toString() 
+        : '100000000'; // default fallback (10 USDC)
+      const maxDayStroops = maxPerDayUsdc !== undefined 
+        ? Math.round(parseFloat(String(maxPerDayUsdc)) * 10_000_000).toString() 
+        : '1000000000'; // default fallback (100 USDC)
+      const categories = Array.isArray(allowedCategories) ? allowedCategories : [];
+
+      await updatePolicyOnChain(
+        agentAddress,
+        maxTxStroops,
+        maxDayStroops,
+        categories,
+        0, // default minScoreToEarn
+        agentAddress
+      );
+    }
+
     agentsCache = null; // invalidate so next request reflects the new agent
     logger.info({ agentAddress, name }, 'Agent registered on-chain');
     res.status(201).json({ success: true, agentCount: count, agentAddress });
@@ -560,7 +581,6 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
     return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
   }
 });
-
 
 // POST /api/agents/:address/update-policy
 router.post('/agents/:address/update-policy', requireAgentsContract, ownerAuth, async (req, res) => {
