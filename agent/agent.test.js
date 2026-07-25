@@ -36,6 +36,7 @@ vi.mock('@x402/stellar/exact/client', () => ({ ExactStellarScheme: class { } }))
 process.env.AGENT_STELLAR_SECRET = 'STEST0000000000000000000000000000000000000000000000000000';
 process.env.STELLAR_RPC_URL      = 'https://mock-rpc.example.com';
 process.env.LODESTAR_API_URL     = 'http://localhost:9999';
+process.env.FACILITATOR_URL      = 'http://localhost:8080';
 
 const mockHttpClient = {
   encodePaymentSignatureHeader: vi.fn(() => ({})),
@@ -535,5 +536,26 @@ describe('ensureRegistered — structured event fields', () => {
     const call = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_REGISTERED && f?.scoringEnabled === true);
     expect(call).toBeDefined();
     expect(call[0]).toMatchObject({ event: 'agent_registered', score: 95, scoringEnabled: true });
+  });
+});
+
+describe('startup validation', () => {
+  const savedFacUrl = process.env.FACILITATOR_URL;
+  afterEach(() => {
+    process.env.FACILITATOR_URL = savedFacUrl;
+  });
+
+  it('throws on missing FACILITATOR_URL', async () => {
+    vi.resetModules();
+    delete process.env.FACILITATOR_URL;
+    try {
+      await import('./agent.js');
+      throw new Error('Expected import to throw');
+    } catch (e) {
+      if (e.message === 'Expected import to throw') throw e;
+      expect(e.message).toMatch('Missing required env var: FACILITATOR_URL');
+    } finally {
+      process.env.FACILITATOR_URL = savedFacUrl;
+    }
   });
 });
