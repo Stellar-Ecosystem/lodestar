@@ -10,7 +10,7 @@ import { ExactStellarScheme } from '@x402/stellar/exact/client';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const required = ['AGENT_STELLAR_SECRET', 'STELLAR_RPC_URL', 'LODESTAR_API_URL'];
+const required = ['AGENT_STELLAR_SECRET', 'STELLAR_RPC_URL', 'LODESTAR_API_URL', 'FACILITATOR_URL'];
 for (const key of required) {
   if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
 }
