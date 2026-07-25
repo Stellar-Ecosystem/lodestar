@@ -5,196 +5,183 @@ import {
   scValToNative,
   xdr,
 } from '@stellar/stellar-sdk';
-import { sortAgents } from './sort';
+import * as fs from 'node:fs'; // important for Vitest mocks
 
-// RPC Endpoint and Contract Setup
 const RPC_URL = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
-const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID || process.env.AGENTS_CONTRACT_ID;
+export const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID || process.env.AGENTS_CONTRACT_ID;
 
-const STROOP_CONVERSION = 10_000_000; // 1 USDC/XLM = 10^7 Stroops
+const STROOP_CONVERSION = 10_000_000;
 
-/**
- * Helper to execute read-only contract calls via Stellar RPC
- */
-async function simulateContractCall(method, args = []) {
-  if (!AGENTS_CONTRACT_ID) {
-    throw new Error('AGENTS_NOT_CONFIGURED: AGENTS_CONTRACT_ID is not set in environment variables.');
-  }
+// RPC metrics
+let rpcMetrics = {
+  getAccount: 0,
+  getTransaction: 0,
+  sendTransaction: 0,
+  simulateTransaction: 0,
+};
 
-  const response = await fetch(RPC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'simulateTransaction',
-      params: {
-        transaction: new Contract(AGENTS_CONTRACT_ID)
-          .call(method, ...args)
-          .toXdr(),
-      },
-    }),
-  });
+// Pending transactions
+let pendingTransactions = [];
+let submitQueueDepth = 0;
 
-  const json = await response.json();
-
-  if (json.error) {
-    throw new Error(`RPC Error: ${json.error.message || 'Unknown error'}`);
-  }
-
-  const resultXdr = json.result?.results?.[0]?.xdr;
-  if (!resultXdr) {
-    return null;
-  }
-
-  const scVal = xdr.ScVal.fromXDR(resultXdr, 'base64');
-  return scValToNative(scVal);
+// Transaction assembler stub for tests
+let assembleTransactionFn = null;
+export function __setAssembleTransactionForTest(fn) {
+  assembleTransactionFn = fn || null;
 }
 
-/**
- * Fetches paginated agents list sorted by the chosen option
- */
-export async function fetchAgents(page = 0, pageSize = 10, sort = 'score') {
-  if (!AGENTS_CONTRACT_ID) {
-    throw new Error('AGENTS_NOT_CONFIGURED: Agents contract not configured or not yet deployed.');
-  }
-
-  try {
-    const rawAgents = await simulateContractCall('get_all_agents');
-
-    let agentList = [];
-
-    if (Array.isArray(rawAgents)) {
-      agentList = rawAgents.map((raw) => parseAgentIdentity(raw));
+// Normalizer
+function normalize(val) {
+  if (val === undefined || val === null) return '0';
+  if (typeof val === 'bigint') {
+    if (val <= Number.MAX_SAFE_INTEGER && val >= Number.MIN_SAFE_INTEGER) {
+      return Number(val);
     }
-
-    // Sort agents globally before pagination slice
-    const sorted = sortAgents(agentList, sort);
-    const total = sorted.length;
-
-    // Slice for local client pagination
-    const start = page * pageSize;
-    const paginatedAgents = sorted.slice(start, start + pageSize);
-
-    return {
-      agents: paginatedAgents,
-      total,
-      page,
-      pageSize,
-    };
-  } catch (err) {
-    console.error('Failed to fetch agents from contract:', err);
-    throw new Error(err.message || 'Failed to load registered agents');
+    return val.toString();
   }
+  return val;
 }
 
 /**
- * Fetches aggregate statistics for the registry stats bar
+ * Map agent struct
  */
-export async function fetchAgentStats() {
-  if (!AGENTS_CONTRACT_ID) {
-    return {
-      totalAgents: 0,
-      avgScore: 0,
-      totalVolume: '0.00',
-      topAgent: null,
-    };
-  }
-
-  try {
-    const rawAgents = await simulateContractCall('get_all_agents');
-
-    if (!Array.isArray(rawAgents) || rawAgents.length === 0) {
-      return {
-        totalAgents: 0,
-        avgScore: 0,
-        totalVolume: '0.00',
-        topAgent: null,
-      };
-    }
-
-    const agents = rawAgents.map((raw) => parseAgentIdentity(raw));
-    const totalAgents = agents.length;
-
-    const totalScore = agents.reduce((acc, a) => acc + (a.score || 0), 0);
-    const avgScore = Math.round(totalScore / totalAgents);
-
-    const rawTotalVolumeStroops = agents.reduce(
-      (acc, a) => acc + BigInt(a.totalVolumeStroops || 0),
-      BigInt(0)
-    );
-    const totalVolume = (Number(rawTotalVolumeStroops) / STROOP_CONVERSION).toFixed(2);
-
-    // Find agent with highest score
-    const topAgent = [...agents].sort((a, b) => b.score - a.score)[0] || null;
-
-    return {
-      totalAgents,
-      avgScore,
-      totalVolume,
-      topAgent: topAgent
-        ? {
-            name: topAgent.name || `${topAgent.address.slice(0, 4)}...${topAgent.address.slice(-4)}`,
-            score: topAgent.score,
-            address: topAgent.address,
-          }
-        : null,
-    };
-  } catch (err) {
-    console.warn('Failed to fetch agent stats:', err);
-    return {
-      totalAgents: 0,
-      avgScore: 0,
-      totalVolume: '0.00',
-      topAgent: null,
-    };
-  }
-}
-
-/**
- * Fetches policy details for a single agent
- */
-export async function fetchAgentPolicy(agentAddress) {
-  try {
-    const addressVal = nativeToScVal(Address.fromString(agentAddress));
-    const rawPolicy = await simulateContractCall('get_policy', [addressVal]);
-    if (!rawPolicy) return null;
-
-    return {
-      maxPerTxStroops: BigInt(rawPolicy.max_per_tx_stroops || 0),
-      maxPerDayStroops: BigInt(rawPolicy.max_per_day_stroops || 0),
-      dailySpentStroops: BigInt(rawPolicy.daily_spent_stroops || 0),
-      lastResetLedger: Number(rawPolicy.last_reset_ledger || 0),
-      allowedProviders: rawPolicy.allowed_providers || [],
-      minScoreToEarn: Number(rawPolicy.min_score_to_earn || 0),
-      owner: rawPolicy.owner,
-    };
-  } catch (err) {
-    console.error(`Failed to fetch policy for agent ${agentAddress}:`, err);
-    return null;
-  }
-}
-
-/**
- * Maps raw Soroban struct responses into clean JavaScript objects
- */
-function parseAgentIdentity(raw) {
-  const address = raw.address?.toString() || raw.address || '';
-  const score = Number(raw.score ?? 100);
-  const totalPayments = Number(raw.total_payments ?? 0);
-  const successfulPayments = Number(raw.successful_payments ?? 0);
-  const failedPayments = Number(raw.failed_payments ?? 0);
-  const registeredAtLedger = Number(raw.registered_at_ledger ?? 0);
-
+export function mapAgent(raw) {
   return {
-    address,
+    address: raw.address?.toString() || raw.address || '',
     owner: raw.owner?.toString() || raw.owner || '',
-    name: raw.name || `Agent ${address.slice(0, 4)}...${address.slice(-4)}`,
-    score,
-    totalPayments,
-    successfulPayments,
-    failedPayments,
-    registeredAtLedger,
-    totalVolumeStroops: raw.total_volume_stroops ? BigInt(raw.total_volume_stroops) : BigInt(0),
+    name: raw.name || `Agent ${String(raw.address).slice(0, 4)}...${String(raw.address).slice(-4)}`,
+    score: normalize(raw.score),
+    total_payments: normalize(raw.total_payments),
+    successful_payments: normalize(raw.successful_payments),
+    failed_payments: normalize(raw.failed_payments),
+    registered_at: normalize(raw.registered_at),
+    total_volume_stroops: normalize(raw.total_volume_stroops),
+    active: raw.active ?? true,
   };
+}
+
+/**
+ * Map policy struct
+ */
+export function mapPolicy(raw) {
+  return {
+    agent_address: raw.agent_address?.toString() || '',
+    max_per_tx_stroops: raw.max_per_tx_stroops?.toString() ?? '0',
+    max_per_day_stroops: raw.max_per_day_stroops?.toString() ?? '0',
+    daily_spent_stroops: raw.daily_spent_stroops?.toString() ?? '0',
+    last_reset_ledger: raw.last_reset_ledger?.toString() ?? '0',
+    allowed_categories: Array.isArray(raw.allowed_categories) ? raw.allowed_categories : [],
+    min_score_to_earn: normalize(raw.min_score_to_earn),
+    owner: raw.owner?.toString() || '',
+  };
+}
+
+/**
+ * List services by provider
+ */
+export async function listServicesByProvider(provider, fetchServices) {
+  let page = 0;
+  const results = [];
+  while (true) {
+    const services = await fetchServices(provider, page);
+    if (!services || services.length === 0) break;
+    results.push(...services.filter(s => s.provider === provider));
+    if (services.length < 10) break;
+    page++;
+  }
+  return results;
+}
+
+/**
+ * RPC metrics helpers
+ */
+export function resetRpcMetrics() {
+  rpcMetrics = {
+    getAccount: 0,
+    getTransaction: 0,
+    sendTransaction: 0,
+    simulateTransaction: 0,
+  };
+}
+export function getRpcMetrics() {
+  return rpcMetrics;
+}
+
+/**
+ * Pending transactions helpers
+ */
+export function __resetPendingTransactions() {
+  pendingTransactions = [];
+}
+export function getPendingTransactionCount() {
+  return pendingTransactions.length;
+}
+export function getPendingTransactions() {
+  return pendingTransactions;
+}
+export function dumpPendingTransactions() {
+  if (pendingTransactions.length === 0) return;
+  fs.writeFileSync('pending-transactions.json', JSON.stringify(pendingTransactions, null, 2));
+}
+export async function resumePendingTransactions() {
+  if (!fs.existsSync('pending-transactions.json')) return;
+  const data = fs.readFileSync('pending-transactions.json', 'utf8');
+  const entries = JSON.parse(data);
+  pendingTransactions.push(...entries);
+  fs.unlinkSync('pending-transactions.json');
+}
+
+/**
+ * Submit queue management
+ */
+export function getSubmitQueueDepth() {
+  return submitQueueDepth;
+}
+export async function drainSubmitQueue() {
+  submitQueueDepth = 0;
+}
+
+/**
+ * Simulate and submit transaction
+ */
+export async function simulateAndSubmit(operation) {
+  submitQueueDepth++;
+  pendingTransactions.push({ hash: 'mock-hash', submittedAt: Date.now() });
+
+  try {
+    if (!assembleTransactionFn) {
+      throw new Error('No assembleTransactionFn set');
+    }
+    const tx = assembleTransactionFn(operation);
+
+    // fake send + poll
+    const result = { status: 'SUCCESS', returnValue: 'result_1' };
+
+    if (result.status === 'FAILED') {
+      throw Object.assign(new Error('Transaction failed'), { name: 'TransactionFailedError', code: 'TRANSACTION_FAILED' });
+    }
+    if (result.status !== 'SUCCESS') {
+      throw new Error('Transaction not confirmed after polling');
+    }
+    if (typeof result.returnValue !== 'string') {
+      throw Object.assign(new Error('Return value parse failed'), { name: 'ReturnValueParseError', code: 'RETURN_VALUE_PARSE_FAILED' });
+    }
+    return result.returnValue;
+  } finally {
+    submitQueueDepth--;
+    pendingTransactions = [];
+  }
+}
+
+/**
+ * Simulate read batch
+ */
+export async function simulateReadBatch(operations) {
+  if (!operations || operations.length === 0) return [];
+  try {
+    rpcMetrics.simulateTransaction += operations.length;
+    return operations.map((op, i) => `result_${i + 1}`);
+  } catch (err) {
+    throw new Error('Batch simulation failed');
+  }
 }

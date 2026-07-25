@@ -61,6 +61,17 @@ function parsePositiveSafeInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+function annotateTtlWarning(service, currentLedger) {
+  // If currentLedger is null, omit ttl_warning entirely (graceful degradation)
+  if (currentLedger == null) return service;
+  if (typeof service.ttl !== 'number' || typeof service.registered_at !== 'number') return service;
+
+  const expiryLedger = service.registered_at + service.ttl;
+  const remaining = expiryLedger - currentLedger;
+  const warn = remaining <= SERVICE_TTL_WARNING_LEDGERS;
+  return { ...service, ttl_warning: warn };
+}
+
 // Appends ttl_warning:true when the entry's estimated remaining TTL falls
 // below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
 // is unavailable so callers can always treat absence as "no warning data".
@@ -389,10 +400,10 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
   try {
     const { signedXdr, submitToken } = req.body ?? {};
     if (!signedXdr || typeof signedXdr !== "string") {
-      return res.status(400).json({ error: "`signedXdr` is required", code: "INVALID_BODY" });
+      return res.status(400).json({ error: '`signedXdr` is required', code: 'INVALID_BODY' });
     }
     if (!submitToken || typeof submitToken !== "string") {
-      return res.status(400).json({ error: "`submitToken` is required", code: "INVALID_BODY" });
+      return res.status(400).json({ error: '`submitToken` is required', code: 'INVALID_BODY' });
     }
     validatePreparedRegistrySubmission(submitToken, signedXdr);
 
