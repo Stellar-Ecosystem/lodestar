@@ -75,6 +75,14 @@ router.post('/demo-run', async (req, res) => {
       endpoint.searchParams.set('lon', '-74.0060');
     } else if (category === 'search') {
       endpoint.searchParams.set('q', 'Stellar blockchain AI agents');
+    } else if (category === 'finance') {
+      endpoint.searchParams.set('symbol', 'XLM');
+    } else if (category === 'ai') {
+      endpoint.searchParams.set('prompt', 'Hello from Lodestar');
+    } else if (category === 'data') {
+      endpoint.searchParams.set('dataset', 'stellar-ledger');
+    } else if (category === 'compute') {
+      endpoint.searchParams.set('task', 'verify-proof');
     }
     
     endpoint.searchParams.set('demoRunId', demoRunId);

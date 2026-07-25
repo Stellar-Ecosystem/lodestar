@@ -23,6 +23,10 @@ export function validateDemoEndpoint(originalEndpoint, category) {
   const allowlist = {
     weather: '/demo/weather',
     search: '/demo/search',
+    finance: '/demo/finance',
+    ai: '/demo/ai',
+    data: '/demo/data',
+    compute: '/demo/compute',
   };
 
   const allowedPath = allowlist[category];
@@ -41,6 +45,10 @@ export function validateDemoEndpoint(originalEndpoint, category) {
   const allowedParams = {
     weather: ['lat', 'lon'],
     search: ['q'],
+    finance: ['symbol'],
+    ai: ['prompt'],
+    data: ['dataset'],
+    compute: ['task'],
   }[category];
 
   const sanitized = new URLSearchParams();

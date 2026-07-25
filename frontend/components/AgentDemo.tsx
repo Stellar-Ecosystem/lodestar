@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import type { AgentStep } from '@/lib/types';
+import type { AgentStep, Category } from '@/lib/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const EXPLORER_URL =
@@ -9,11 +9,13 @@ const EXPLORER_URL =
 // Registered demo agent the backend signs reputation votes as.
 const DEMO_AGENT_ADDRESS = process.env.NEXT_PUBLIC_DEMO_AGENT_ADDRESS ?? '';
 
-type ServiceNeed = 'weather' | 'search';
-
-const SERVICE_OPTIONS: { label: string; value: ServiceNeed }[] = [
+const SERVICE_OPTIONS: { label: string; value: Category }[] = [
   { label: 'Weather Data', value: 'weather' },
   { label: 'Web Search', value: 'search' },
+  { label: 'Financial Data', value: 'finance' },
+  { label: 'AI Models', value: 'ai' },
+  { label: 'Data Datasets', value: 'data' },
+  { label: 'Compute Resources', value: 'compute' },
 ];
 
 interface DemoResult {
@@ -36,7 +38,7 @@ function StepIndicator({ status }: { status: AgentStep['status'] }) {
 }
 
 export default function AgentDemo() {
-  const [need, setNeed] = useState<ServiceNeed>('weather');
+  const [need, setNeed] = useState<Category>('weather');
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<DemoResult | null>(null);
@@ -153,7 +155,7 @@ export default function AgentDemo() {
         <div className="flex gap-3">
           <select
             value={need}
-            onChange={(e) => setNeed(e.target.value as ServiceNeed)}
+            onChange={(e) => setNeed(e.target.value as Category)}
             disabled={running}
             className="flex-1 border border-border rounded-lg px-3 py-2.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
           >

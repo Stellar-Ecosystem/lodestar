@@ -1,7 +1,7 @@
 # Lodestar
 ### Navigate the agent economy — discover, pay, and build trust.
 
-Lodestar solves the missing discovery layer in the x402 agentic payments ecosystem on Stellar — today AI agents can pay for services but cannot find them autonomously because every service URL is hardcoded by a human, so Lodestar ships two Soroban smart contracts: the first is a permanent neutral on-chain registry where any service provider registers their x402 endpoint once with a price and category and it becomes discoverable forever, and the second tracks every AI agent's on-chain identity giving each agent a credit score from 0 to 1000 that rises with successful payments and falls with failures, enforces programmable per-transaction and daily spending limits at the contract level, and allows service providers to gate access to premium services by minimum score — all of this is exposed through an Express backend with real x402-protected demo endpoints for weather and search, a Next.js frontend where providers can register services and agents can view their scores, and a standalone autonomous agent script that starts with zero hardcoded URLs, queries the registry, discovers the best service by reputation, pays via USDC on Stellar testnet through the x402 protocol, receives real data back, and updates its own credit score on-chain — making Lodestar the complete infrastructure layer for the agentic economy covering discovery, payment, and trust in a single production-grade open source project that directly addresses all three requirements the Stellar Hacks judges explicitly called out in the hackathon brief.
+Lodestar solves the missing discovery layer in the x402 agentic payments ecosystem on Stellar — today AI agents can pay for services but cannot find them autonomously because every service URL is hardcoded by a human, so Lodestar ships two Soroban smart contracts: the first is a permanent neutral on-chain registry where any service provider registers their x402 endpoint once with a price and category and it becomes discoverable forever, and the second tracks every AI agent's on-chain identity giving each agent a credit score from 0 to 1000 that rises with successful payments and falls with failures, enforces programmable per-transaction and daily spending limits at the contract level, and allows service providers to gate access to premium services by minimum score — all of this is exposed through an Express backend with real x402-protected demo endpoints for categories including weather, search, finance, ai, data, and compute, a Next.js frontend where providers can register services and agents can view their scores, and a standalone autonomous agent script that starts with zero hardcoded URLs, queries the registry, discovers the best service by reputation, pays via USDC on Stellar testnet through the x402 protocol, receives real data back, and updates its own credit score on-chain — making Lodestar the complete infrastructure layer for the agentic economy covering discovery, payment, and trust in a single production-grade open source project that directly addresses all three requirements the Stellar Hacks judges explicitly called out in the hackathon brief.
 
 ---
 
@@ -139,7 +139,7 @@ npm install
 SEEDING_MODE=true node scripts/seed.js
 ```
 
-This registers the four demo services (weather, search, and two live Stellar services) into the on-chain registry.
+This registers the predefined demo services (weather, search, finance, ai, data, compute) into the on-chain registry.
 
 ### 5. Start backend
 
@@ -170,7 +170,7 @@ node agent.js
 ```
 
 The agent will:
-- Query the Lodestar registry for weather and search services
+- Query the Lodestar registry for weather, search, finance, ai, data, and compute services
 - Select the best by reputation
 - Pay via x402 on Stellar
 - Log the data received and update on-chain reputation

@@ -59,4 +59,17 @@ describe("POST /api/demo-run", () => {
     expect(res.status).toBe(499);
     expect(res.body.code).toBe("CANCELLED");
   });
+
+  it("handles other categories correctly", async () => {
+    contract.getService.mockResolvedValue({ name: "Finance Service", endpoint: "test", price_usdc: "1" });
+    
+    const { x402HTTPClient } = await import("@x402/core/client");
+    x402HTTPClient.mockImplementationOnce(() => ({
+      fetchWithTx: vi.fn().mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" })),
+    }));
+
+    const res = await request(app).post("/api/demo-run").send({ serviceId: 1, category: "finance" });
+    expect(res.status).toBe(499);
+    expect(res.body.code).toBe("CANCELLED");
+  });
 });
