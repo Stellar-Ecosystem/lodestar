@@ -579,7 +579,7 @@ describe('POST /api/reputation/:id — authorization', () => {
     expect(mockUpdateReputation).not.toHaveBeenCalled();
   });
 
-  it('should update reputation for an allowlisted agent', async () => {
+  it('should update reputation positively for an allowlisted agent', async () => {
     mockIsAllowedReputationAgent.mockReturnValue(true);
     mockUpdateReputation.mockResolvedValueOnce(5);
 
@@ -590,6 +590,64 @@ describe('POST /api/reputation/:id — authorization', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, newReputation: 5 });
     expect(mockUpdateReputation).toHaveBeenCalledWith(1, true, VALID_AGENT);
+  });
+
+  it('should update reputation negatively for an allowlisted agent', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(3);
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: false, agent: VALID_AGENT });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, newReputation: 3 });
+    expect(mockUpdateReputation).toHaveBeenCalledWith(1, false, VALID_AGENT);
+  });
+
+  it('should log a "positive vote" message when positive is true', async () => {
+    const { default: logger } = await import('../lib/logger.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(10);
+
+    await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1, positive: true, agent: VALID_AGENT, newReputation: 10 }),
+      expect.stringContaining('positive vote'),
+    );
+  });
+
+  it('should log a "negative vote" message when positive is false', async () => {
+    const { default: logger } = await import('../lib/logger.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(2);
+
+    await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: false, agent: VALID_AGENT });
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1, positive: false, agent: VALID_AGENT, newReputation: 2 }),
+      expect.stringContaining('negative vote'),
+    );
+  });
+
+  it('should return 504 when the on-chain transaction times out', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockRejectedValueOnce(
+      new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT'),
+    );
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(504);
+    expect(res.body.code).toBe('TRANSACTION_TIMEOUT');
   });
 
   it('should surface the on-chain cooldown rejection as an actionable 400', async () => {

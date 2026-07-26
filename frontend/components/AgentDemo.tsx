@@ -16,6 +16,26 @@ const SERVICE_OPTIONS: { label: string; value: ServiceNeed }[] = [
   { label: 'Web Search', value: 'search' },
 ];
 
+/**
+ * Returns true when the demo data looks like a genuine successful response.
+ * A result is considered poor quality (negative vote) when:
+ *  - it is null or undefined
+ *  - it is an empty array
+ *  - it is an object with no own keys (empty object)
+ *  - it is an object that carries an `error` property (error payload)
+ */
+function isGoodDemoResult(data: unknown): boolean {
+  if (data === null || data === undefined) return false;
+  if (Array.isArray(data)) return data.length > 0;
+  if (typeof data === 'object') {
+    const obj = data as Record<string, unknown>;
+    if ('error' in obj) return false;
+    return Object.keys(obj).length > 0;
+  }
+  // Primitive truthy values (e.g. a non-empty string) count as good.
+  return Boolean(data);
+}
+
 interface DemoResult {
   data: unknown;
   txHash: string;
@@ -102,8 +122,18 @@ export default function AgentDemo() {
       const demoData = (await demoRes.json()) as { data: unknown; txHash: string };
       completeLastStep();
 
-      // Step 5 — confirmed
-      pushStep('Payment confirmed — data received', 'complete');
+      // Determine result quality: data must be non-null, non-empty, and not an
+      // error payload. An empty array/object or an object with an `error` key
+      // counts as a failed result and triggers a negative reputation vote.
+      const isPositiveResult = isGoodDemoResult(demoData.data);
+
+      // Step 5 — confirmed or partial failure
+      pushStep(
+        isPositiveResult
+          ? 'Payment confirmed — data received'
+          : 'Payment confirmed — service returned empty or error data',
+        isPositiveResult ? 'complete' : 'error',
+      );
 
       setResult({
         data: demoData.data,
@@ -112,14 +142,14 @@ export default function AgentDemo() {
         price: best.price_usdc,
       });
 
-      // Update reputation positively, signed on-chain as the demo agent.
-      // Best-effort: a missing agent config or the on-chain cooldown shouldn't
-      // fail the demo run that already succeeded.
+      // Update reputation based on result quality, signed on-chain as the demo
+      // agent. Best-effort: a missing agent config or the on-chain cooldown
+      // shouldn't fail the demo run that already completed.
       if (DEMO_AGENT_ADDRESS) {
         await fetch(`${API_URL}/api/reputation/${best.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ positive: true, agent: DEMO_AGENT_ADDRESS }),
+          body: JSON.stringify({ positive: isPositiveResult, agent: DEMO_AGENT_ADDRESS }),
         }).catch(() => {});
       }
     } catch (err) {
