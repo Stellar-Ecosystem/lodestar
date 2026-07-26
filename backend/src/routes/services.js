@@ -162,13 +162,21 @@ router.get('/search', async (req, res) => {
       return res.status(400).json({ error: 'Query parameter `q` is required', code: 'MISSING_QUERY' });
     }
 
+    if (!config.serperApiKey) {
+      logger.error('GET /demo/search failed: SERPER_API_KEY is not configured');
+      return res.status(503).json({
+        error: 'Search service unavailable: SERPER_API_KEY is not configured',
+        code: 'SERPER_API_KEY_NOT_CONFIGURED',
+      });
+    }
+
     const response = await fetch(
       'https://google.serper.dev/search',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-KEY': config.braveApiKey,
+          'X-API-KEY': config.serperApiKey,
         },
         body: JSON.stringify({ q, num: 5 }),
       }
