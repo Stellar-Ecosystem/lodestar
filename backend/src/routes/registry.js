@@ -446,6 +446,12 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
     }
 
     const newReputation = await updateReputation(id, positive, agent);
+    logger.info(
+      { id, positive, agent, newReputation },
+      positive
+        ? "POST /api/reputation/:id — positive vote recorded"
+        : "POST /api/reputation/:id — negative vote recorded",
+    );
     res.json({ success: true, newReputation });
   } catch (err) {
     // SIMULATION_FAILED covers on-chain rejections such as the vote cooldown
