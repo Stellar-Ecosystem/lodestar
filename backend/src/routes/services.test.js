@@ -24,17 +24,19 @@ vi.mock('../lib/logger.js', () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+const mockConfig = {
+  contract: { agentsId: 'mock-agents-contract' },
+  server: { address: 'mock_address', secret: 'mock_secret' },
+  x402: { facilitatorUrl: 'https://mock', weatherPrice: '0.001', searchPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
+  serperApiKey: 'mock_key',
+  corsOrigin: ['http://localhost:3000'],
+  nodeEnv: 'test',
+  port: 3001,
+  logLevel: 'silent',
+};
+
 vi.mock('../config.js', () => ({
-  default: {
-    contract: { agentsId: 'mock-agents-contract' },
-    server: { address: 'mock_address', secret: 'mock_secret' },
-    x402: { facilitatorUrl: 'https://mock', weatherPrice: '0.001', searchPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
-    braveApiKey: 'mock_key',
-    corsOrigin: ['http://localhost:3000'],
-    nodeEnv: 'test',
-    port: 3001,
-    logLevel: 'silent',
-  },
+  default: mockConfig,
 }));
 
 // Bypass x402 payment middleware in tests
@@ -247,5 +249,44 @@ describe('payment header validation — search', () => {
       expect.objectContaining({ agentAddress: VALID_STELLAR_ADDRESS, txHash: 'searchtx99' }),
       expect.stringContaining('search payment credited to registered agent')
     );
+  });
+
+  it('calls Serper with the configured SERPER_API_KEY header', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ organic: [{ title: 'r', link: 'u', snippet: 's' }] }),
+    });
+    global.fetch = mockFetch;
+
+    const res = await request(app).get('/demo/search?q=hello');
+
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://google.serper.dev/search',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          'X-API-KEY': 'mock_key',
+        }),
+        body: JSON.stringify({ q: 'hello', num: 5 }),
+      })
+    );
+    expect(res.body.results[0]).toEqual({ title: 'r', url: 'u', description: 's' });
+  });
+
+  it('returns 503 when SERPER_API_KEY is not configured', async () => {
+    mockConfig.serperApiKey = '';
+    const router = (await import('./services.js')).default;
+    const appWithNoKey = express();
+    appWithNoKey.use(express.json());
+    appWithNoKey.use('/demo', router);
+
+    const res = await request(appWithNoKey).get('/demo/search?q=hello');
+
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('SERPER_API_KEY_NOT_CONFIGURED');
+    expect(res.body.error).toContain('SERPER_API_KEY is not configured');
+    mockConfig.serperApiKey = 'mock_key';
   });
 });

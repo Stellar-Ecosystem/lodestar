@@ -168,6 +168,22 @@ describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
   });
 });
 
+describe('config Serper API key env var', () => {
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('reads SERPER_API_KEY from the environment', async () => {
+    const config = await loadConfig({ SERPER_API_KEY: 'test_serper_key' });
+    expect(config.serperApiKey).toBe('test_serper_key');
+  });
+
+  it('falls back to BRAVE_API_KEY when SERPER_API_KEY is unset', async () => {
+    const config = await loadConfig({ BRAVE_API_KEY: 'legacy_brave_key' });
+    expect(config.serperApiKey).toBe('legacy_brave_key');
+  });
+});
+
 describe('config trustProxy parsing', () => {
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };

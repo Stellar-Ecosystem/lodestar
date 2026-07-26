@@ -129,7 +129,7 @@ Copy the printed contract ID — you will need it in the next steps.
 ```sh
 cd backend
 cp .env.example .env
-# Fill in CONTRACT_ID, SERVER_STELLAR_ADDRESS, SERVER_STELLAR_SECRET, BRAVE_API_KEY
+# Fill in CONTRACT_ID, SERVER_STELLAR_ADDRESS, SERVER_STELLAR_SECRET, SERPER_API_KEY
 npm install
 ```
 

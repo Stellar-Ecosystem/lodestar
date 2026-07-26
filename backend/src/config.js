@@ -82,7 +82,8 @@ const config = Object.freeze({
     payTo: process.env.PAYMENT_ADDRESS || process.env.SERVER_STELLAR_ADDRESS,
   },
 
-  braveApiKey: process.env.BRAVE_API_KEY ?? '',
+  // Support legacy BRAVE_API_KEY until deployments migrate to SERPER_API_KEY.
+  serperApiKey: process.env.SERPER_API_KEY ?? process.env.BRAVE_API_KEY ?? '',
 
   corsOrigin: process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
