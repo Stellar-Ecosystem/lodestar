@@ -58,7 +58,6 @@ export default function AgentsPage() {
 
   const agents = data?.agents ?? [];
   const total = data?.total ?? 0;
-  const hasAnyAgents = (stats?.totalAgents ?? 0) > 0;
   const loading = isLoading && !data;
   const refreshing = isValidating && !isLoading;
   const error = agentsError
@@ -66,6 +65,11 @@ export default function AgentsPage() {
       ? agentsError.message
       : 'Failed to load'
     : null;
+
+  const hasAnyAgents = total > 0;
+  const statsAvailable = stats !== null;
+  const showNoAgentsState = !loading && !error && !hasAnyAgents && (!statsAvailable || (stats?.totalAgents ?? 0) === 0);
+  const showTierEmptyState = !loading && !error && !hasAnyAgents && statsAvailable && (stats?.totalAgents ?? 0) > 0;
 
   const visibleCount = total;
 
@@ -207,7 +211,7 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {!loading && !error && !hasAnyAgents && (
+      {!loading && !error && showNoAgentsState && (
         <div className="card p-12 text-center">
           <p className="text-secondary text-sm mb-4">No agents registered yet.</p>
           <Link href="/agents/register" className="btn-primary px-5 py-2.5 text-sm">
@@ -216,7 +220,7 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {!loading && !error && hasAnyAgents && total === 0 && (
+      {!loading && !error && showTierEmptyState && (
         <div className="card p-12 text-center">
           <p className="text-secondary text-sm mb-4">No agents match the selected tier.</p>
           <button

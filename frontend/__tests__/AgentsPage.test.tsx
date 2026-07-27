@@ -95,6 +95,29 @@ describe('AgentsPage retry state', () => {
   });
 });
 
+describe('AgentsPage data rendering', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders the agent grid when agents exist even if stats are unavailable', async () => {
+    (fetchAgents as jest.Mock).mockResolvedValue({
+      agents: [makeAgent({ address: 'A', name: 'Visible Agent' })],
+      total: 1,
+      page: 0,
+      pageSize: PAGE_SIZE,
+    });
+    (fetchAgentStats as jest.Mock).mockRejectedValue(new Error('Stats unavailable'));
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('Visible Agent')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('No agents registered yet.')).not.toBeInTheDocument();
+  });
+});
+
 describe('AgentsPage score tier filter', () => {
   beforeEach(() => {
     jest.clearAllMocks();
