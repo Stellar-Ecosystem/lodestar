@@ -34,6 +34,7 @@ vi.mock('./stellar.js', () => ({
 
 vi.mock('node:fs', () => ({
   writeFileSync: vi.fn(),
+  appendFileSync: vi.fn(),
   readFileSync: vi.fn(),
   existsSync: vi.fn(),
   unlinkSync: vi.fn(),
@@ -42,7 +43,7 @@ vi.mock('node:fs', () => ({
 import sdkPkg from '@stellar/stellar-sdk';
 import * as contractLib from './contract.js';
 
-const { StrKey } = sdkPkg;
+const { StrKey, Address, nativeToScVal } = sdkPkg;
 const VALID_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32));
 
 const { mapAgent, mapPolicy } = contractLib;
@@ -602,6 +603,152 @@ describe('simulateAndSubmit transaction polling', () => {
       code: 'RETURN_VALUE_PARSE_FAILED',
       hash: 'txhash123',
     });
+  });
+});
+
+describe('signed-transaction audit trail', () => {
+  let fsAppendFileSync;
+
+  beforeEach(async () => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    const fs = await import('node:fs');
+    fsAppendFileSync = fs.appendFileSync;
+    fsAppendFileSync.mockReset();
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+  });
+
+  afterEach(() => {
+    contractLib.__setAssembleTransactionForTest();
+    vi.restoreAllMocks();
+  });
+
+  function auditRecordsWritten() {
+    return fsAppendFileSync.mock.calls.map(([, line]) => JSON.parse(line));
+  }
+
+  it('writes exactly one audit record for a successful server-signed call', async () => {
+    const provider = Address.fromString('GDBVNXAHRN3WRXYPBVX3NKGXRC373YQ7I52ZUBP3MGPWD6MA46L5EF7P');
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    const op = contract.call(
+      'register_service',
+      nativeToScVal(provider, { type: 'address' }),
+      nativeToScVal('Test Service', { type: 'string' }),
+    );
+
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'audit-success-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.simulateAndSubmit(op);
+
+    const records = auditRecordsWritten();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      function: 'register_service',
+      contractId: VALID_CONTRACT_ID,
+      txHash: 'audit-success-hash',
+      result: 'success',
+      args: { provider: provider.toString(), name: 'Test Service' },
+    });
+    expect(records[0].actor).toEqual(expect.stringMatching(/^G[A-Z2-7]{55}$/));
+    expect(typeof records[0].requestId).toBe('string');
+  });
+
+  it('writes exactly one audit record, with error details, for an on-chain failure', async () => {
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'audit-fail-hash' });
+    mockGetTransaction.mockResolvedValueOnce({ status: 'FAILED', resultXdr: 'raw-failure' });
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toThrow();
+
+    const records = auditRecordsWritten();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      function: 'get_service_count',
+      txHash: 'audit-fail-hash',
+      result: 'failed_onchain',
+      error: { code: 'TRANSACTION_FAILED' },
+    });
+  });
+
+  it('audits a bad-seq retry as its own record, separate from the eventual outcome', async () => {
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    const badSeqXdr = new sdkPkg.xdr.TransactionResult({
+      feeCharged: sdkPkg.xdr.Int64.fromString('0'),
+      result: sdkPkg.xdr.TransactionResultResult.txBadSeq(),
+      ext: new sdkPkg.xdr.TransactionResultExt(0),
+    }).toXDR('base64');
+
+    mockSendTransaction
+      .mockResolvedValueOnce({ status: 'ERROR', hash: 'bad-seq-hash', errorResultXdr: badSeqXdr })
+      .mockResolvedValueOnce({ status: 'PENDING', hash: 'retry-success-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.simulateAndSubmit(contract.call('get_service_count'));
+
+    const records = auditRecordsWritten();
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({ result: 'bad_seq_retry', txHash: 'bad-seq-hash' });
+    expect(records[1]).toMatchObject({ result: 'success', txHash: 'retry-success-hash' });
+  });
+
+  it('does not audit a simulation failure — no signature was ever produced', async () => {
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    mockSimulateTransaction.mockResolvedValueOnce({ error: 'simulation exploded' });
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toThrow();
+
+    expect(fsAppendFileSync).not.toHaveBeenCalled();
+  });
+
+  it('attributes a wallet-signed submission to the address the contract require_auth checks, not the server key', async () => {
+    const provider = Address.fromString('GDBVNXAHRN3WRXYPBVX3NKGXRC373YQ7I52ZUBP3MGPWD6MA46L5EF7P');
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    const op = contract.call(
+      'deactivate_service',
+      nativeToScVal(provider, { type: 'address' }),
+      nativeToScVal(BigInt(1), { type: 'u64' }),
+    );
+
+    const account = new sdkPkg.Account(provider.toString(), '1');
+    const unsignedTx = new sdkPkg.TransactionBuilder(account, {
+      fee: sdkPkg.BASE_FEE,
+      networkPassphrase: 'Test SDF Network ; September 2015',
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+    const signedXdr = unsignedTx.toXDR();
+
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'wallet-signed-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.submitSignedRegistryTx(signedXdr);
+
+    const records = auditRecordsWritten();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      function: 'deactivate_service',
+      actor: provider.toString(),
+      txHash: 'wallet-signed-hash',
+      result: 'success',
+    });
+  });
+
+  it('never includes secret-looking values even if a future caller passed them as args', async () => {
+    // record_payment's args never include a secret today — this guards the
+    // redaction layer itself, independent of what any call site passes.
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'redaction-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.simulateAndSubmit(contract.call('get_service_count'));
+
+    const [record] = auditRecordsWritten();
+    const serialized = JSON.stringify(record);
+    expect(serialized).not.toMatch(/SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2/);
   });
 });
 

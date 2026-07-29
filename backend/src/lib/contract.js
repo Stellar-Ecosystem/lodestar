@@ -19,6 +19,7 @@ import { writeFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs';
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
+import { recordAuditEvent } from './auditLog.js';
 import { ContractError } from './ContractError.js';
 import {
   ReturnValueParseError,
@@ -95,6 +96,78 @@ function getOperationName(operation) {
     }
   } catch {}
   return 'unknown';
+}
+
+// ── Signed-Transaction Audit Trail ──────────────────────────────────────────
+//
+// Named argument order for every contract function invoked through
+// _simulateAndSubmit/submitSignedTx, used to turn a decoded operation into
+// human-readable audit args instead of positional arg0/arg1/... Must match
+// the parameter order in contract/src/lib.rs and contract/agents/src/lib.rs.
+const AUDIT_ARG_NAMES = {
+  register_service: ['provider', 'name', 'description', 'endpoint', 'price_usdc', 'pay_to', 'category'],
+  deactivate_service: ['provider', 'id'],
+  update_reputation: ['id', 'positive', 'caller'],
+  register_agent: ['agent_address', 'name', 'description', 'owner'],
+  record_payment: ['agent_address', 'service_id', 'amount_stroops', 'success', 'caller'],
+  flag_agent: ['agent_address', 'reason', 'caller'],
+  deactivate_agent: ['agent_address', 'caller'],
+  admin_deactivate_agent: ['agent_address', 'caller'],
+  update_policy: ['agent_address', 'max_per_tx_stroops', 'max_per_day_stroops', 'allowed_categories', 'min_score_to_earn', 'caller'],
+};
+
+// The argument whose signature the contract's `require_auth()` actually
+// checks. Used to attribute the wallet-signed (submitSignedTx) path to the
+// real actor rather than the server's own fee-source key. Functions the
+// server always signs directly (e.g. register_agent) don't need an entry —
+// their actor is simply the signing keypair.
+const AUDIT_ACTOR_ARG = {
+  register_service: 'provider',
+  deactivate_service: 'provider',
+  update_reputation: 'caller',
+  record_payment: 'caller',
+  flag_agent: 'caller',
+  deactivate_agent: 'caller',
+  admin_deactivate_agent: 'caller',
+  update_policy: 'caller',
+};
+
+function describeArgValue(rawArg) {
+  try {
+    const value = scValToNative(rawArg);
+    if (typeof value === 'bigint') return value.toString();
+    if (Array.isArray(value)) {
+      return value.map((v) => (typeof v === 'bigint' ? v.toString() : v));
+    }
+    if (value && typeof value === 'object' && typeof value.toString === 'function') {
+      return value.toString();
+    }
+    return value;
+  } catch {
+    return '[unparsable]';
+  }
+}
+
+/**
+ * Decode a parsed (post-TransactionBuilder) invokeHostFunction operation into
+ * the function name, contract id, and named arguments used for the signed-
+ * transaction audit trail. Every argument here is already public, on-chain
+ * call data (addresses, amounts, category strings) — never a secret.
+ */
+function describeOperation(parsedOperation) {
+  try {
+    const invocation = parsedOperation.func.invokeContract();
+    const functionName = invocation.functionName().toString();
+    const contractId = StrKey.encodeContract(invocation.contractAddress().contractId());
+    const argNames = AUDIT_ARG_NAMES[functionName] ?? [];
+    const args = {};
+    invocation.args().forEach((rawArg, i) => {
+      args[argNames[i] ?? `arg${i}`] = describeArgValue(rawArg);
+    });
+    return { functionName, contractId, args, actorArgName: AUDIT_ACTOR_ARG[functionName] ?? null };
+  } catch {
+    return { functionName: getOperationName(parsedOperation), contractId: null, args: {}, actorArgName: null };
+  }
 }
 
 function trackPendingTransaction(hash, operation) {
@@ -290,71 +363,114 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const preparedTx = assembleTransactionForSubmit(tx, simResult).build();
   preparedTx.sign(keypair);
 
-  const sendStart = Date.now();
-  const sendResult = await server.sendTransaction(preparedTx);
-  logRpcCall('sendTransaction', Date.now() - sendStart);
-  if (sendResult.status === 'ERROR') {
-    let isBadSeq = false;
-    if (sendResult.errorResultXdr) {
-      try {
-        const txResult = xdr.TransactionResult.fromXDR(sendResult.errorResultXdr, 'base64');
-        const code = txResult.result().switch().name;
-        if (code === 'txBadSeq' || code === 'txBAD_SEQ') {
-          isBadSeq = true;
+  // A real signature now exists — every exit path below must emit exactly
+  // one audit record (see the "Audit Logging" section in the root README).
+  // Emitted explicitly at each exit point (rather than from a `finally`)
+  // so a retried attempt's record is written before the recursive retry's
+  // own record, keeping the log in chronological order.
+  const actor = keypair.publicKey();
+  const described = describeOperation(tx.operations[0]);
+  let auditEmitted = false;
+  const emitAudit = (result, txHashValue, error) => {
+    auditEmitted = true;
+    recordAuditEvent({
+      actor,
+      contractId: described.contractId,
+      function: described.functionName,
+      args: described.args,
+      txHash: txHashValue ?? null,
+      result,
+      error: error ? { code: error.code, message: error.message } : null,
+    });
+  };
+
+  try {
+    const sendStart = Date.now();
+    const sendResult = await server.sendTransaction(preparedTx);
+    logRpcCall('sendTransaction', Date.now() - sendStart);
+    if (sendResult.status === 'ERROR') {
+      let isBadSeq = false;
+      if (sendResult.errorResultXdr) {
+        try {
+          const txResult = xdr.TransactionResult.fromXDR(sendResult.errorResultXdr, 'base64');
+          const code = txResult.result().switch().name;
+          if (code === 'txBadSeq' || code === 'txBAD_SEQ') {
+            isBadSeq = true;
+          }
+        } catch (e) {
+          // Ignore parse errors here
         }
-      } catch (e) {
-        // Ignore parse errors here
+      }
+      if (!isBadSeq && (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))) {
+        isBadSeq = true;
+      }
+
+      const errHash = sendResult.hash ?? null;
+
+      if (isBadSeq && retryCount < 3) {
+        emitAudit('bad_seq_retry', errHash, null);
+        logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
+        return await _simulateAndSubmit(operation, signer, retryCount + 1);
+      }
+      const sendErr = new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, sendResult.hash, sendResult.errorResult || sendResult);
+      emitAudit('send_failed', errHash, sendErr);
+      throw sendErr;
+    }
+
+    const txHash = sendResult.hash;
+    trackPendingTransaction(txHash, operation);
+
+    logger.debug({ hash: txHash }, 'Submitted Soroban transaction');
+
+    let getResult;
+    for (let i = 0; i < 20; i++) {
+      const txStart = Date.now();
+      getResult = await server.getTransaction(sendResult.hash);
+      logRpcCall('getTransaction', Date.now() - txStart);
+      if (getResult.status !== 'NOT_FOUND') break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    if (!getResult || getResult.status === 'NOT_FOUND') {
+      // Leave in pendingTransactions — the tx may still confirm on-chain
+      const timeoutErr = new TransactionTimeoutError(`Transaction not confirmed after polling: ${sendResult.hash}`, sendResult.hash);
+      emitAudit('timeout', txHash, timeoutErr);
+      throw timeoutErr;
+    }
+
+    // Transaction confirmed (SUCCESS or FAILED) — stop tracking
+    removePendingTransaction(txHash);
+
+    if (getResult.status === 'FAILED') {
+      const failedErr = new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+      emitAudit('failed_onchain', txHash, failedErr);
+      throw failedErr;
+    }
+
+    if (getResult.returnValue) {
+      try {
+        getResult.nativeReturnValue = scValToNative(getResult.returnValue);
+      } catch (err) {
+        const parseErr = new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+        emitAudit('return_value_parse_failed', txHash, parseErr);
+        throw parseErr;
       }
     }
-    if (!isBadSeq && (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))) {
-      isBadSeq = true;
+
+    // Optimistic increment on success
+    currentSeqNum += 1n;
+
+    emitAudit('success', txHash, null);
+    return getResult;
+  } catch (err) {
+    // Only reached for exit points above that threw without emitting
+    // (e.g. server.sendTransaction/getTransaction rejecting outright) —
+    // every expected failure mode already emitted before throwing.
+    if (!auditEmitted) {
+      emitAudit('error', null, err);
     }
-
-    if (isBadSeq && retryCount < 3) {
-      logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
-      return _simulateAndSubmit(operation, signer, retryCount + 1);
-    }
-    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, sendResult.hash, sendResult.errorResult || sendResult);
+    throw err;
   }
-
-  const txHash = sendResult.hash;
-  trackPendingTransaction(txHash, operation);
-
-  logger.debug({ hash: txHash }, 'Submitted Soroban transaction');
-
-  let getResult;
-  for (let i = 0; i < 20; i++) {
-    const txStart = Date.now();
-    getResult = await server.getTransaction(sendResult.hash);
-    logRpcCall('getTransaction', Date.now() - txStart);
-    if (getResult.status !== 'NOT_FOUND') break;
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-
-  if (!getResult || getResult.status === 'NOT_FOUND') {
-    // Leave in pendingTransactions — the tx may still confirm on-chain
-    throw new TransactionTimeoutError(`Transaction not confirmed after polling: ${sendResult.hash}`, sendResult.hash);
-  }
-
-  // Transaction confirmed (SUCCESS or FAILED) — stop tracking
-  removePendingTransaction(txHash);
-
-  if (getResult.status === 'FAILED') {
-    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
-  }
-
-  if (getResult.returnValue) {
-    try {
-      getResult.nativeReturnValue = scValToNative(getResult.returnValue);
-    } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
-    }
-  }
-
-  // Optimistic increment on success
-  currentSeqNum += 1n;
-
-  return getResult;
 }
 
 export function simulateAndSubmit(operation, signer) {
@@ -1244,53 +1360,92 @@ async function submitSignedTx(signedXdr) {
   const keypair = getServerKeypair();
 
   const tx = new Transaction(signedXdr, passphrase);
+  const described = describeOperation(tx.operations[0]);
+  // The server only co-signs as fee source here — attribute the audit record
+  // to whichever address the contract's require_auth actually checks (the
+  // wallet that produced the original signature), falling back to the tx's
+  // source account if that can't be decoded.
+  const actor = (described.actorArgName && described.args[described.actorArgName]) || tx.source;
+
   tx.sign(keypair);
 
-  const sendStart = Date.now();
-  const sendResult = await server.sendTransaction(tx);
-  logRpcCall('sendTransaction', Date.now() - sendStart);
-  if (sendResult.status === 'ERROR') {
-    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
-  }
-
-  const signedTxHash = sendResult.hash;
-  trackPendingTransaction(signedTxHash, 'signed-transaction');
-
-  logger.debug({ hash: signedTxHash }, 'Submitted signed Soroban transaction');
-
-  let getResult;
-  for (let i = 0; i < 20; i++) {
-    const txStart = Date.now();
-    getResult = await server.getTransaction(sendResult.hash);
-    logRpcCall('getTransaction', Date.now() - txStart);
-    if (getResult.status !== 'NOT_FOUND') break;
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-
-  if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
-  }
-
-  removePendingTransaction(signedTxHash);
-
-  if (getResult.status === 'FAILED') {
-    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
-  }
-
-  let nativeReturnValue;
-  if (getResult.returnValue) {
-    try {
-      nativeReturnValue = scValToNative(getResult.returnValue);
-    } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
-    }
-  }
-
-  return {
-    hash: sendResult.hash,
-    returnValue: getResult.returnValue ?? null,
-    nativeReturnValue,
+  // A real (co-)signature now exists — every exit path below must emit
+  // exactly one audit record (see the "Audit Logging" section in the root README).
+  let auditEmitted = false;
+  const emitAudit = (result, txHashValue, error) => {
+    auditEmitted = true;
+    recordAuditEvent({
+      actor,
+      contractId: described.contractId,
+      function: described.functionName,
+      args: described.args,
+      txHash: txHashValue ?? null,
+      result,
+      error: error ? { code: error.code, message: error.message } : null,
+    });
   };
+
+  try {
+    const sendStart = Date.now();
+    const sendResult = await server.sendTransaction(tx);
+    logRpcCall('sendTransaction', Date.now() - sendStart);
+    if (sendResult.status === 'ERROR') {
+      const sendErr = new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
+      emitAudit('send_failed', sendResult.hash ?? null, sendErr);
+      throw sendErr;
+    }
+
+    const signedTxHash = sendResult.hash;
+    trackPendingTransaction(signedTxHash, 'signed-transaction');
+
+    logger.debug({ hash: signedTxHash }, 'Submitted signed Soroban transaction');
+
+    let getResult;
+    for (let i = 0; i < 20; i++) {
+      const txStart = Date.now();
+      getResult = await server.getTransaction(sendResult.hash);
+      logRpcCall('getTransaction', Date.now() - txStart);
+      if (getResult.status !== 'NOT_FOUND') break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    if (!getResult || getResult.status === 'NOT_FOUND') {
+      const timeoutErr = new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
+      emitAudit('timeout', signedTxHash, timeoutErr);
+      throw timeoutErr;
+    }
+
+    removePendingTransaction(signedTxHash);
+
+    if (getResult.status === 'FAILED') {
+      const failedErr = new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+      emitAudit('failed_onchain', signedTxHash, failedErr);
+      throw failedErr;
+    }
+
+    let nativeReturnValue;
+    if (getResult.returnValue) {
+      try {
+        nativeReturnValue = scValToNative(getResult.returnValue);
+      } catch (err) {
+        const parseErr = new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+        emitAudit('return_value_parse_failed', signedTxHash, parseErr);
+        throw parseErr;
+      }
+    }
+
+    emitAudit('success', signedTxHash, null);
+    return {
+      hash: sendResult.hash,
+      returnValue: getResult.returnValue ?? null,
+      nativeReturnValue,
+    };
+  } catch (err) {
+    if (!auditEmitted) {
+      emitAudit('error', null, err);
+    }
+    throw err;
+  }
 }
 
 /**

@@ -15,6 +15,7 @@ import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
 import agentsRouter from "./routes/agents.js";
+import { requestIdMiddleware } from "./middleware/requestId.js";
 
 if (process.argv.includes("--print-config")) {
   console.log(
@@ -52,6 +53,11 @@ const app = express();
 // (via X-Forwarded-For) behind a reverse proxy — required for correct IP-based
 // rate limiting. Defaults to false (no proxy) to avoid X-Forwarded-For spoofing.
 app.set("trust proxy", config.trustProxy);
+
+// Assigns/propagates a request id (X-Request-Id) so on-chain writes recorded
+// in the signed-transaction audit trail can be correlated back to the
+// inbound request that triggered them.
+app.use(requestIdMiddleware);
 
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: config.jsonBodyLimit }));

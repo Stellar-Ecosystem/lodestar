@@ -90,6 +90,11 @@ const config = Object.freeze({
 
   jsonBodyLimit: process.env.JSON_BODY_LIMIT ?? '100kb',
 
+  // Dedicated, structured (JSON-lines) audit trail of every transaction the
+  // server signs — kept separate from application logs so it can have its own
+  // retention policy. See the "Audit Logging" section in the root README.
+  auditLogPath: process.env.AUDIT_LOG_PATH ?? 'audit.log',
+
   // Trust proxy setting for Express — required so rate limiting reads the real
   // client IP (X-Forwarded-For) when running behind a reverse proxy (e.g. Render).
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
