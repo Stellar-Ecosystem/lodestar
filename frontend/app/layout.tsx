@@ -17,7 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Navbar />
           <main>{children}</main>
           <footer className="border-t border-border mt-24 py-8 text-center text-sm text-secondary">
-            Built on Stellar · Powered by x402 · Lodestar 2026
+            Built on Stellar · Powered by x402 · Lodestar {new Date().getFullYear()}
           </footer>
         </WalletProvider>
       </body>
