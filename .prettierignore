@@ -1,0 +1,9 @@
+node_modules
+.next
+out
+dist
+build
+target
+Cargo.lock
+package-lock.json
+.agents

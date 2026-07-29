@@ -39,7 +39,10 @@ All of the above run automatically on every PR and push to `main` via GitHub Act
 ## Code style
 
 - Rust: run `cargo fmt` before committing; `cargo fmt --all --check` runs in CI under the `contract-build` job
-- JS/TS: follow the existing ESLint and TypeScript configuration in each package (JS lint CI steps are a planned follow-up)
+- JS/TS: we use ESLint and Prettier. To check code style or apply changes:
+  - Check style: `npm run lint` and `npm run format` from the repo root
+  - Auto-format code: `npm run format:write`
+  - Auto-fix linting issues: `npm run lint:fix`
 
 ## Submitting a pull request
 
