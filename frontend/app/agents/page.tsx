@@ -87,12 +87,11 @@ export default function AgentsPage() {
         <div>
           <div className="flex items-center gap-3 mb-2">
             <h1 className="text-2xl font-semibold">Agent Registry</h1>
-            {!loading && (
-              <span className="badge bg-primary text-white mono">{total}</span>
-            )}
+            {!loading && <span className="badge bg-primary text-white mono">{total}</span>}
           </div>
           <p className="text-secondary text-sm leading-relaxed max-w-xl">
-            On-chain trust scores for x402 AI agents. Every payment recorded. Every reputation earned.
+            On-chain trust scores for x402 AI agents. Every payment recorded. Every reputation
+            earned.
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
@@ -103,7 +102,9 @@ export default function AgentsPage() {
             className="border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
           >
             {SORTS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
             ))}
           </select>
           <select
@@ -113,7 +114,9 @@ export default function AgentsPage() {
             className="border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
           >
             {PAGE_SIZE_OPTIONS.map((n) => (
-              <option key={n} value={n}>{n} per page</option>
+              <option key={n} value={n}>
+                {n} per page
+              </option>
             ))}
           </select>
           <Link href="/agents/register" className="btn-primary px-5 py-2.5 text-sm">
@@ -131,14 +134,20 @@ export default function AgentsPage() {
           <StatBox
             label="Top Agent"
             value={stats.topAgent ? stats.topAgent.name : '—'}
-            sub={stats.topAgent ? <ScoreBadge score={stats.topAgent.score} showScore size="sm" /> : undefined}
+            sub={
+              stats.topAgent ? (
+                <ScoreBadge score={stats.topAgent.score} showScore size="sm" />
+              ) : undefined
+            }
           />
         </div>
       )}
 
       {/* Score tier legend */}
       <div className="card p-4 mb-8 flex flex-wrap gap-3 items-center">
-        <span className="text-xs text-secondary font-medium uppercase tracking-widest mr-2">Score tiers</span>
+        <span className="text-xs text-secondary font-medium uppercase tracking-widest mr-2">
+          Score tiers
+        </span>
         {([100, 450, 700, 950, 1000] as const).map((score) => (
           <ScoreBadge key={score} score={score} showScore={false} />
         ))}
@@ -161,11 +170,15 @@ export default function AgentsPage() {
           <p className="text-error text-sm mb-2">{error}</p>
           {error.includes('AGENTS_NOT_CONFIGURED') || error.includes('not yet deployed') ? (
             <p className="text-secondary text-xs mt-1">
-              Deploy the agents contract and set <span className="mono">AGENTS_CONTRACT_ID</span> in your .env
+              Deploy the agents contract and set <span className="mono">AGENTS_CONTRACT_ID</span> in
+              your .env
             </p>
           ) : (
             <button
-              onClick={() => { mutate(); mutateStats(); }}
+              onClick={() => {
+                mutate();
+                mutateStats();
+              }}
               aria-label="Retry"
               className="mt-3 px-4 py-2 text-sm rounded-lg border border-border bg-background hover:bg-border/40 transition-colors"
             >
@@ -226,15 +239,7 @@ export default function AgentsPage() {
   );
 }
 
-function StatBox({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string;
-  sub?: React.ReactNode;
-}) {
+function StatBox({ label, value, sub }: { label: string; value: string; sub?: React.ReactNode }) {
   return (
     <div className="card p-4 text-center">
       <div className="text-lg font-semibold mono truncate">{value}</div>

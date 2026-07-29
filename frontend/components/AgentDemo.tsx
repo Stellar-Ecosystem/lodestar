@@ -50,7 +50,8 @@ export default function AgentDemo() {
     setSteps((prev) => {
       const next = [...prev];
       const last = next[next.length - 1];
-      if (last) next[next.length - 1] = { ...last, status: 'complete', detail: detail ?? last.detail };
+      if (last)
+        next[next.length - 1] = { ...last, status: 'complete', detail: detail ?? last.detail };
       return next;
     });
   }
@@ -65,7 +66,15 @@ export default function AgentDemo() {
       // Step 1 — query registry
       pushStep('Querying Lodestar registry…', 'active');
       const servicesRes = await fetch(`${API_URL}/api/services?category=${need}`);
-      const servicesData = (await servicesRes.json()) as { services: Array<{ id: number; name: string; endpoint: string; price_usdc: string; reputation: number }> };
+      const servicesData = (await servicesRes.json()) as {
+        services: Array<{
+          id: number;
+          name: string;
+          endpoint: string;
+          price_usdc: string;
+          reputation: number;
+        }>;
+      };
       const services = servicesData.services;
       completeLastStep();
 
@@ -77,7 +86,10 @@ export default function AgentDemo() {
       }
 
       // Step 2 — found services
-      pushStep(`Found ${services.length} matching service${services.length > 1 ? 's' : ''}`, 'complete');
+      pushStep(
+        `Found ${services.length} matching service${services.length > 1 ? 's' : ''}`,
+        'complete'
+      );
 
       // Step 3 — select best
       const best = [...services].sort((a, b) => b.reputation - a.reputation)[0];
@@ -174,9 +186,7 @@ export default function AgentDemo() {
               <StepIndicator status={step.status} />
               <div>
                 <p className="text-sm">{step.label}</p>
-                {step.detail && (
-                  <p className="text-xs text-secondary mono mt-0.5">{step.detail}</p>
-                )}
+                {step.detail && <p className="text-xs text-secondary mono mt-0.5">{step.detail}</p>}
               </div>
             </div>
           ))}
@@ -203,21 +213,37 @@ export default function AgentDemo() {
             {JSON.stringify(result.data, null, 2)}
           </pre>
           <a
-            href={result.txHash ? `${EXPLORER_URL}/tx/${result.txHash}` : `${EXPLORER_URL}/account/GAY42LBQWN7LSFV3F6AFNEET2NVLY2JJ7KAEN4E5SNNT4RIEJLAQKGU3`}
+            href={
+              result.txHash
+                ? `${EXPLORER_URL}/tx/${result.txHash}`
+                : `${EXPLORER_URL}/account/GAY42LBQWN7LSFV3F6AFNEET2NVLY2JJ7KAEN4E5SNNT4RIEJLAQKGU3`
+            }
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-3 py-2 rounded-lg border border-accent/30 bg-accent/5 hover:bg-accent/10 transition-colors"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent shrink-0">
-              <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
-              <polyline points="15 3 21 3 21 9"/>
-              <line x1="10" y1="14" x2="21" y2="3"/>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className="text-accent shrink-0"
+            >
+              <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
             </svg>
             <span className="text-xs text-accent font-medium">
-              {result.txHash ? 'View transaction on Stellar Explorer' : 'View payment account on Stellar Explorer'}
+              {result.txHash
+                ? 'View transaction on Stellar Explorer'
+                : 'View payment account on Stellar Explorer'}
             </span>
             {result.txHash && (
-              <span className="mono text-xs text-secondary ml-auto">{result.txHash.slice(0, 8)}…</span>
+              <span className="mono text-xs text-secondary ml-auto">
+                {result.txHash.slice(0, 8)}…
+              </span>
             )}
           </a>
         </div>

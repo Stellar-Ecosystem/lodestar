@@ -38,14 +38,8 @@ export default function StatsBar() {
 
   return (
     <div className="flex flex-wrap justify-center gap-8 sm:gap-16 py-8 border-t border-b border-border">
-      <Stat
-        label="Total Services"
-        value={stats ? String(stats.totalServices) : '—'}
-      />
-      <Stat
-        label="Categories"
-        value={stats ? String(stats.categories.length) : '—'}
-      />
+      <Stat label="Total Services" value={stats ? String(stats.totalServices) : '—'} />
+      <Stat label="Categories" value={stats ? String(stats.categories.length) : '—'} />
       <Stat
         label="Latest Registration"
         value={stats?.latestService ? stats.latestService.name : '—'}

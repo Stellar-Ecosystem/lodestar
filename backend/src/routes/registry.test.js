@@ -15,7 +15,6 @@ const mockValidatePreparedRegistrySubmission = vi.fn();
 const mockSubmitSignedRegistryTx = vi.fn();
 const mockGetCurrentLedgerSequence = vi.fn();
 
-
 const SERVICE_MAX_TTL = 3_110_400;
 const SERVICE_TTL_WARNING_LEDGERS = 311_040;
 
@@ -183,7 +182,9 @@ describe('GET /api/services', () => {
 
   it('should return 400 when contract call throws ContractError SIMULATION_FAILED', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
-    mockListServices.mockRejectedValueOnce(new ContractError('Simulation failed', 'SIMULATION_FAILED'));
+    mockListServices.mockRejectedValueOnce(
+      new ContractError('Simulation failed', 'SIMULATION_FAILED')
+    );
 
     const res = await request(app).get('/api/services');
 
@@ -193,7 +194,9 @@ describe('GET /api/services', () => {
 
   it('should return 504 when contract call throws ContractError TRANSACTION_TIMEOUT', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
-    mockListServices.mockRejectedValueOnce(new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT'));
+    mockListServices.mockRejectedValueOnce(
+      new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT')
+    );
 
     const res = await request(app).get('/api/services');
 
@@ -277,16 +280,14 @@ describe('POST /api/registry/prepare-register', () => {
       submitToken: 'submit-token-1',
     });
 
-    const res = await request(app)
-      .post('/api/registry/prepare-register')
-      .send({
-        name: 'Weather Oracle',
-        description: 'Real-time weather data for autonomous agents.',
-        endpoint: 'https://weather.example.com',
-        priceUsdc: '0.001',
-        category: 'weather',
-        providerAddress: VALID_PROVIDER,
-      });
+    const res = await request(app).post('/api/registry/prepare-register').send({
+      name: 'Weather Oracle',
+      description: 'Real-time weather data for autonomous agents.',
+      endpoint: 'https://weather.example.com',
+      priceUsdc: '0.001',
+      category: 'weather',
+      providerAddress: VALID_PROVIDER,
+    });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ xdr: 'AAAA_TEST_XDR', submitToken: 'submit-token-1' });
@@ -368,9 +369,7 @@ describe('POST /api/registry/prepare-register', () => {
       },
     ],
   ])('rejects invalid registration %s before building XDR', async (_field, body) => {
-    const res = await request(app)
-      .post('/api/registry/prepare-register')
-      .send(body);
+    const res = await request(app).post('/api/registry/prepare-register').send(body);
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
@@ -380,19 +379,20 @@ describe('POST /api/registry/prepare-register', () => {
   it('surfaces duplicate-service conflicts as 409', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
-      new ContractError('Active service with same provider and endpoint already exists', 'DUPLICATE_SERVICE'),
+      new ContractError(
+        'Active service with same provider and endpoint already exists',
+        'DUPLICATE_SERVICE'
+      )
     );
 
-    const res = await request(app)
-      .post('/api/registry/prepare-register')
-      .send({
-        name: 'Weather Oracle',
-        description: 'Real-time weather data for autonomous agents.',
-        endpoint: 'https://weather.example.com',
-        priceUsdc: '0.001',
-        category: 'weather',
-        providerAddress: VALID_PROVIDER,
-      });
+    const res = await request(app).post('/api/registry/prepare-register').send({
+      name: 'Weather Oracle',
+      description: 'Real-time weather data for autonomous agents.',
+      endpoint: 'https://weather.example.com',
+      priceUsdc: '0.001',
+      category: 'weather',
+      providerAddress: VALID_PROVIDER,
+    });
 
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('DUPLICATE_SERVICE');
@@ -418,7 +418,9 @@ describe('POST /api/registry/prepare-deactivate', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ xdr: 'AAAA_DEACTIVATE_XDR', submitToken: 'submit-token-2' });
-    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith('deactivate', VALID_PROVIDER, { id: 7 });
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith('deactivate', VALID_PROVIDER, {
+      id: 7,
+    });
   });
 
   it('rejects invalid providerAddress in deactivation payloads', async () => {
@@ -435,9 +437,7 @@ describe('POST /api/registry/prepare-deactivate', () => {
     { providerAddress: VALID_PROVIDER, id: '7abc' },
     { providerAddress: VALID_PROVIDER, id: 7.9 },
   ])('rejects invalid deactivation id %o', async (body) => {
-    const res = await request(app)
-      .post('/api/registry/prepare-deactivate')
-      .send(body);
+    const res = await request(app).post('/api/registry/prepare-deactivate').send(body);
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
@@ -461,7 +461,10 @@ describe('POST /api/registry/submit-signed-tx', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, hash: 'abc123', id: 12 });
-    expect(mockValidatePreparedRegistrySubmission).toHaveBeenCalledWith('submit-token-1', 'AAAA_SIGNED_XDR');
+    expect(mockValidatePreparedRegistrySubmission).toHaveBeenCalledWith(
+      'submit-token-1',
+      'AAAA_SIGNED_XDR'
+    );
   });
 
   it('requires signedXdr in the request body', async () => {
@@ -509,9 +512,7 @@ describe('POST /api/reputation/:id — request body size limit', () => {
   it('should return 413 when JSON body exceeds size limit', async () => {
     const oversized = { positive: 'x'.repeat(200) };
 
-    const res = await request(app)
-      .post('/api/reputation/1')
-      .send(oversized);
+    const res = await request(app).post('/api/reputation/1').send(oversized);
 
     expect(res.status).toBe(413);
     expect(res.body).toEqual({
@@ -521,9 +522,7 @@ describe('POST /api/reputation/:id — request body size limit', () => {
   });
 
   it('should accept payload within size limit (not 413)', async () => {
-    const res = await request(app)
-      .post('/api/reputation/1')
-      .send({ positive: true });
+    const res = await request(app).post('/api/reputation/1').send({ positive: true });
 
     expect(res.status).not.toBe(413);
   });
@@ -538,9 +537,7 @@ describe('POST /api/reputation/:id — authorization', () => {
   });
 
   it('should return 400 when `positive` is missing', async () => {
-    const res = await request(app)
-      .post('/api/reputation/1')
-      .send({ agent: VALID_AGENT });
+    const res = await request(app).post('/api/reputation/1').send({ agent: VALID_AGENT });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
@@ -548,9 +545,7 @@ describe('POST /api/reputation/:id — authorization', () => {
   });
 
   it('should return 400 when `agent` is missing', async () => {
-    const res = await request(app)
-      .post('/api/reputation/1')
-      .send({ positive: true });
+    const res = await request(app).post('/api/reputation/1').send({ positive: true });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
@@ -596,7 +591,7 @@ describe('POST /api/reputation/:id — authorization', () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockIsAllowedReputationAgent.mockReturnValue(true);
     mockUpdateReputation.mockRejectedValueOnce(
-      new ContractError('Simulation failed: cooldown', 'SIMULATION_FAILED'),
+      new ContractError('Simulation failed: cooldown', 'SIMULATION_FAILED')
     );
 
     const res = await request(app)
@@ -675,7 +670,7 @@ describe('POST /api/services/:id/deactivate', () => {
   it('returns 404 when service is not found', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockDeactivateServiceOnChain.mockRejectedValueOnce(
-      new ContractError('Service 999 not found', 'SERVICE_NOT_FOUND'),
+      new ContractError('Service 999 not found', 'SERVICE_NOT_FOUND')
     );
 
     const res = await request(app)
@@ -689,7 +684,7 @@ describe('POST /api/services/:id/deactivate', () => {
   it('returns 502 when chain read fails', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockDeactivateServiceOnChain.mockRejectedValueOnce(
-      new ContractError('Failed to read service 1: RPC timeout', 'SERVICE_READ_FAILED'),
+      new ContractError('Failed to read service 1: RPC timeout', 'SERVICE_READ_FAILED')
     );
 
     const res = await request(app)
@@ -703,7 +698,10 @@ describe('POST /api/services/:id/deactivate', () => {
   it('returns 403 when provider does not match', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockDeactivateServiceOnChain.mockRejectedValueOnce(
-      new ContractError('Only the provider that registered this service can deactivate it', 'PROVIDER_MISMATCH'),
+      new ContractError(
+        'Only the provider that registered this service can deactivate it',
+        'PROVIDER_MISMATCH'
+      )
     );
 
     const res = await request(app)
@@ -717,7 +715,7 @@ describe('POST /api/services/:id/deactivate', () => {
   it('returns 409 when service is already inactive', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockDeactivateServiceOnChain.mockRejectedValueOnce(
-      new ContractError('Service 7 is already deactivated', 'ALREADY_INACTIVE'),
+      new ContractError('Service 7 is already deactivated', 'ALREADY_INACTIVE')
     );
 
     const res = await request(app)
@@ -731,7 +729,7 @@ describe('POST /api/services/:id/deactivate', () => {
   it('returns 400 when on-chain deactivation fails with ContractError', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockDeactivateServiceOnChain.mockRejectedValueOnce(
-      new ContractError('Simulation failed: auth error', 'SIMULATION_FAILED'),
+      new ContractError('Simulation failed: auth error', 'SIMULATION_FAILED')
     );
 
     const res = await request(app)
@@ -745,7 +743,7 @@ describe('POST /api/services/:id/deactivate', () => {
   it('returns 504 when transaction times out', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
     mockDeactivateServiceOnChain.mockRejectedValueOnce(
-      new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT'),
+      new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT')
     );
 
     const res = await request(app)
@@ -827,12 +825,11 @@ describe('GET /api/services/:id/history', () => {
 
 describe('GET /api/services — ttl_warning annotation', () => {
   const REGISTERED_AT = 1000;
-  const EXPIRY = REGISTERED_AT + SERVICE_MAX_TTL;             // 3_111_400
-  const WARN_ONSET = EXPIRY - SERVICE_TTL_WARNING_LEDGERS;    // 2_800_360
+  const EXPIRY = REGISTERED_AT + SERVICE_MAX_TTL; // 3_111_400
+  const WARN_ONSET = EXPIRY - SERVICE_TTL_WARNING_LEDGERS; // 2_800_360
 
   beforeEach(() => {
     mockGetCurrentLedgerSequence.mockReset();
-
   });
 
   it('sets ttl_warning:false when ledger is well before the warning onset', async () => {
@@ -897,7 +894,6 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
 
   beforeEach(() => {
     mockGetCurrentLedgerSequence.mockReset();
-
   });
 
   it('includes ttl_warning:false for a fresh entry', async () => {

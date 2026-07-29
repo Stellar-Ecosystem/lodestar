@@ -9,14 +9,7 @@ jest.mock('next/navigation', () => ({
 }));
 
 jest.mock('next/link', () => {
-  const MockLink = ({
-    children,
-    href,
-    ...rest
-  }: {
-    children: React.ReactNode;
-    href: string;
-  }) => (
+  const MockLink = ({ children, href, ...rest }: { children: React.ReactNode; href: string }) => (
     <a href={href} {...rest}>
       {children}
     </a>
@@ -75,9 +68,7 @@ describe('Navbar active-link highlighting', () => {
     expect(home).toHaveAttribute('aria-current', 'page');
 
     for (const label of ['Registry', 'Agents', 'Register', 'Demo']) {
-      expect(
-        screen.getByRole('link', { name: label })
-      ).not.toHaveAttribute('aria-current');
+      expect(screen.getByRole('link', { name: label })).not.toHaveAttribute('aria-current');
     }
   });
 });

@@ -2,10 +2,14 @@ import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import RegistryPage from '../app/registry/page';
 
-jest.mock('swr', () => ({
-  __esModule: true,
-  default: jest.fn(),
-}), { virtual: true });
+jest.mock(
+  'swr',
+  () => ({
+    __esModule: true,
+    default: jest.fn(),
+  }),
+  { virtual: true }
+);
 
 import useSWR from 'swr';
 import { fetchServices } from '@/lib/contract';
@@ -25,7 +29,7 @@ function makeServices(count: number) {
     provider: `G${'A'.repeat(55)}`,
     reputation: 100,
     active: true,
-
+    registered_at: 100,
   }));
 }
 

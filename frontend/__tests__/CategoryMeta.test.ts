@@ -1,4 +1,9 @@
-import { CATEGORY_FILTERS, CATEGORY_ICONS, CATEGORY_META, getCategoryMeta } from '../lib/categoryMeta';
+import {
+  CATEGORY_FILTERS,
+  CATEGORY_ICONS,
+  CATEGORY_META,
+  getCategoryMeta,
+} from '../lib/categoryMeta';
 
 describe('category metadata', () => {
   it('exposes icon and label metadata for every service category', () => {

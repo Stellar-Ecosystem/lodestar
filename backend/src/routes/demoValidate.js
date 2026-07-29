@@ -1,5 +1,5 @@
 const port = Number(process.env.PORT ?? 3001);
-const baseUrl = `http://127.0.0.1:${port}`;
+const _baseUrl = `http://127.0.0.1:${port}`;
 import logger from '../lib/logger.js';
 
 /**

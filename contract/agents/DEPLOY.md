@@ -50,6 +50,7 @@ npm run seed-agents
 ```
 
 This will register three demo agents with varying scores:
+
 - **NewAgent**: ~110 score
 - **EstablishedAgent**: ~600 score
 - **TrustedAgent**: ~1000 score (max)

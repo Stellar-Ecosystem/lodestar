@@ -95,11 +95,9 @@ export default function WalletPickerModal({ onClose }: Props) {
                   Learn More
                 </a>
               )}
-              {(errorType === WalletErrorType.USER_REJECTED || errorType === WalletErrorType.CONNECTION_FAILED) && (
-                <button
-                  onClick={() => setError('')}
-                  className="btn-primary text-xs py-1.5 px-3"
-                >
+              {(errorType === WalletErrorType.USER_REJECTED ||
+                errorType === WalletErrorType.CONNECTION_FAILED) && (
+                <button onClick={() => setError('')} className="btn-primary text-xs py-1.5 px-3">
                   Retry Connection
                 </button>
               )}

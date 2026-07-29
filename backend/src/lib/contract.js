@@ -26,7 +26,7 @@ import {
   TransactionFailedError,
   TransactionTimeoutError,
 } from './contractErrors.js';
-
+import { recordReputationChange } from './reputationHistory.js';
 
 const TIMEOUT = 30;
 const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -134,7 +134,7 @@ export function dumpPendingTransactions() {
     writeFileSync(PENDING_TRANSACTIONS_FILE, JSON.stringify(entries, null, 2), 'utf-8');
     logger.warn(
       { count: entries.length, file: PENDING_TRANSACTIONS_FILE },
-      'Dumped pending transactions to file',
+      'Dumped pending transactions to file'
     );
   } catch (err) {
     logger.error({ err }, 'Failed to dump pending transactions');
@@ -161,7 +161,7 @@ export async function resumePendingTransactions() {
 
   logger.warn(
     { count: entries.length, file: PENDING_TRANSACTIONS_FILE },
-    'Resuming polling for unconfirmed transactions from previous run',
+    'Resuming polling for unconfirmed transactions from previous run'
   );
 
   const server = getStellarServer();
@@ -169,15 +169,27 @@ export async function resumePendingTransactions() {
     try {
       const getResult = await server.getTransaction(entry.hash);
       if (getResult.status === 'SUCCESS') {
-        logger.info({ hash: entry.hash, operation: entry.operation }, 'Pending transaction from previous run confirmed SUCCESS');
+        logger.info(
+          { hash: entry.hash, operation: entry.operation },
+          'Pending transaction from previous run confirmed SUCCESS'
+        );
       } else if (getResult.status === 'FAILED') {
-        logger.warn({ hash: entry.hash, operation: entry.operation }, 'Pending transaction from previous run FAILED on-chain');
+        logger.warn(
+          { hash: entry.hash, operation: entry.operation },
+          'Pending transaction from previous run FAILED on-chain'
+        );
       } else {
         trackPendingTransaction(entry.hash, { method: entry.operation });
-        logger.warn({ hash: entry.hash, operation: entry.operation }, 'Pending transaction from previous run still unconfirmed, re-added to registry');
+        logger.warn(
+          { hash: entry.hash, operation: entry.operation },
+          'Pending transaction from previous run still unconfirmed, re-added to registry'
+        );
       }
     } catch (err) {
-      logger.error({ err, hash: entry.hash, operation: entry.operation }, 'Failed to check pending transaction from previous run');
+      logger.error(
+        { err, hash: entry.hash, operation: entry.operation },
+        'Failed to check pending transaction from previous run'
+      );
       trackPendingTransaction(entry.hash, { method: entry.operation });
     }
   }
@@ -193,7 +205,7 @@ export async function resumePendingTransactions() {
   if (pendingTransactions.size > 0) {
     logger.warn(
       { count: pendingTransactions.size },
-      'Pending transactions remain after resume — will be re-dumped on next shutdown',
+      'Pending transactions remain after resume — will be re-dumped on next shutdown'
     );
   }
 }
@@ -261,7 +273,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const passphrase = getNetworkPassphrase();
 
   const now = Date.now();
-  if (retryCount > 0 || currentSeqNum === null || (now - lastSeqSyncTime > 5000)) {
+  if (retryCount > 0 || currentSeqNum === null || now - lastSeqSyncTime > 5000) {
     const acctStart = Date.now();
     const account = await server.getAccount(keypair.publicKey());
     logRpcCall('getAccount', Date.now() - acctStart);
@@ -306,7 +318,11 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
         // Ignore parse errors here
       }
     }
-    if (!isBadSeq && (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))) {
+    if (
+      !isBadSeq &&
+      (JSON.stringify(sendResult).includes('txBAD_SEQ') ||
+        JSON.stringify(sendResult).includes('txBadSeq'))
+    ) {
       isBadSeq = true;
     }
 
@@ -314,7 +330,11 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
       logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
       return _simulateAndSubmit(operation, signer, retryCount + 1);
     }
-    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, sendResult.hash, sendResult.errorResult || sendResult);
+    throw new TransactionFailedError(
+      `Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`,
+      sendResult.hash,
+      sendResult.errorResult || sendResult
+    );
   }
 
   const txHash = sendResult.hash;
@@ -333,21 +353,32 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
     // Leave in pendingTransactions — the tx may still confirm on-chain
-    throw new TransactionTimeoutError(`Transaction not confirmed after polling: ${sendResult.hash}`, sendResult.hash);
+    throw new TransactionTimeoutError(
+      `Transaction not confirmed after polling: ${sendResult.hash}`,
+      sendResult.hash
+    );
   }
 
   // Transaction confirmed (SUCCESS or FAILED) — stop tracking
   removePendingTransaction(txHash);
 
   if (getResult.status === 'FAILED') {
-    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+    throw new TransactionFailedError(
+      `Transaction failed on-chain: ${sendResult.hash}`,
+      sendResult.hash,
+      getResult
+    );
   }
 
   if (getResult.returnValue) {
     try {
       getResult.nativeReturnValue = scValToNative(getResult.returnValue);
     } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+      throw new ReturnValueParseError(
+        `Transaction succeeded but return value could not be parsed: ${sendResult.hash}`,
+        sendResult.hash,
+        err
+      );
     }
   }
 
@@ -459,20 +490,17 @@ export async function simulateReadBatch(operations) {
   return results;
 }
 
-
 export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
   try {
     const contract = getContract();
 
-    const optionArg = category
-      ? nativeToScVal(category, { type: 'string' })
-      : xdr.ScVal.scvVoid();
+    const optionArg = category ? nativeToScVal(category, { type: 'string' }) : xdr.ScVal.scvVoid();
 
     const callOp = contract.call(
       'list_services_page',
       nativeToScVal(page, { type: 'u32' }),
       nativeToScVal(pageSize, { type: 'u32' }),
-      optionArg,
+      optionArg
     );
     const retval = await simulateRead(callOp);
     if (!retval) return [];
@@ -625,17 +653,13 @@ export async function registerServiceOnChain(
     const provider = providerAddress.toString();
 
     if (await contractHelpers.activeServiceExists(provider, endpoint)) {
-      const err = new Error(
-        'Active service with same provider and endpoint already exists'
-      );
+      const err = new Error('Active service with same provider and endpoint already exists');
       logger.warn({ provider, endpoint }, 'Duplicate active service registration blocked');
       throw err;
     }
 
     if (await contractHelpers.activeServiceExistsByName(provider, name)) {
-      const err = new Error(
-        'Active service with same provider and name already exists'
-      );
+      const err = new Error('Active service with same provider and name already exists');
       logger.warn({ provider, name }, 'Duplicate active service registration blocked');
       throw err;
     }
@@ -687,7 +711,10 @@ export async function deactivateServiceOnChain(id, providerAddress) {
       retval = await simulateRead(readOp);
     } catch (readErr) {
       // simulateRead threw — this is an RPC/simulation failure, not "not found"
-      logger.error({ err: readErr, id }, 'deactivateServiceOnChain: failed to read service from chain');
+      logger.error(
+        { err: readErr, id },
+        'deactivateServiceOnChain: failed to read service from chain'
+      );
       throw new ContractError(
         `Failed to read service ${id}: ${readErr.message ?? 'RPC error'}`,
         'SERVICE_READ_FAILED'
@@ -730,7 +757,10 @@ export async function buildUnsignedRegistryTx(action, providerAddress, params = 
 
   if (action === 'register') {
     if (await contractHelpers.activeServiceExists(providerAddress, params.endpoint)) {
-      logger.warn({ provider: providerAddress, endpoint: params.endpoint }, 'Duplicate active service registration blocked');
+      logger.warn(
+        { provider: providerAddress, endpoint: params.endpoint },
+        'Duplicate active service registration blocked'
+      );
       throw new ContractError(
         'Active service with same provider and endpoint already exists',
         'DUPLICATE_SERVICE'
@@ -775,7 +805,10 @@ export function validatePreparedRegistrySubmission(submitToken, signedXdr) {
 
   const prepared = preparedRegistrySubmissions.get(submitToken);
   if (!prepared) {
-    throw new ContractError('Registry submission token is missing or expired', 'INVALID_SUBMIT_TOKEN');
+    throw new ContractError(
+      'Registry submission token is missing or expired',
+      'INVALID_SUBMIT_TOKEN'
+    );
   }
 
   let tx;
@@ -786,21 +819,24 @@ export function validatePreparedRegistrySubmission(submitToken, signedXdr) {
   }
 
   const [operation] = tx.operations;
-  const expectedFunctionName = prepared.action === 'register'
-    ? 'register_service'
-    : 'deactivate_service';
+  const expectedFunctionName =
+    prepared.action === 'register' ? 'register_service' : 'deactivate_service';
 
   const isRegistryInvocation = Boolean(
     operation &&
     tx.operations.length === 1 &&
     operation.type === 'invokeHostFunction' &&
     operation.func.switch().name === 'hostFunctionTypeInvokeContract' &&
-    StrKey.encodeContract(operation.func.invokeContract().contractAddress().contractId()) === config.contract.id &&
+    StrKey.encodeContract(operation.func.invokeContract().contractAddress().contractId()) ===
+      config.contract.id &&
     operation.func.invokeContract().functionName().toString() === expectedFunctionName
   );
 
   if (!isRegistryInvocation) {
-    throw new ContractError('signedXdr does not match the prepared registry transaction', 'SUBMISSION_MISMATCH');
+    throw new ContractError(
+      'signedXdr does not match the prepared registry transaction',
+      'SUBMISSION_MISMATCH'
+    );
   }
 
   preparedRegistrySubmissions.delete(submitToken);
@@ -869,7 +905,10 @@ export async function updateReputation(id, positive, agentAddress) {
  * to prevent silent precision loss on i128/u64 values.
  */
 function toNumber(value) {
-  if (typeof value === 'bigint' && (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER))) {
+  if (
+    typeof value === 'bigint' &&
+    (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER))
+  ) {
     return value.toString();
   }
   return Number(value);
@@ -960,7 +999,7 @@ export async function getAgent(agentAddress) {
 
 /**
  * Checks if an agent is already registered on-chain.
- * 
+ *
  * @param {string} agentAddress - Stellar address of the agent
  * @returns {Promise<boolean>} True if registered, false otherwise
  * @throws {ContractError|Error} If the read call or simulation fails
@@ -1250,7 +1289,11 @@ async function submitSignedTx(signedXdr) {
   const sendResult = await server.sendTransaction(tx);
   logRpcCall('sendTransaction', Date.now() - sendStart);
   if (sendResult.status === 'ERROR') {
-    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
+    throw new TransactionFailedError(
+      `Transaction failed: ${JSON.stringify(sendResult.errorResult)}`,
+      sendResult.hash,
+      sendResult.errorResult
+    );
   }
 
   const signedTxHash = sendResult.hash;
@@ -1268,13 +1311,20 @@ async function submitSignedTx(signedXdr) {
   }
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
+    throw new TransactionTimeoutError(
+      `Transaction not confirmed: ${sendResult.hash}`,
+      sendResult.hash
+    );
   }
 
   removePendingTransaction(signedTxHash);
 
   if (getResult.status === 'FAILED') {
-    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+    throw new TransactionFailedError(
+      `Transaction failed on-chain: ${sendResult.hash}`,
+      sendResult.hash,
+      getResult
+    );
   }
 
   let nativeReturnValue;
@@ -1282,7 +1332,11 @@ async function submitSignedTx(signedXdr) {
     try {
       nativeReturnValue = scValToNative(getResult.returnValue);
     } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+      throw new ReturnValueParseError(
+        `Transaction succeeded but return value could not be parsed: ${sendResult.hash}`,
+        sendResult.hash,
+        err
+      );
     }
   }
 

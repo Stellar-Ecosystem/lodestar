@@ -3,7 +3,7 @@ jest.mock('@creit-tech/stellar-wallets-kit/sdk', () => ({
     init: jest.fn(),
     setWallet: jest.fn(),
     fetchAddress: jest.fn(),
-  }
+  },
 }));
 jest.mock('@creit-tech/stellar-wallets-kit/modules/freighter', () => ({
   FreighterModule: jest.fn(),
@@ -30,10 +30,17 @@ jest.mock('../lib/wallet', () => {
   return { ...actual, connectWithWallet: jest.fn() };
 });
 
-import { connectWithWallet, disconnectWallet, WalletError, WalletErrorType, FREIGHTER_ID } from '../lib/wallet';
+import {
+  connectWithWallet,
+  disconnectWallet,
+  WalletError,
+  WalletErrorType,
+  FREIGHTER_ID,
+} from '../lib/wallet';
 import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
 
-const realConnectWithWallet = jest.requireActual('../lib/wallet').connectWithWallet as typeof connectWithWallet;
+const realConnectWithWallet = jest.requireActual('../lib/wallet')
+  .connectWithWallet as typeof connectWithWallet;
 
 describe('wallet connection', () => {
   beforeEach(() => {
@@ -49,40 +56,50 @@ describe('wallet connection', () => {
 
   it('throws UNSUPPORTED_BROWSER when window is undefined', async () => {
     (connectWithWallet as jest.Mock).mockRejectedValue(
-      new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'Window is not defined. Are you running on the server?')
+      new WalletError(
+        WalletErrorType.UNSUPPORTED_BROWSER,
+        'Window is not defined. Are you running on the server?'
+      )
     );
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
-      type: WalletErrorType.UNSUPPORTED_BROWSER
+      type: WalletErrorType.UNSUPPORTED_BROWSER,
     });
   });
 
   it('throws UNSUPPORTED_BROWSER on mobile', async () => {
     (connectWithWallet as jest.Mock).mockRejectedValue(
-      new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'This browser does not support Stellar wallet extensions.')
+      new WalletError(
+        WalletErrorType.UNSUPPORTED_BROWSER,
+        'This browser does not support Stellar wallet extensions.'
+      )
     );
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
-      type: WalletErrorType.UNSUPPORTED_BROWSER
+      type: WalletErrorType.UNSUPPORTED_BROWSER,
     });
   });
 
   it('throws WALLET_NOT_FOUND when extension is missing', async () => {
-    (StellarWalletsKit.fetchAddress as jest.Mock).mockRejectedValue(new Error('Freighter is not installed'));
+    (StellarWalletsKit.fetchAddress as jest.Mock).mockRejectedValue(
+      new Error('Freighter is not installed')
+    );
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
-      type: WalletErrorType.WALLET_NOT_FOUND
+      type: WalletErrorType.WALLET_NOT_FOUND,
     });
   });
 
   it('throws USER_REJECTED when user cancels', async () => {
-    (StellarWalletsKit.fetchAddress as jest.Mock).mockRejectedValue(new Error('User rejected the request'));
+    (StellarWalletsKit.fetchAddress as jest.Mock).mockRejectedValue(
+      new Error('User rejected the request')
+    );
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
-      type: WalletErrorType.USER_REJECTED
+      type: WalletErrorType.USER_REJECTED,
     });
   });
 
   it('throws CONNECTION_FAILED for other errors', async () => {
     (StellarWalletsKit.fetchAddress as jest.Mock).mockRejectedValue(new Error('Network error'));
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
-      type: WalletErrorType.CONNECTION_FAILED
+      type: WalletErrorType.CONNECTION_FAILED,
     });
   });
 });

@@ -31,20 +31,17 @@ const EMPTY: FormState = {
 
 function validate(f: FormState): Record<string, string> {
   const errors: Record<string, string> = {};
-  if (f.name.length < 3 || f.name.length > 50)
-    errors.name = 'Name must be 3–50 characters';
+  if (f.name.length < 3 || f.name.length > 50) errors.name = 'Name must be 3–50 characters';
   if (f.description.length < 10 || f.description.length > 200)
     errors.description = 'Description must be 10–200 characters';
-  if (!f.endpoint.startsWith('https://'))
-    errors.endpoint = 'Endpoint must start with https://';
+  if (!f.endpoint.startsWith('https://')) errors.endpoint = 'Endpoint must start with https://';
   const price = parseFloat(f.price_usdc);
-  if (isNaN(price) || price < 0.0001)
-    errors.price_usdc = 'Price must be at least 0.0001 USDC';
+  if (isNaN(price) || price < 0.0001) errors.price_usdc = 'Price must be at least 0.0001 USDC';
   return errors;
 }
 
 export default function RegisterForm({ walletAddress }: Props) {
-  const [form, setForm]     = useState<FormState>(EMPTY);
+  const [form, setForm] = useState<FormState>(EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ txHash: string } | null>(null);
@@ -52,7 +49,11 @@ export default function RegisterForm({ walletAddress }: Props) {
 
   function set(field: keyof FormState, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
-    setErrors((prev) => { const e = { ...prev }; delete e[field]; return e; });
+    setErrors((prev) => {
+      const e = { ...prev };
+      delete e[field];
+      return e;
+    });
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -104,11 +105,7 @@ export default function RegisterForm({ walletAddress }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="card p-8 space-y-5 fade-in">
-      <Field
-        label="Service Name"
-        error={errors.name}
-        hint="3–50 characters"
-      >
+      <Field label="Service Name" error={errors.name} hint="3–50 characters">
         <input
           type="text"
           value={form.name}
@@ -118,11 +115,7 @@ export default function RegisterForm({ walletAddress }: Props) {
         />
       </Field>
 
-      <Field
-        label="Description"
-        error={errors.description}
-        hint="10–200 characters"
-      >
+      <Field label="Description" error={errors.description} hint="10–200 characters">
         <textarea
           rows={3}
           value={form.description}
@@ -132,11 +125,7 @@ export default function RegisterForm({ walletAddress }: Props) {
         />
       </Field>
 
-      <Field
-        label="Endpoint URL"
-        error={errors.endpoint}
-        hint="Must start with https://"
-      >
+      <Field label="Endpoint URL" error={errors.endpoint} hint="Must start with https://">
         <input
           type="url"
           value={form.endpoint}
@@ -166,7 +155,9 @@ export default function RegisterForm({ walletAddress }: Props) {
             className={input(false)}
           >
             {CATEGORIES.map((c) => (
-              <option key={c} value={c}>{c}</option>
+              <option key={c} value={c}>
+                {c}
+              </option>
             ))}
           </select>
         </Field>
@@ -191,9 +182,7 @@ export default function RegisterForm({ walletAddress }: Props) {
 
 function input(hasError: boolean) {
   return `w-full border rounded-lg px-3 py-2.5 text-sm bg-background focus:outline-none focus:ring-1 transition-colors ${
-    hasError
-      ? 'border-error focus:ring-error'
-      : 'border-border focus:ring-primary'
+    hasError ? 'border-error focus:ring-error' : 'border-border focus:ring-primary'
   }`;
 }
 

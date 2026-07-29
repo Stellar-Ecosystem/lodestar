@@ -14,18 +14,9 @@ const defaultOptions = { maxWaitMs: 8000, initialDelayMs: 250, maxDelayMs: 2000 
 describe('waitForActivityTxHash', () => {
   it('returns immediately when the feed already contains a new txHash', async () => {
     const { sleep, delays } = makeSleepRecorder();
-    const getFeed = vi.fn(() => [
-      { txHash: 'abc123' },
-      { txHash: 'old' },
-    ]);
+    const getFeed = vi.fn(() => [{ txHash: 'abc123' }, { txHash: 'old' }]);
 
-    const result = await waitForActivityTxHash(
-      getFeed,
-      1,
-      defaultOptions,
-      undefined,
-      sleep,
-    );
+    const result = await waitForActivityTxHash(getFeed, 1, defaultOptions, undefined, sleep);
 
     expect(result).toBe('abc123');
     expect(getFeed).toHaveBeenCalledTimes(1);
@@ -42,13 +33,7 @@ describe('waitForActivityTxHash', () => {
     ];
     const getFeed = vi.fn(() => feeds.shift() ?? feeds[feeds.length - 1]);
 
-    const result = await waitForActivityTxHash(
-      getFeed,
-      1,
-      defaultOptions,
-      undefined,
-      sleep,
-    );
+    const result = await waitForActivityTxHash(getFeed, 1, defaultOptions, undefined, sleep);
 
     expect(result).toBe('newhash');
     expect(getFeed).toHaveBeenCalledTimes(3);
@@ -71,7 +56,7 @@ describe('waitForActivityTxHash', () => {
       1,
       { maxWaitMs: 10_000, initialDelayMs: 1000, maxDelayMs: 1500 },
       undefined,
-      sleep,
+      sleep
     );
 
     expect(result).toBe('capped');
@@ -88,7 +73,7 @@ describe('waitForActivityTxHash', () => {
       5,
       { maxWaitMs: 1000, initialDelayMs: 250, maxDelayMs: 500 },
       undefined,
-      sleep,
+      sleep
     );
 
     expect(result).toBe('');
@@ -114,7 +99,7 @@ describe('waitForActivityTxHash', () => {
       0,
       defaultOptions,
       (entry) => entry.demoRunId === myId,
-      sleep,
+      sleep
     );
 
     expect(result).toBe('my-hash');

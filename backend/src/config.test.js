@@ -122,7 +122,7 @@ describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
 
   it('uses explicit PAYMENT_ADDRESS when set to a valid Stellar address', async () => {
     const config = await loadConfig({
-  PAYMENT_ADDRESS: 'GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV',
+      PAYMENT_ADDRESS: 'GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV',
     });
     expect(config.x402.payTo).toBe('GRWM5W4EBCAOVKAMBUDAMODYPOA7L6IJ33YQGLNQVQV6ETJ3JFYL6VLV');
   });
@@ -161,7 +161,7 @@ describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
       expect.objectContaining({
         errors: expect.arrayContaining([expect.stringContaining('PAYMENT_ADDRESS')]),
       }),
-      expect.any(String),
+      expect.any(String)
     );
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
@@ -204,12 +204,8 @@ describe('config AGENTS_CONTRACT_ID startup warning', () => {
     await loadConfig();
     const { validateConfig } = await import('./config.js');
     validateConfig(log);
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.stringContaining('AGENTS_CONTRACT_ID is not set'),
-    );
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.stringContaining('AGENTS_NOT_CONFIGURED'),
-    );
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('AGENTS_CONTRACT_ID is not set'));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('AGENTS_NOT_CONFIGURED'));
   });
 
   it('does not warn via validateConfig when AGENTS_CONTRACT_ID is set', async () => {

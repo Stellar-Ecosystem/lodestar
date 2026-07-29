@@ -15,17 +15,19 @@ for (const key of required) {
   if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
 }
 
-const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
-const RPC_URL              = process.env.STELLAR_RPC_URL;
-const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
+const AGENT_SECRET = process.env.AGENT_STELLAR_SECRET;
+const RPC_URL = process.env.STELLAR_RPC_URL;
+const LODESTAR_API_URL = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
 
-const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
-const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
-const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
-const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
-const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
-  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
+const AGENT_NAME = process.env.AGENT_NAME ?? 'LodestarAgent';
+const AGENT_DESC = process.env.AGENT_DESC ?? '';
+const MAX_PER_TX = process.env.AGENT_MAX_PER_TX ?? '0.001';
+const MAX_PER_DAY = process.env.AGENT_MAX_PER_DAY ?? '1.00';
+const ALLOWED_CATS = process.env.AGENT_ALLOWED_CATEGORIES
+  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
   : ['weather', 'search'];
 
 let agentKeypair;
@@ -44,16 +46,16 @@ const logger = pino({
 // ── Canonical event names ─────────────────────────────────────────────────────
 
 export const EVENT = {
-  AGENT_START:         'agent_start',
-  AGENT_REGISTERED:    'agent_registered',
-  TASK_START:          'task_start',
-  SERVICE_SELECTED:    'service_selected',
-  SPEND_CHECK_PASSED:  'spend_check_passed',
+  AGENT_START: 'agent_start',
+  AGENT_REGISTERED: 'agent_registered',
+  TASK_START: 'task_start',
+  SERVICE_SELECTED: 'service_selected',
+  SPEND_CHECK_PASSED: 'spend_check_passed',
   SPEND_CHECK_BLOCKED: 'spend_check_blocked',
-  PAYMENT_SUCCESS:     'payment_success',
-  PAYMENT_FAILED:      'payment_failed',
-  SCORE_UPDATED:       'score_updated',
-  AGENT_COMPLETE:      'agent_complete',
+  PAYMENT_SUCCESS: 'payment_success',
+  PAYMENT_FAILED: 'payment_failed',
+  SCORE_UPDATED: 'score_updated',
+  AGENT_COMPLETE: 'agent_complete',
 };
 
 // ── Credit scoring helpers ────────────────────────────────────────────────────
@@ -79,7 +81,13 @@ export async function ensureRegistered() {
         ? (Number(BigInt(policy.max_per_day_stroops)) / 10_000_000).toFixed(2)
         : null;
       logger.info(
-        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: agent.score, dailyLimitUsdc, scoringEnabled: true },
+        {
+          event: EVENT.AGENT_REGISTERED,
+          agentAddress: AGENT_ADDRESS,
+          score: agent.score,
+          dailyLimitUsdc,
+          scoringEnabled: true,
+        },
         'Already registered'
       );
       return true;
@@ -104,7 +112,12 @@ export async function ensureRegistered() {
       if (regRes.ok) {
         currentScore = 100;
         logger.info(
-          { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: 100, scoringEnabled: true },
+          {
+            event: EVENT.AGENT_REGISTERED,
+            agentAddress: AGENT_ADDRESS,
+            score: 100,
+            scoringEnabled: true,
+          },
           'Registered — starting score: 100'
         );
         return true;
@@ -129,7 +142,7 @@ async function checkSpend(amountUsdc, category) {
   try {
     const res = await fetch(
       `${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/can-spend` +
-      `?amount=${encodeURIComponent(amountUsdc)}&category=${encodeURIComponent(category)}`
+        `?amount=${encodeURIComponent(amountUsdc)}&category=${encodeURIComponent(category)}`
     );
     if (!res.ok) return { allowed: true, reason: 'OK' };
     return await res.json();
@@ -158,7 +171,12 @@ async function recordOutcome(amountUsdc, success, serviceId) {
       const scoreBefore = currentScore;
       currentScore = data.newScore;
       logger.info(
-        { event: EVENT.SCORE_UPDATED, agentAddress: AGENT_ADDRESS, scoreBefore, scoreAfter: currentScore },
+        {
+          event: EVENT.SCORE_UPDATED,
+          agentAddress: AGENT_ADDRESS,
+          scoreBefore,
+          scoreAfter: currentScore,
+        },
         'Score updated'
       );
     }
@@ -177,11 +195,11 @@ export function dispose() {
 
 const STROOPS_PER_USDC = 10_000_000;
 
-function stroopsToUsdcStr(stroops) {
+function _stroopsToUsdcStr(stroops) {
   return String(Number(stroops) / STROOPS_PER_USDC);
 }
 
-function usdcStrToStroops(usdcStr) {
+function _usdcStrToStroops(usdcStr) {
   return BigInt(Math.round(parseFloat(usdcStr) * STROOPS_PER_USDC));
 }
 
@@ -239,7 +257,7 @@ async function submitReputation(id, positive) {
 // Weighted random selection: higher reputation = proportionally more likely to be chosen.
 // Falls back to uniform random when all weights are zero.
 function selectWeighted(services) {
-  const weights = services.map(s => Math.max(0, s.reputation));
+  const weights = services.map((s) => Math.max(0, s.reputation));
   const total = weights.reduce((sum, w) => sum + w, 0);
   if (total === 0) {
     return services[Math.floor(Math.random() * services.length)];
@@ -256,7 +274,7 @@ function selectWeighted(services) {
 
 export async function runTask(category, buildUrl, scoringEnabled, client = httpClient) {
   const minReputation = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
-  const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
+  const maxRetries = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES ?? '3', 10);
 
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
@@ -271,7 +289,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     return { success: false, priceUsdc: null };
   }
 
-  const eligible = services.filter(s => s.reputation >= minReputation);
+  const eligible = services.filter((s) => s.reputation >= minReputation);
   if (!eligible.length) {
     logger.error(
       { event: EVENT.TASK_START, category, servicesFound: services.length, minReputation },
@@ -285,7 +303,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
   const failed = new Set();
 
   for (let attempt = 1; attempt <= candidates.length; attempt++) {
-    const available = candidates.filter(s => !failed.has(s.id));
+    const available = candidates.filter((s) => !failed.has(s.id));
     if (!available.length) break;
 
     const selected = selectWeighted(available);
@@ -321,7 +339,13 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
         continue;
       }
       logger.info(
-        { event: EVENT.SPEND_CHECK_PASSED, category, serviceId: selected.id, serviceName: selected.name, priceUsdc: selected.price_usdc },
+        {
+          event: EVENT.SPEND_CHECK_PASSED,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+        },
         'Spending policy check passed'
       );
     }
@@ -420,7 +444,7 @@ export async function main() {
 
   const tasks = [
     { category: 'weather', buildUrl: (ep) => `${ep}?lat=40.7128&lon=-74.0060` },
-    { category: 'search',  buildUrl: (ep) => `${ep}?q=Stellar+blockchain+AI+agents` },
+    { category: 'search', buildUrl: (ep) => `${ep}?q=Stellar+blockchain+AI+agents` },
   ];
 
   let successCount = 0;
@@ -463,8 +487,14 @@ export async function main() {
 // ── Entry point guard ─────────────────────────────────────────────────────────
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.on('SIGTERM', () => { dispose(); process.exit(0); });
-  process.on('SIGINT',  () => { dispose(); process.exit(0); });
+  process.on('SIGTERM', () => {
+    dispose();
+    process.exit(0);
+  });
+  process.on('SIGINT', () => {
+    dispose();
+    process.exit(0);
+  });
   main().catch((err) => {
     logger.error({ err }, 'Agent crashed');
     process.exit(1);

@@ -30,7 +30,10 @@ export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT
       const needed = Math.max(0, Math.ceil((target - currentScore) / 10));
 
       if (needed === 0) {
-        logger.info({ name: agent.name, score: currentScore }, 'Score already at target — skipping');
+        logger.info(
+          { name: agent.name, score: currentScore },
+          'Score already at target — skipping'
+        );
         continue;
       }
 
@@ -56,10 +59,9 @@ export async function boost({ dryRun = false, targets = TARGETS, amount = AMOUNT
 }
 
 // CLI entry point — only when run directly (not imported)
-const isDirectRun = process.argv[1] && (
-  process.argv[1].endsWith('/boost-scores.js') ||
-  process.argv[1].endsWith('\\boost-scores.js')
-);
+const isDirectRun =
+  process.argv[1] &&
+  (process.argv[1].endsWith('/boost-scores.js') || process.argv[1].endsWith('\\boost-scores.js'));
 
 if (isDirectRun) {
   const isDryRun = process.argv.includes('--dry-run');

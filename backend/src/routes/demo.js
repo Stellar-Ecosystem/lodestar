@@ -50,7 +50,9 @@ router.post('/demo-run', async (req, res) => {
     const { serviceId, category } = req.body;
 
     if (!serviceId || !category) {
-      return res.status(400).json({ error: 'serviceId and category are required', code: 'INVALID_BODY' });
+      return res
+        .status(400)
+        .json({ error: 'serviceId and category are required', code: 'INVALID_BODY' });
     }
 
     const service = await getService(Number(serviceId));
@@ -68,7 +70,7 @@ router.post('/demo-run', async (req, res) => {
 
     const demoRunId = randomUUID();
     const endpoint = new URL(endpointUrl);
-    
+
     // Append category‑specific query parameters
     if (category === 'weather') {
       endpoint.searchParams.set('lat', '40.7128');
@@ -76,7 +78,7 @@ router.post('/demo-run', async (req, res) => {
     } else if (category === 'search') {
       endpoint.searchParams.set('q', 'Stellar blockchain AI agents');
     }
-    
+
     endpoint.searchParams.set('demoRunId', demoRunId);
     const finalEndpointUrl = endpoint.toString();
 
@@ -91,18 +93,23 @@ router.post('/demo-run', async (req, res) => {
 
     const data = await response.json();
 
-    const txHash = fetchedTxHash || (await waitForActivityTxHash(
-      getActivityFeed,
-      activityCountBefore,
-      {
-        maxWaitMs: config.demoRun.pollMaxWaitMs,
-        initialDelayMs: config.demoRun.pollInitialDelayMs,
-        maxDelayMs: config.demoRun.pollMaxDelayMs,
-      },
-      (entry) => entry.demoRunId === demoRunId,
-    ));
+    const txHash =
+      fetchedTxHash ||
+      (await waitForActivityTxHash(
+        getActivityFeed,
+        activityCountBefore,
+        {
+          maxWaitMs: config.demoRun.pollMaxWaitMs,
+          initialDelayMs: config.demoRun.pollInitialDelayMs,
+          maxDelayMs: config.demoRun.pollMaxDelayMs,
+        },
+        (entry) => entry.demoRunId === demoRunId
+      ));
     if (!txHash) {
-      logger.warn({ serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs }, 'Activity txHash not found before poll timeout');
+      logger.warn(
+        { serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs },
+        'Activity txHash not found before poll timeout'
+      );
     }
 
     recordActivity({
@@ -117,7 +124,9 @@ router.post('/demo-run', async (req, res) => {
     res.json({ data, txHash });
   } catch (err) {
     logger.error({ err }, 'POST /api/demo-run failed');
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Demo run failed', code: 'DEMO_ERROR' });
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : 'Demo run failed', code: 'DEMO_ERROR' });
   }
 });
 

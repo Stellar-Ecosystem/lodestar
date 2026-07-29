@@ -1,5 +1,10 @@
-import { sortServices, sortAgents, sortServicesWithTieBreaker, sortAgentsWithTieBreaker } from './sort';
-import type { ServiceEntry, AgentEntry, SortOption, AgentSortOption } from './types';
+import {
+  sortServices,
+  sortAgents,
+  sortServicesWithTieBreaker,
+  sortAgentsWithTieBreaker,
+} from './sort';
+import type { ServiceEntry, AgentEntry } from './types';
 
 function makeService(overrides: Partial<ServiceEntry> = {}): ServiceEntry {
   return {
@@ -17,7 +22,26 @@ function makeService(overrides: Partial<ServiceEntry> = {}): ServiceEntry {
   };
 }
 
-
+function makeAgent(overrides: Partial<AgentEntry> = {}): AgentEntry {
+  return {
+    address: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWFL',
+    name: 'Test Agent',
+    description: 'Test agent',
+    owner: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWFL',
+    score: 0,
+    total_payments: '0',
+    successful_payments: '0',
+    failed_payments: '0',
+    total_volume_stroops: '0',
+    registered_at: '100',
+    last_active: '100',
+    active: true,
+    flagged: false,
+    flag_reason: '',
+    is_demo: false,
+    ...overrides,
+  };
+}
 
 describe('sortServices', () => {
   it('sorts by newest (registered_at descending)', () => {
@@ -109,8 +133,10 @@ describe('sortServicesWithTieBreaker', () => {
       makeService({ id: 1, reputation: 10, price_usdc: '1.00' }),
       makeService({ id: 2, reputation: 10, price_usdc: '0.50' }),
     ];
-    const result = sortServicesWithTieBreaker(services, 'reputation', (a, b) =>
-      parseFloat(a.price_usdc) - parseFloat(b.price_usdc)
+    const result = sortServicesWithTieBreaker(
+      services,
+      'reputation',
+      (a, b) => parseFloat(a.price_usdc) - parseFloat(b.price_usdc)
     );
     expect(result.map((s) => s.id)).toEqual([2, 1]);
   });
@@ -141,8 +167,10 @@ describe('sortAgentsWithTieBreaker', () => {
       makeAgent({ address: 'A', score: 100, total_payments: '10' }),
       makeAgent({ address: 'B', score: 100, total_payments: '20' }),
     ];
-    const result = sortAgentsWithTieBreaker(agents, 'score', (a, b) =>
-      parseInt(b.total_payments) - parseInt(a.total_payments)
+    const result = sortAgentsWithTieBreaker(
+      agents,
+      'score',
+      (a, b) => parseInt(b.total_payments) - parseInt(a.total_payments)
     );
     expect(result.map((a) => a.address)).toEqual(['B', 'A']);
   });

@@ -12,10 +12,7 @@ import logger from '../lib/logger.js';
  * @param {number} [max]      Max requests allowed per window.
  * @param {number} [windowMs] Window length in milliseconds.
  */
-export function writeRateLimiter(
-  max = config.rateLimit.max,
-  windowMs = config.rateLimit.windowMs,
-) {
+export function writeRateLimiter(max = config.rateLimit.max, windowMs = config.rateLimit.windowMs) {
   return rateLimit({
     windowMs,
     limit: max,
@@ -24,7 +21,7 @@ export function writeRateLimiter(
     handler: (req, res) => {
       logger.warn(
         { ip: req.ip, path: req.originalUrl, max, windowMs },
-        'Write rate limit exceeded',
+        'Write rate limit exceeded'
       );
       res.status(429).json({
         error: 'Too many requests. Please slow down and try again later.',

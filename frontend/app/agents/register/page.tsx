@@ -7,7 +7,16 @@ import ScoreBadge from '@/components/ScoreBadge';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
-const CATEGORY_OPTIONS = ['weather', 'search', 'finance', 'data', 'compute', 'storage', 'ai', 'other'];
+const CATEGORY_OPTIONS = [
+  'weather',
+  'search',
+  'finance',
+  'data',
+  'compute',
+  'storage',
+  'ai',
+  'other',
+];
 
 export default function RegisterAgentPage() {
   const { address, status } = useWallet();
@@ -103,8 +112,8 @@ export default function RegisterAgentPage() {
       <h1 className="text-3xl font-semibold tracking-tight mb-2">Register Agent</h1>
       <p className="text-secondary text-sm mb-10 leading-relaxed">
         Register an AI agent address on-chain. Start with a score of{' '}
-        <span className="mono font-medium text-primary">100</span> — build trust through
-        successful x402 payments.
+        <span className="mono font-medium text-primary">100</span> — build trust through successful
+        x402 payments.
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -169,9 +178,7 @@ export default function RegisterAgentPage() {
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               className="input w-full resize-none"
             />
-            <p className="text-xs text-secondary mt-1 text-right">
-              {form.description.length}/256
-            </p>
+            <p className="text-xs text-secondary mt-1 text-right">{form.description.length}/256</p>
           </div>
 
           {/* Spending policy */}
@@ -182,7 +189,9 @@ export default function RegisterAgentPage() {
             </p>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-secondary mb-1">Max per transaction (USDC)</label>
+                <label className="block text-xs text-secondary mb-1">
+                  Max per transaction (USDC)
+                </label>
                 <input
                   type="number"
                   min="0.000001"
@@ -209,9 +218,7 @@ export default function RegisterAgentPage() {
           {/* Allowed categories */}
           <div>
             <label className="block text-sm font-medium mb-1">Allowed Categories</label>
-            <p className="text-xs text-secondary mb-3">
-              Leave empty to allow all categories.
-            </p>
+            <p className="text-xs text-secondary mb-3">Leave empty to allow all categories.</p>
             <div className="flex flex-wrap gap-2">
               {CATEGORY_OPTIONS.map((cat) => (
                 <button
@@ -252,13 +259,13 @@ export default function RegisterAgentPage() {
 
         {/* Preview card */}
         <div className="lg:col-span-1">
-          <p className="text-xs font-medium text-secondary uppercase tracking-wider mb-3">Preview</p>
+          <p className="text-xs font-medium text-secondary uppercase tracking-wider mb-3">
+            Preview
+          </p>
           <div className="card p-5 flex flex-col gap-4">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="font-medium text-sm truncate">
-                  {form.name.trim() || 'Agent Name'}
-                </p>
+                <p className="font-medium text-sm truncate">{form.name.trim() || 'Agent Name'}</p>
                 <p className="text-xs text-secondary mt-0.5 line-clamp-2">
                   {form.description.trim() || 'Agent description will appear here.'}
                 </p>
@@ -286,10 +293,7 @@ export default function RegisterAgentPage() {
             {selectedCategories.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {selectedCategories.map((cat) => (
-                  <span
-                    key={cat}
-                    className="px-2 py-0.5 bg-accent/10 text-accent rounded text-xs"
-                  >
+                  <span key={cat} className="px-2 py-0.5 bg-accent/10 text-accent rounded text-xs">
                     {cat}
                   </span>
                 ))}
@@ -305,7 +309,8 @@ export default function RegisterAgentPage() {
                 <div className="h-full bg-accent rounded-full" style={{ width: '10%' }} />
               </div>
               <p className="text-xs text-secondary mt-2">
-                Tier: <span className="text-primary font-medium">New</span> · +10 per payment · −25 per failure
+                Tier: <span className="text-primary font-medium">New</span> · +10 per payment · −25
+                per failure
               </p>
             </div>
           </div>

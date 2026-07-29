@@ -10,7 +10,7 @@ process.env.NODE_ENV = 'test';
 import { describe, it, expect } from 'vitest';
 import { validateDemoEndpoint } from './demoValidate.js';
 
-const config = { port: 3001 };
+const _config = { port: 3001 };
 
 // Mock config import inside demoValidate (it imports from '../config.js')
 // We'll set process.env.NODE_ENV? Actually demoValidate imports config directly, which reads from actual config.

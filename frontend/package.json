@@ -8,6 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "format": "prettier --check .",
+    "format:write": "prettier --write .",
     "test": "jest",
     "test:watch": "jest --watch"
   },

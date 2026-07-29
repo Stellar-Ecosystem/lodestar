@@ -3,8 +3,8 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 // ── Hoisted mock refs (available inside vi.mock factories) ────────────────────
 
 const { logInfo, logWarn, logError, logDebug } = vi.hoisted(() => ({
-  logInfo:  vi.fn(),
-  logWarn:  vi.fn(),
+  logInfo: vi.fn(),
+  logWarn: vi.fn(),
   logError: vi.fn(),
   logDebug: vi.fn(),
 }));
@@ -19,23 +19,35 @@ vi.mock('pino', () => ({
 
 vi.mock('@stellar/stellar-sdk', () => ({
   default: {
-    Keypair: { fromSecret: () => ({ publicKey: () => 'GAGENTADDRESSMOCK000000000000000000000000000000000000000' }) },
+    Keypair: {
+      fromSecret: () => ({
+        publicKey: () => 'GAGENTADDRESSMOCK000000000000000000000000000000000000000',
+      }),
+    },
   },
 }));
 
 vi.mock('@x402/core/client', () => ({
-  x402Client: class { register() { return this; } },
-  x402HTTPClient: class { encodePaymentSignatureHeader() { return {}; } },
+  x402Client: class {
+    register() {
+      return this;
+    }
+  },
+  x402HTTPClient: class {
+    encodePaymentSignatureHeader() {
+      return {};
+    }
+  },
 }));
 
 vi.mock('@x402/stellar', () => ({ createEd25519Signer: () => ({}) }));
-vi.mock('@x402/stellar/exact/client', () => ({ ExactStellarScheme: class { } }));
+vi.mock('@x402/stellar/exact/client', () => ({ ExactStellarScheme: class {} }));
 
 // ── Env vars must be set before the agent module initialises ──────────────────
 
 process.env.AGENT_STELLAR_SECRET = 'STEST0000000000000000000000000000000000000000000000000000';
-process.env.STELLAR_RPC_URL      = 'https://mock-rpc.example.com';
-process.env.LODESTAR_API_URL     = 'http://localhost:9999';
+process.env.STELLAR_RPC_URL = 'https://mock-rpc.example.com';
+process.env.LODESTAR_API_URL = 'http://localhost:9999';
 
 const mockHttpClient = {
   encodePaymentSignatureHeader: vi.fn(() => ({})),
@@ -58,7 +70,7 @@ function makeResponse(overrides = {}) {
   return {
     ok: true,
     status: 200,
-    headers: { get: (name) => name === 'x-payment-transaction' ? 'txhash123' : null },
+    headers: { get: (name) => (name === 'x-payment-transaction' ? 'txhash123' : null) },
     json: () => Promise.resolve({ result: 'ok' }),
     ...overrides,
   };
@@ -70,9 +82,12 @@ function buildFetch({ services = [MOCK_SERVICE], canSpend = true, endpointOk = t
       return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services }) }));
     }
     if (url.includes('/can-spend')) {
-      return Promise.resolve(makeResponse({
-        json: () => Promise.resolve({ allowed: canSpend, reason: canSpend ? 'OK' : 'Daily limit reached' }),
-      }));
+      return Promise.resolve(
+        makeResponse({
+          json: () =>
+            Promise.resolve({ allowed: canSpend, reason: canSpend ? 'OK' : 'Daily limit reached' }),
+        })
+      );
     }
     if (url.includes('/payment')) {
       return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
@@ -98,9 +113,7 @@ describe('runTask — happy path', () => {
   it('logs task_start with category field', async () => {
     await runTask('weather', (ep) => ep, true, mockHttpClient);
 
-    const taskStartCall = logInfo.mock.calls.find(
-      ([fields]) => fields?.event === EVENT.TASK_START
-    );
+    const taskStartCall = logInfo.mock.calls.find(([fields]) => fields?.event === EVENT.TASK_START);
     expect(taskStartCall).toBeDefined();
     expect(taskStartCall[0]).toMatchObject({ event: 'task_start', category: 'weather' });
   });
@@ -148,9 +161,10 @@ describe('runTask — happy path', () => {
   it('calls encodePaymentSignatureHeader with expected payload', async () => {
     await runTask('weather', (ep) => ep, true, mockHttpClient);
 
-    expect(mockHttpClient.encodePaymentSignatureHeader).toHaveBeenCalledWith(
-      { url: 'https://api.example.com/weather', method: 'GET' }
-    );
+    expect(mockHttpClient.encodePaymentSignatureHeader).toHaveBeenCalledWith({
+      url: 'https://api.example.com/weather',
+      method: 'GET',
+    });
   });
 
   it('returns { success: true, priceUsdc } on success', async () => {
@@ -162,7 +176,7 @@ describe('runTask — happy path', () => {
     await runTask('weather', (ep) => ep, false, mockHttpClient);
 
     const blocked = logWarn.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_BLOCKED);
-    const passed  = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_PASSED);
+    const passed = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SPEND_CHECK_PASSED);
     expect(blocked).toBeUndefined();
     expect(passed).toBeUndefined();
   });
@@ -218,19 +232,36 @@ describe('runTask — spend check blocked', () => {
   });
 
   it('falls back to the next candidate if the first is blocked by spend check', async () => {
-    const serviceA = { id: 1, name: 'Svc A', price_usdc: '0.002', endpoint: 'http://a', reputation: 100 };
-    const serviceB = { id: 2, name: 'Svc B', price_usdc: '0.001', endpoint: 'http://b', reputation: 90 };
+    const serviceA = {
+      id: 1,
+      name: 'Svc A',
+      price_usdc: '0.002',
+      endpoint: 'http://a',
+      reputation: 100,
+    };
+    const serviceB = {
+      id: 2,
+      name: 'Svc B',
+      price_usdc: '0.001',
+      endpoint: 'http://b',
+      reputation: 90,
+    };
 
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [serviceA, serviceB] }) }));
+        return Promise.resolve(
+          makeResponse({ json: () => Promise.resolve({ services: [serviceA, serviceB] }) })
+        );
       }
       if (url.includes('/can-spend')) {
         // Block serviceA (price 0.002) but allow serviceB (price 0.001)
         const canSpend = !url.includes('amount=0.002');
-        return Promise.resolve(makeResponse({
-          json: () => Promise.resolve({ allowed: canSpend, reason: canSpend ? 'OK' : 'Limit reached' }),
-        }));
+        return Promise.resolve(
+          makeResponse({
+            json: () =>
+              Promise.resolve({ allowed: canSpend, reason: canSpend ? 'OK' : 'Limit reached' }),
+          })
+        );
       }
       if (url.includes('/payment')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
@@ -279,7 +310,6 @@ describe('runTask — service error after payment', () => {
 
   it('returns { success: false, priceUsdc: null } when endpoint fails', async () => {
     global.fetch = buildFetch({ endpointOk: false });
-
   });
 });
 
@@ -287,7 +317,9 @@ describe('runTask — payment_failed on fetch throw', () => {
   it('logs payment_failed with err field when httpClient throws', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+        return Promise.resolve(
+          makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) })
+        );
       }
       // Throw on the endpoint fetch to simulate network error
       return Promise.reject(new Error('Network error'));
@@ -306,16 +338,26 @@ describe('main — agent_complete summary', () => {
   it('logs agent_complete with all required summary fields', async () => {
     // ensureRegistered → already registered, score 100
     global.fetch = vi.fn().mockImplementation((url) => {
-      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
-        return Promise.resolve(makeResponse({
-          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
-        }));
+      if (
+        url.includes('/api/agents/') &&
+        !url.includes('/can-spend') &&
+        !url.includes('/payment')
+      ) {
+        return Promise.resolve(
+          makeResponse({
+            json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
+          })
+        );
       }
       if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+        return Promise.resolve(
+          makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) })
+        );
       }
       if (url.includes('/can-spend')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+        return Promise.resolve(
+          makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) })
+        );
       }
       if (url.includes('/payment')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
@@ -343,10 +385,16 @@ describe('main — agent_complete summary', () => {
 
   it('logs agent_complete with correct fail counts when tasks fail', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
-      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
-        return Promise.resolve(makeResponse({
-          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
-        }));
+      if (
+        url.includes('/api/agents/') &&
+        !url.includes('/can-spend') &&
+        !url.includes('/payment')
+      ) {
+        return Promise.resolve(
+          makeResponse({
+            json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
+          })
+        );
       }
       // All service queries return empty
       if (url.includes('/api/services')) {
@@ -370,10 +418,16 @@ describe('main — agent_complete summary', () => {
 
   it('logs agent_start with agentAddress and agentName', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
-      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
-        return Promise.resolve(makeResponse({
-          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
-        }));
+      if (
+        url.includes('/api/agents/') &&
+        !url.includes('/can-spend') &&
+        !url.includes('/payment')
+      ) {
+        return Promise.resolve(
+          makeResponse({
+            json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
+          })
+        );
       }
       if (url.includes('/api/services')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [] }) }));
@@ -391,8 +445,20 @@ describe('main — agent_complete summary', () => {
 });
 
 describe('runTask — weighted fallback retry', () => {
-  const svcA = { id: 1, name: 'SvcA', price_usdc: '0.001', endpoint: 'https://a.example.com/ep', reputation: 100 };
-  const svcB = { id: 2, name: 'SvcB', price_usdc: '0.002', endpoint: 'https://b.example.com/ep', reputation: 80 };
+  const svcA = {
+    id: 1,
+    name: 'SvcA',
+    price_usdc: '0.001',
+    endpoint: 'https://a.example.com/ep',
+    reputation: 100,
+  };
+  const svcB = {
+    id: 2,
+    name: 'SvcB',
+    price_usdc: '0.002',
+    endpoint: 'https://b.example.com/ep',
+    reputation: 80,
+  };
 
   let randomSpy;
   beforeEach(() => {
@@ -406,7 +472,9 @@ describe('runTask — weighted fallback retry', () => {
   it('falls back to second service when first service returns non-2xx', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) }));
+        return Promise.resolve(
+          makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) })
+        );
       }
       if (url.includes('/reputation')) return Promise.resolve(makeResponse());
       if (url === svcA.endpoint) {
@@ -422,7 +490,9 @@ describe('runTask — weighted fallback retry', () => {
   it('logs payment_failed for each failing service and service_selected for each attempt', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) }));
+        return Promise.resolve(
+          makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) })
+        );
       }
       if (url.includes('/reputation')) return Promise.resolve(makeResponse());
       if (url === svcA.endpoint) {
@@ -463,7 +533,9 @@ describe('runTask — weighted fallback retry', () => {
   it('does not submit negative reputation vote when x402 payment itself throws', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+        return Promise.resolve(
+          makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) })
+        );
       }
       return Promise.reject(new Error('Network error'));
     });
@@ -526,13 +598,17 @@ describe('ensureRegistered — structured event fields', () => {
 
   it('logs agent_registered with score and scoringEnabled: true when already registered', async () => {
     const { ensureRegistered } = await import('./agent.js');
-    global.fetch = vi.fn().mockResolvedValueOnce(makeResponse({
-      json: () => Promise.resolve({ agent: { score: 95 }, policy: null }),
-    }));
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      makeResponse({
+        json: () => Promise.resolve({ agent: { score: 95 }, policy: null }),
+      })
+    );
 
     await ensureRegistered();
 
-    const call = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_REGISTERED && f?.scoringEnabled === true);
+    const call = logInfo.mock.calls.find(
+      ([f]) => f?.event === EVENT.AGENT_REGISTERED && f?.scoringEnabled === true
+    );
     expect(call).toBeDefined();
     expect(call[0]).toMatchObject({ event: 'agent_registered', score: 95, scoringEnabled: true });
   });

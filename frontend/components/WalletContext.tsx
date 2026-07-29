@@ -21,7 +21,7 @@ const WalletContext = createContext<WalletContextValue>({
 });
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus]   = useState<FreighterStatus>('not-connected');
+  const [status, setStatus] = useState<FreighterStatus>('not-connected');
   const [address, setAddress] = useState('');
   const [balance, setBalance] = useState('');
 

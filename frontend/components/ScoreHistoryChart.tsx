@@ -8,7 +8,7 @@ import React from 'react';
  */
 export function ScoreHistoryChart({
   currentScore,
-  totalPayments,
+  totalPayments: _totalPayments,
   successfulPayments,
   failedPayments,
 }: {
@@ -57,7 +57,12 @@ export function ScoreHistoryChart({
   return (
     <div className="flex flex-col items-end">
       <div className="text-[10px] text-secondary mb-1">Score History (approx)</div>
-      <svg width={width} height={height} className="overflow-visible" viewBox={`0 0 ${width} ${height}`}>
+      <svg
+        width={width}
+        height={height}
+        className="overflow-visible"
+        viewBox={`0 0 ${width} ${height}`}
+      >
         <polyline
           fill="none"
           stroke="currentColor"

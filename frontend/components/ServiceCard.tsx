@@ -66,9 +66,7 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
       </div>
 
       {/* Description */}
-      <p className="text-sm text-secondary leading-relaxed line-clamp-2">
-        {service.description}
-      </p>
+      <p className="text-sm text-secondary leading-relaxed line-clamp-2">{service.description}</p>
 
       {/* Endpoint */}
       <div className="flex items-center gap-2 bg-background rounded-lg px-3 py-2 border border-border">
@@ -85,9 +83,7 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
 
       {/* Price + reputation row */}
       <div className="flex items-center justify-between">
-        <span className="mono text-sm font-medium text-accent">
-          ${service.price_usdc} USDC
-        </span>
+        <span className="mono text-sm font-medium text-accent">${service.price_usdc} USDC</span>
 
         <div className="flex items-center gap-2">
           <button
@@ -97,8 +93,11 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
           >
             −
           </button>
-          <span className={`mono text-xs font-medium ${reputation > 0 ? 'text-success' : reputation < 0 ? 'text-error' : 'text-secondary'}`}>
-            {reputation > 0 ? '+' : ''}{reputation}
+          <span
+            className={`mono text-xs font-medium ${reputation > 0 ? 'text-success' : reputation < 0 ? 'text-error' : 'text-secondary'}`}
+          >
+            {reputation > 0 ? '+' : ''}
+            {reputation}
           </span>
           <button
             onClick={() => vote(true)}
@@ -123,10 +122,7 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
         <span className="text-xs text-secondary mono">{ledger}</span>
       </div>
 
-      <button
-        onClick={copyEndpoint}
-        className="btn-secondary w-full text-center text-sm"
-      >
+      <button onClick={copyEndpoint} className="btn-secondary w-full text-center text-sm">
         Use Endpoint
       </button>
     </div>

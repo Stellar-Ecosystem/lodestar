@@ -84,7 +84,6 @@ jobs:
         with:
           node-version: '22'
 
-
       - name: Install dependencies
         working-directory: backend
         run: npm ci
@@ -106,7 +105,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-
 
       - name: Install dependencies
         working-directory: frontend
@@ -147,3 +145,26 @@ jobs:
       - name: Run tests
         working-directory: agent
         run: npm test
+
+  # ── Lint and format checks ─────────────────────────────────────────────
+  lint-format:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install root dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Run ESLint check
+        run: npm run lint
+
+      - name: Run Prettier check
+        run: npm run format

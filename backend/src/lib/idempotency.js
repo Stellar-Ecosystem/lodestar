@@ -31,10 +31,7 @@ const store = new Map();
  */
 export function isValidIdempotencyKey(key) {
   return (
-    typeof key === 'string' &&
-    key.length >= 1 &&
-    key.length <= 255 &&
-    /^[\x21-\x7E]+$/.test(key) // printable ASCII, no spaces/control chars
+    typeof key === 'string' && key.length >= 1 && key.length <= 255 && /^[\x21-\x7E]+$/.test(key) // printable ASCII, no spaces/control chars
   );
 }
 

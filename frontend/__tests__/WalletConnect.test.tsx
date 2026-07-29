@@ -9,7 +9,11 @@ jest.mock('../components/WalletContext', () => ({
 
 jest.mock('../components/WalletPickerModal', () => {
   return function MockModal({ onClose }: { onClose: () => void }) {
-    return <div data-testid="picker-modal"><button onClick={onClose}>Close</button></div>;
+    return (
+      <div data-testid="picker-modal">
+        <button onClick={onClose}>Close</button>
+      </div>
+    );
   };
 });
 

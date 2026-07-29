@@ -27,7 +27,9 @@ function loadFeed() {
   const raw = readFileSync(FEED_FILE, 'utf-8');
   const parsed = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
-    throw new Error(`[activityFeed] Feed file contains invalid format: expected array, got ${typeof parsed}`);
+    throw new Error(
+      `[activityFeed] Feed file contains invalid format: expected array, got ${typeof parsed}`
+    );
   }
   return parsed;
 }
