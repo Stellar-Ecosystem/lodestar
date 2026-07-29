@@ -15,6 +15,7 @@ for (const key of required) {
   if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
 }
 
+const STROOPS_PER_USDC = 10_000_000n;
 const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
@@ -24,6 +25,8 @@ const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent'
 const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
 const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
 const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
+const MAX_PER_TX_STROOPS   = usdcStrToStroops(MAX_PER_TX);
+const MAX_PER_DAY_STROOPS  = usdcStrToStroops(MAX_PER_DAY);
 const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
   ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
   : ['weather', 'search'];
@@ -76,7 +79,7 @@ export async function ensureRegistered() {
       currentScore = agent.score;
       const policy = data.policy;
       const dailyLimitUsdc = policy
-        ? (Number(BigInt(policy.max_per_day_stroops)) / 10_000_000).toFixed(2)
+        ? stroopsToUsdcStr(BigInt(policy.max_per_day_stroops))
         : null;
       logger.info(
         { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: agent.score, dailyLimitUsdc, scoringEnabled: true },
@@ -175,14 +178,27 @@ export function dispose() {
   logger.info('Shutting down Lodestar Agent');
 }
 
-const STROOPS_PER_USDC = 10_000_000;
-
-function stroopsToUsdcStr(stroops) {
-  return String(Number(stroops) / STROOPS_PER_USDC);
+export function stroopsToUsdcStr(stroops) {
+  const value = BigInt(stroops);
+  const whole = value / STROOPS_PER_USDC;
+  const fraction = value % STROOPS_PER_USDC;
+  const fractionStr = fraction.toString().padStart(7, '0').replace(/0+$/, '');
+  return fractionStr ? `${whole}.${fractionStr}` : `${whole}`;
 }
 
-function usdcStrToStroops(usdcStr) {
-  return BigInt(Math.round(parseFloat(usdcStr) * STROOPS_PER_USDC));
+export function usdcStrToStroops(usdcStr) {
+  const normalized = `${usdcStr ?? ''}`.trim();
+  if (!normalized) return 0n;
+
+  const [wholePart = '0', fractionPart = ''] = normalized.split('.');
+  const whole = BigInt(wholePart);
+  const fraction = (fractionPart + '0000000').slice(0, 7);
+  return whole * STROOPS_PER_USDC + BigInt(fraction);
+}
+
+export function isSpendWithinLimits(amountUsdc, maxPerTxStroops, maxPerDayStroops, currentDailySpentStroops) {
+  const amountStroops = usdcStrToStroops(amountUsdc);
+  return amountStroops <= maxPerTxStroops && currentDailySpentStroops + amountStroops <= maxPerDayStroops;
 }
 
 function buildHttpClient() {
@@ -259,6 +275,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
   const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
 
   const taskStart = Date.now();
+  let dailySpentStroops = 0n;
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
 
   const services = await fetchServices(category);
@@ -304,6 +321,31 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     );
 
     if (scoringEnabled) {
+      const amountWithinLimits = isSpendWithinLimits(
+        selected.price_usdc,
+        MAX_PER_TX_STROOPS,
+        MAX_PER_DAY_STROOPS,
+        dailySpentStroops
+      );
+      if (!amountWithinLimits) {
+        const reason = dailySpentStroops + usdcStrToStroops(selected.price_usdc) > MAX_PER_DAY_STROOPS
+          ? 'Daily limit exceeded'
+          : 'Per-transaction limit exceeded';
+        logger.warn(
+          {
+            event: EVENT.SPEND_CHECK_BLOCKED,
+            category,
+            serviceId: selected.id,
+            serviceName: selected.name,
+            priceUsdc: selected.price_usdc,
+            reason,
+          },
+          'Payment blocked by spending policy'
+        );
+        failed.add(selected.id);
+        continue;
+      }
+
       const check = await checkSpend(selected.price_usdc, category);
       if (!check.allowed) {
         logger.warn(
@@ -377,7 +419,10 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
 
     const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
     const scoreBefore = currentScore;
-    if (scoringEnabled) await recordOutcome(selected.price_usdc, true, selected.id);
+    if (scoringEnabled) {
+      dailySpentStroops += usdcStrToStroops(selected.price_usdc);
+      await recordOutcome(selected.price_usdc, true, selected.id);
+    }
 
     logger.info(
       {

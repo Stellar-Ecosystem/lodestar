@@ -42,7 +42,7 @@ const mockHttpClient = {
   fetch: (...args) => global.fetch(...args),
 };
 
-const { runTask, main, EVENT } = await import('./agent.js');
+const { runTask, main, EVENT, isSpendWithinLimits, usdcStrToStroops, stroopsToUsdcStr } = await import('./agent.js');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -183,6 +183,21 @@ describe('runTask — no services found', () => {
     global.fetch = buildFetch({ services: [] });
     const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
     expect(result).toEqual({ success: false, priceUsdc: null });
+  });
+});
+
+describe('spend limit helpers', () => {
+  it('treats an exact-limit amount as allowed', () => {
+    expect(isSpendWithinLimits('0.001', 10_000n, 10_000_000n, 0n)).toBe(true);
+  });
+
+  it('rejects an amount that is one stroop over the per-transaction limit', () => {
+    expect(isSpendWithinLimits('0.0010001', 10_000n, 10_000_000n, 0n)).toBe(false);
+  });
+
+  it('converts stroops to and from USDC strings without floating point loss', () => {
+    expect(usdcStrToStroops('0.001')).toBe(10_000n);
+    expect(stroopsToUsdcStr(10_000n)).toBe('0.001');
   });
 });
 
