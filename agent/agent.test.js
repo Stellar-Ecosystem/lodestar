@@ -341,6 +341,92 @@ describe('main — agent_complete summary', () => {
     expect(fields.runDurationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it('includes agentName in agent_complete summary', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
+        return Promise.resolve(makeResponse({
+          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
+        }));
+      }
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+      }
+      if (url.includes('/payment')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
+      }
+      return Promise.resolve(makeResponse());
+    });
+
+    await main();
+
+    const summaryCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_COMPLETE);
+    expect(summaryCall).toBeDefined();
+    expect(typeof summaryCall[0].agentName).toBe('string');
+    expect(summaryCall[0].agentName.length).toBeGreaterThan(0);
+  });
+
+  it('includes totalPayments equal to successCount in agent_complete summary', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
+        return Promise.resolve(makeResponse({
+          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
+        }));
+      }
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+      }
+      if (url.includes('/payment')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
+      }
+      return Promise.resolve(makeResponse());
+    });
+
+    await main();
+
+    const summaryCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_COMPLETE);
+    expect(summaryCall).toBeDefined();
+    const fields = summaryCall[0];
+    // totalPayments mirrors successCount — both must be present and equal
+    expect(typeof fields.totalPayments).toBe('number');
+    expect(fields.totalPayments).toBe(fields.successCount);
+    expect(fields.totalPayments).toBe(2);
+  });
+
+  it('includes endingScore equal to finalScore in agent_complete summary', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
+        return Promise.resolve(makeResponse({
+          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
+        }));
+      }
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+      }
+      if (url.includes('/payment')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
+      }
+      return Promise.resolve(makeResponse());
+    });
+
+    await main();
+
+    const summaryCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_COMPLETE);
+    expect(summaryCall).toBeDefined();
+    const fields = summaryCall[0];
+    // endingScore mirrors finalScore — both must be present and equal
+    expect(fields.endingScore).toBeDefined();
+    expect(fields.endingScore).toBe(fields.finalScore);
+  });
+
   it('logs agent_complete with correct fail counts when tasks fail', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
@@ -363,6 +449,7 @@ describe('main — agent_complete summary', () => {
       event: 'agent_complete',
       totalTasks: 2,
       successCount: 0,
+      totalPayments: 0,
       failCount: 2,
     });
     expect(parseFloat(summaryCall[0].totalUsdcSpent)).toBe(0);

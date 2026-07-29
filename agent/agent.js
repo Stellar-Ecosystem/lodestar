@@ -444,15 +444,30 @@ export async function main() {
       ? finalScore - scoreAfterRegistration
       : null;
 
+  // ── Final run summary ─────────────────────────────────────────────────────
+  // agentName      — human-readable name from AGENT_NAME env var
+  // agentAddress   — Stellar public key of this agent
+  // totalTasks     — number of service tasks attempted in this run
+  // successCount   — tasks that completed a successful x402 payment
+  // totalPayments  — alias for successCount; explicit field for audit/ops tooling
+  // failCount      — tasks where every candidate service was exhausted or blocked
+  // totalUsdcSpent — sum of USDC paid across all successful tasks (6 decimal places)
+  // finalScore     — on-chain credit score at end of run (null if scoring disabled)
+  // endingScore    — alias for finalScore; explicit field for audit/ops tooling
+  // scoreDelta     — net score change since agent_registered (null if scoring disabled)
+  // runDurationMs  — wall-clock time for the entire run
   logger.info(
     {
       event: EVENT.AGENT_COMPLETE,
+      agentName: AGENT_NAME,
       agentAddress: AGENT_ADDRESS,
       totalTasks: tasks.length,
       successCount,
+      totalPayments: successCount,
       failCount,
       totalUsdcSpent: totalUsdcSpent.toFixed(6),
       finalScore,
+      endingScore: finalScore,
       scoreDelta,
       runDurationMs,
     },
