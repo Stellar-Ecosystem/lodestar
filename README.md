@@ -8,8 +8,9 @@ AI agents on Stellar can already pay for services via the x402 protocol — but 
 - **Autonomous agent demo** — A standalone script that starts with zero hardcoded URLs, discovers the best service by reputation, pays via USDC on Stellar testnet, and updates its own score on-chain — the full loop in one run.
 - **Full stack** — Express backend with x402-protected demo endpoints, Next.js frontend for registration and score inspection, and both contracts deployed on Stellar testnet with live transactions.
 
----
+**Docs:** [Contract reference](docs/contracts.md) · [Deployment guide](contract/DEPLOY.md) · [Contributing](CONTRIBUTING.md)
 
+---
 Lodestar ships two Soroban contracts: the **Service Registry** (discovery + reputation) and the **Agent Credit Scoring** system (identity + trust + spending policies).
 
 ---
