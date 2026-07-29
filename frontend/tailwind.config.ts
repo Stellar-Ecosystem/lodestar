@@ -11,11 +11,11 @@ const config: Config = {
       colors: {
         background: '#FAFAF7',
         primary: '#1A1A1A',
-        accent: '#E85D3A',
+        accent: '#C2410C',
         secondary: '#6B6B6B',
         border: '#E5E5E5',
-        success: '#22C55E',
-        error: '#EF4444',
+        success: '#15803D',
+        error: '#DC2626',
       },
       fontFamily: {
         sans: ['Inter', 'sans-serif'],
