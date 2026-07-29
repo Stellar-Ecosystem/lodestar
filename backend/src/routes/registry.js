@@ -48,6 +48,13 @@ function normalizePriceUsdc(value) {
   return normalized;
 }
 
+function annotateTtlWarning(service, currentLedger) {
+  if (currentLedger == null) return service;
+  const expiry = service.registered_at + SERVICE_MAX_TTL;
+  const warnAt = expiry - SERVICE_TTL_WARNING_LEDGERS;
+  return { ...service, ttl_warning: currentLedger >= warnAt };
+}
+
 function parsePositiveSafeInteger(value) {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) && value > 0 ? value : null;
