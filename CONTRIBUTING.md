@@ -6,6 +6,28 @@
 - Rust (stable) with `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
 - Stellar CLI: `cargo install --locked stellar-cli --features opt`
 
+## Run the web stack with Docker
+
+Docker Desktop is the quickest way to run the backend and frontend without
+installing Node locally. From the repository root, run:
+
+```bash
+docker compose up --build
+```
+
+The frontend is available at http://localhost:3000 and the backend at
+http://localhost:3001. Source directories are mounted into the containers, so
+changes restart the relevant development server automatically.
+
+The compose file provides safe placeholder configuration so the stack can start
+for UI and API development. To exercise Stellar transactions, export real
+values for the backend variables in `backend/.env.example` before starting the
+stack (for example, `CONTRACT_ID` and `SERVER_STELLAR_SECRET`). Never commit
+those values.
+
+To stop the stack, press `Ctrl+C`; use `docker compose down` to also remove the
+containers and its named dependency volumes.
+
 ## Running tests locally
 
 Each component has its own test command. Run them from the repo root:

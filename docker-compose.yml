@@ -1,0 +1,48 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      target: development
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      CORS_ORIGIN: http://localhost:3000
+      CONTRACT_ID: ${CONTRACT_ID:-dummy_contract_id}
+      AGENTS_CONTRACT_ID: ${AGENTS_CONTRACT_ID:-dummy_agents_contract_id}
+      SERVER_STELLAR_ADDRESS: ${SERVER_STELLAR_ADDRESS:-GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}
+      SERVER_STELLAR_SECRET: ${SERVER_STELLAR_SECRET:-SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+      STELLAR_NETWORK_PASSPHRASE: ${STELLAR_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+      FACILITATOR_URL: ${FACILITATOR_URL:-http://localhost:3001}
+      USDC_CONTRACT_ID: ${USDC_CONTRACT_ID:-dummy_usdc_contract}
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend:/app
+      - backend_node_modules:/app/node_modules
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(() => process.exit(0)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      target: development
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  backend_node_modules:
+  frontend_node_modules:
