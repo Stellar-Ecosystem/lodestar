@@ -6,8 +6,6 @@ import ServiceCard from '@/components/ServiceCard';
 import ServiceCardSkeleton from '@/components/ServiceCardSkeleton';
 import { CATEGORY_FILTERS, CATEGORY_ICONS } from '@/lib/categoryMeta';
 import { fetchServices } from '@/lib/contract';
-import { filterServices } from '@/lib/registry';
-import { sortServices } from '@/lib/sort';
 import type { Category, SortOption } from '@/lib/types';
 
 const SORTS: { label: string; value: SortOption }[] = [
@@ -24,13 +22,21 @@ export default function RegistryPage() {
   const [query, setQuery]           = useState('');
   const [page, setPage]             = useState(1);
 
-  // SWR replaces the manual setInterval poll: it dedupes concurrent requests,
-  // revalidates every 30s, and only re-renders when the returned data changes.
-  const { data: services = [], isLoading: loading, error: swrError, mutate } = useSWR(
-    ['services', activeCategory],
-    () => fetchServices(activeCategory === 'all' ? undefined : activeCategory),
+  const { data, isLoading: loading, error: swrError, mutate } = useSWR(
+    ['services', activeCategory, page, sort, query],
+    () =>
+      fetchServices(
+        activeCategory === 'all' ? undefined : activeCategory,
+        page - 1,
+        PAGE_SIZE,
+        sort,
+        query,
+      ),
     { refreshInterval: 30_000, revalidateOnFocus: false, keepPreviousData: true }
   );
+
+  const services = data?.services ?? [];
+  const total = data?.total ?? 0;
 
   const error = swrError
     ? swrError instanceof Error
@@ -38,18 +44,14 @@ export default function RegistryPage() {
       : 'Failed to load'
     : null;
 
-  // Reset to page 1 whenever the filtered set changes
+  // Reset to page 1 whenever filters change
   useEffect(() => {
     setPage(1);
   }, [query, sort, activeCategory]);
 
-  const sorted   = sortServices(services, sort);
-  const filtered = filterServices(sorted, query);
-
-  const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages  = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage    = Math.min(page, totalPages);
   const startIndex  = (safePage - 1) * PAGE_SIZE;
-  const paginated   = filtered.slice(startIndex, startIndex + PAGE_SIZE);
 
   // Build a compact page-number list: always show first, last, current ±1, with ellipsis gaps
   function buildPageNumbers(total: number, current: number): (number | '…')[] {
@@ -72,6 +74,11 @@ export default function RegistryPage() {
     setPage(1);
   }
 
+  function handleSortChange(next: SortOption) {
+    setSort(next);
+    setPage(1);
+  }
+
   return (
     <div className="max-w-6xl mx-auto px-6 py-12">
       {/* Header */}
@@ -79,7 +86,7 @@ export default function RegistryPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold">Service Registry</h1>
           <span className="badge bg-primary text-white mono">
-            {filtered.length}
+            {total}
           </span>
         </div>
 
@@ -93,7 +100,8 @@ export default function RegistryPage() {
           />
           <select
             value={sort}
-            onChange={(e) => setSort(e.target.value as SortOption)}
+            onChange={(e) => handleSortChange(e.target.value as SortOption)}
+            aria-label="Sort services"
             className="border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
           >
             {SORTS.map((s) => (
@@ -122,7 +130,7 @@ export default function RegistryPage() {
       </div>
 
       {/* Grid */}
-      {loading ? (
+      {loading && !data ? (
         <div className="grid sm:grid-cols-2 gap-5">
           {Array.from({ length: 4 }).map((_, i) => (
             <ServiceCardSkeleton key={i} />
@@ -139,7 +147,7 @@ export default function RegistryPage() {
             Retry
           </button>
         </div>
-      ) : filtered.length === 0 ? (
+      ) : total === 0 ? (
         <div className="text-center py-24 text-secondary">
           <p className="text-base font-medium">No services found</p>
           <p className="text-sm mt-2">
@@ -153,7 +161,7 @@ export default function RegistryPage() {
       ) : (
         <>
           <div className="grid sm:grid-cols-2 gap-5">
-            {paginated.map((svc) => (
+            {services.map((svc) => (
               <ServiceCard key={svc.id} service={svc} />
             ))}
           </div>
@@ -165,10 +173,10 @@ export default function RegistryPage() {
               <p className="text-sm text-secondary">
                 Showing{' '}
                 <span className="font-medium text-foreground">
-                  {startIndex + 1}–{Math.min(startIndex + PAGE_SIZE, filtered.length)}
+                  {startIndex + 1}–{Math.min(startIndex + PAGE_SIZE, total)}
                 </span>{' '}
                 of{' '}
-                <span className="font-medium text-foreground">{filtered.length}</span>{' '}
+                <span className="font-medium text-foreground">{total}</span>{' '}
                 services
               </p>
 

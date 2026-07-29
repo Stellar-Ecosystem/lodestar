@@ -11,6 +11,7 @@ import type {
   AgentEligibilityResponse,
   AgentSpendCheckResponse,
   AgentSortOption,
+  SortOption,
 } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
@@ -29,10 +30,22 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function fetchServices(category?: Category): Promise<ServiceEntry[]> {
-  const query = category ? `?category=${category}` : '';
-  const data = await apiFetch<ServicesResponse>(`/api/services${query}`);
-  return data.services;
+export async function fetchServices(
+  category?: Category,
+  page = 0,
+  pageSize = 12,
+  sort: SortOption = 'newest',
+  q?: string,
+): Promise<ServicesResponse> {
+  const params = new URLSearchParams();
+  if (category) params.set('category', category);
+  params.set('page', String(page));
+  params.set('pageSize', String(pageSize));
+  params.set('sort', sort);
+  const trimmed = q?.trim();
+  if (trimmed) params.set('q', trimmed);
+  const query = params.toString();
+  return apiFetch<ServicesResponse>(`/api/services${query ? `?${query}` : ''}`);
 }
 
 export async function fetchStats(): Promise<StatsResponse> {

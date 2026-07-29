@@ -24,6 +24,54 @@ const router = Router();
 
 const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
+
+// In-memory cache: fetch all contract pages once per category, then sort/slice in-process.
+// TTL matches the frontend's 30s auto-refresh interval.
+const SERVICES_CACHE_TTL = 30_000;
+/** @type {Map<string, { data: object[], time: number }>} */
+const servicesCache = new Map();
+
+function invalidateServicesCache() {
+  servicesCache.clear();
+}
+
+async function getCachedServices(category) {
+  const key = category || "__all__";
+  const now = Date.now();
+  const cached = servicesCache.get(key);
+  if (cached && now - cached.time < SERVICES_CACHE_TTL) {
+    return cached.data;
+  }
+
+  let page = 0;
+  const all = [];
+  while (true) {
+    const batch = await listServices({
+      category: category || undefined,
+      page,
+      pageSize: PAGE_SIZE,
+    });
+    if (batch.length === 0) break;
+    all.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+    page += 1;
+  }
+
+  servicesCache.set(key, { data: all, time: now });
+  return all;
+}
+
+function sortServicesList(services, sort) {
+  return [...services].sort((a, b) => {
+    if (sort === "reputation") {
+      return b.reputation - a.reputation;
+    }
+    if (sort === "price") {
+      return parseFloat(a.price_usdc) - parseFloat(b.price_usdc);
+    }
+    return b.registered_at - a.registered_at;
+  });
+}
 const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
 function normalizePriceUsdc(value) {
@@ -66,11 +114,22 @@ function parsePositiveSafeInteger(value) {
 // is unavailable so callers can always treat absence as "no warning data".
 router.get("/services", async (req, res) => {
   try {
-    const { category, q, page: pageStr } = req.query;
-    const page = Math.max(0, parseInt(pageStr, 10) || 0);
+    const { category, q, page: pageStr, pageSize: pageSizeStr, sort: sortStr } = req.query;
+    const parsedPage = Number.parseInt(String(pageStr ?? "0"), 10);
+    const parsedPageSize = Number.parseInt(String(pageSizeStr ?? "12"), 10);
+    const page = Number.isFinite(parsedPage) ? Math.max(0, parsedPage) : 0;
+    const pageSize = Number.isFinite(parsedPageSize)
+      ? Math.min(100, Math.max(1, parsedPageSize))
+      : 12;
+    const sort = ["newest", "reputation", "price"].includes(sortStr)
+      ? sortStr
+      : "newest";
+
+    const categoryFilter =
+      category && typeof category === "string" ? category : undefined;
 
     const [servicesResult, ledgerResult] = await Promise.allSettled([
-      listServices({ category: category || undefined, page, pageSize: PAGE_SIZE }),
+      getCachedServices(categoryFilter),
       getCurrentLedgerSequence(),
     ]);
 
@@ -99,7 +158,17 @@ router.get("/services", async (req, res) => {
       );
     }
 
-    res.json({ services, count: services.length });
+    const sorted = sortServicesList(services, sort);
+    const total = sorted.length;
+    const pageSlice = sorted.slice(page * pageSize, (page + 1) * pageSize);
+
+    res.json({
+      services: pageSlice,
+      count: pageSlice.length,
+      total,
+      page,
+      pageSize,
+    });
   } catch (err) {
     if (err instanceof ContractError) {
       if (err.code === "SIMULATION_FAILED") {
@@ -397,6 +466,7 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
     validatePreparedRegistrySubmission(submitToken, signedXdr);
 
     const result = await submitSignedRegistryTx(signedXdr);
+    invalidateServicesCache();
     logger.info({ hash: result.hash, id: result.id }, "Submitted wallet-signed registry tx");
     res.json({ success: true, ...result });
   } catch (err) {
@@ -488,4 +558,5 @@ router.get("/health", async (req, res) => {
   }
 });
 
+export { invalidateServicesCache };
 export default router;
