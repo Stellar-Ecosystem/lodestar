@@ -1,4 +1,4 @@
-import { sortServices, sortAgents, sortServicesWithTieBreaker, sortAgentsWithTieBreaker } from './sort';
+import { sortServices, sortAgents, sortServicesWithTieBreaker, sortAgentsWithTieBreaker, parsePriceMicroUsdc } from './sort';
 import type { ServiceEntry, AgentEntry, SortOption, AgentSortOption } from './types';
 
 function makeAgent(overrides: Partial<AgentEntry> = {}): AgentEntry {
@@ -30,6 +30,32 @@ function makeService(overrides: Partial<ServiceEntry> = {}): ServiceEntry {
 
 
 
+describe('parsePriceMicroUsdc', () => {
+  it('parses standard USDC strings correctly', () => {
+    expect(parsePriceMicroUsdc('1.50')).toBe(15_000_000);
+    expect(parsePriceMicroUsdc('0.25')).toBe(2_500_000);
+    expect(parsePriceMicroUsdc('0.75')).toBe(7_500_000);
+    expect(parsePriceMicroUsdc('1.00')).toBe(10_000_000);
+    expect(parsePriceMicroUsdc('0.50')).toBe(5_000_000);
+    expect(parsePriceMicroUsdc('0.001')).toBe(10_000);
+    expect(parsePriceMicroUsdc('100')).toBe(1_000_000_000);
+  });
+
+  it('returns null for unparseable values', () => {
+    expect(parsePriceMicroUsdc('abc')).toBeNull();
+    expect(parsePriceMicroUsdc('0.001abc')).toBeNull();
+    expect(parsePriceMicroUsdc('')).toBeNull();
+    expect(parsePriceMicroUsdc('  ')).toBeNull();
+    expect(parsePriceMicroUsdc('-1.00')).toBeNull();
+    expect(parsePriceMicroUsdc('NaN')).toBeNull();
+  });
+
+  it('returns null for non-string input', () => {
+    expect(parsePriceMicroUsdc(null as unknown as string)).toBeNull();
+    expect(parsePriceMicroUsdc(undefined as unknown as string)).toBeNull();
+  });
+});
+
 describe('sortServices', () => {
   it('sorts by newest (registered_at descending)', () => {
     const services = [
@@ -59,6 +85,29 @@ describe('sortServices', () => {
     ];
     const result = sortServices(services, 'price');
     expect(result.map((s) => s.id)).toEqual([2, 3, 1]);
+  });
+
+  it('does not disturb ordering of valid entries when a malformed price exists', () => {
+    const services = [
+      makeService({ id: 1, price_usdc: '1.50' }),
+      makeService({ id: 2, price_usdc: 'not-a-price' }),
+      makeService({ id: 3, price_usdc: '0.25' }),
+      makeService({ id: 4, price_usdc: '0.75' }),
+    ];
+    const result = sortServices(services, 'price');
+    // Valid entries [3, 4, 1] come first in price order; malformed entry (id: 2) sorts last
+    expect(result.map((s) => s.id)).toEqual([3, 4, 1, 2]);
+  });
+
+  it('places unparseable prices at the end', () => {
+    const services = [
+      makeService({ id: 1, price_usdc: '0.50' }),
+      makeService({ id: 2, price_usdc: 'bad' }),
+      makeService({ id: 3, price_usdc: '0.10' }),
+    ];
+    const result = sortServices(services, 'price');
+    // id 3 (0.10) < id 1 (0.50) < id 2 (unparseable)
+    expect(result.map((s) => s.id)).toEqual([3, 1, 2]);
   });
 
   it('does not mutate the original array', () => {
@@ -121,7 +170,7 @@ describe('sortServicesWithTieBreaker', () => {
       makeService({ id: 2, reputation: 10, price_usdc: '0.50' }),
     ];
     const result = sortServicesWithTieBreaker(services, 'reputation', (a, b) =>
-      parseFloat(a.price_usdc) - parseFloat(b.price_usdc)
+      parsePriceMicroUsdc(a.price_usdc)! - parsePriceMicroUsdc(b.price_usdc)!
     );
     expect(result.map((s) => s.id)).toEqual([2, 1]);
   });
