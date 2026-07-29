@@ -53,10 +53,13 @@ vi.mock('../middleware/rateLimiter.js', () => ({
 }));
 
 let app;
+let invalidateServicesCache;
 const VALID_STELLAR_ADDRESS = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
 
 beforeAll(async () => {
-  const router = (await import('./registry.js')).default;
+  const registry = await import('./registry.js');
+  invalidateServicesCache = registry.invalidateServicesCache;
+  const router = registry.default;
   app = express();
   app.use(express.json());
   app.use('/api', router);
@@ -79,6 +82,10 @@ function makeService(overrides = {}) {
 }
 
 describe('GET /api/services', () => {
+  beforeEach(() => {
+    invalidateServicesCache();
+  });
+
   it('should return all services when no q param', async () => {
     const services = [makeService({ id: 1 }), makeService({ id: 2, name: 'Other' })];
     mockListServices.mockResolvedValueOnce(services);
@@ -231,6 +238,41 @@ describe('GET /api/services', () => {
     expect(res.body.services).toHaveLength(2);
     expect(res.body.services.map((s) => s.id)).toEqual([1, 2]);
     expect(res.body.count).toBe(2);
+  });
+
+  it('sorts the full dataset before paginating', async () => {
+    const services = [
+      makeService({ id: 1, name: 'Expensive', price_usdc: '9.00' }),
+      makeService({ id: 2, name: 'Cheap', price_usdc: '1.00' }),
+      makeService({ id: 3, name: 'Mid', price_usdc: '5.00' }),
+    ];
+    mockListServices.mockResolvedValueOnce(services);
+
+    const page0 = await request(app).get('/api/services?page=0&pageSize=2&sort=price');
+    expect(page0.status).toBe(200);
+    expect(page0.body.total).toBe(3);
+    expect(page0.body.services.map((s) => s.name)).toEqual(['Cheap', 'Mid']);
+
+    const page1 = await request(app).get('/api/services?page=1&pageSize=2&sort=price');
+    expect(page1.status).toBe(200);
+    expect(page1.body.services.map((s) => s.name)).toEqual(['Expensive']);
+  });
+
+  it('resets sort order when sort query changes', async () => {
+    const services = [
+      makeService({ id: 1, name: 'HighRep', registered_at: 100, reputation: 200 }),
+      makeService({ id: 2, name: 'New', registered_at: 500, reputation: 50 }),
+    ];
+    mockListServices.mockResolvedValueOnce(services);
+
+    const byNewest = await request(app).get('/api/services?sort=newest');
+    expect(byNewest.body.services[0].name).toBe('New');
+
+    invalidateServicesCache();
+    mockListServices.mockResolvedValueOnce(services);
+
+    const byReputation = await request(app).get('/api/services?sort=reputation');
+    expect(byReputation.body.services[0].id).toBe(1);
   });
 });
 

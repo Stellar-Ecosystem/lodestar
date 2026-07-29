@@ -29,6 +29,9 @@ export interface StatsResponse {
 export interface ServicesResponse {
   services: ServiceEntry[];
   count: number;
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface ReputationResponse {
