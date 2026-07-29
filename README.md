@@ -289,7 +289,8 @@ Lodestar addresses all three brief requirements:
 
 - **Frontend**: https://lodestar-ruddy.vercel.app
 - **Backend API**: https://lodestar-8na4.onrender.com/api/services
-- **Health Check**: https://lodestar-8na4.onrender.com/healthz
+- **Liveness Probe**: https://lodestar-8na4.onrender.com/livez (Process health only, no external dependencies)
+- **Readiness Probe**: https://lodestar-8na4.onrender.com/healthz or `/readyz` (RPC and contract reachability)
 - **Registry Contract**: [`CAKZALA72JTR6BV6N44E7L52C7QU5BAYYKVKYR2DFSV2YD2A2OI6WJMP`](https://stellar.expert/explorer/testnet/contract/CAKZALA72JTR6BV6N44E7L52C7QU5BAYYKVKYR2DFSV2YD2A2OI6WJMP)
 - **Agents Contract**: [`CCT4FUTW54K7BYZFOCBEM5MVLS42ZE25WJ3ONW7RLYXAF3HQS7ZQYA2N`](https://stellar.expert/explorer/testnet/contract/CCT4FUTW54K7BYZFOCBEM5MVLS42ZE25WJ3ONW7RLYXAF3HQS7ZQYA2N)
 
