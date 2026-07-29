@@ -24,6 +24,7 @@ const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent'
 const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
 const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
 const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
+const MAX_PER_RUN          = process.env.AGENT_MAX_PER_RUN    ?? '5.00';
 const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
   ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
   : ['weather', 'search'];
@@ -53,6 +54,7 @@ export const EVENT = {
   PAYMENT_SUCCESS:     'payment_success',
   PAYMENT_FAILED:      'payment_failed',
   SCORE_UPDATED:       'score_updated',
+  RUN_CAP_EXCEEDED:    'run_cap_exceeded',
   AGENT_COMPLETE:      'agent_complete',
 };
 
@@ -426,8 +428,23 @@ export async function main() {
   let successCount = 0;
   let failCount = 0;
   let totalUsdcSpent = 0;
+  const maxPerRunRaw = parseFloat(process.env.AGENT_MAX_PER_RUN ?? MAX_PER_RUN);
+  const maxPerRun = Number.isNaN(maxPerRunRaw) ? 5.0 : maxPerRunRaw;
 
   for (const { category, buildUrl } of tasks) {
+    if (totalUsdcSpent >= maxPerRun) {
+      logger.warn(
+        {
+          event: EVENT.RUN_CAP_EXCEEDED,
+          agentAddress: AGENT_ADDRESS,
+          totalUsdcSpent: totalUsdcSpent.toFixed(6),
+          maxPerRun: maxPerRun.toFixed(6),
+        },
+        'Run halted: cumulative spend cap reached'
+      );
+      break;
+    }
+
     const result = await runTask(category, buildUrl, scoringEnabled, httpClient);
     if (result.success) {
       successCount++;
