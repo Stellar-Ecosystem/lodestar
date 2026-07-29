@@ -17,6 +17,17 @@ function makeService(overrides: Partial<ServiceEntry> = {}): ServiceEntry {
   };
 }
 
+function makeAgent(overrides: Partial<AgentEntry> = {}): AgentEntry {
+  return {
+    address: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWFL',
+    name: 'Test Agent',
+    endpoint: 'https://example.com',
+    score: 0,
+    total_payments: '0',
+    registered_at: '0',
+    ...overrides,
+  };
+}
 
 
 describe('sortServices', () => {

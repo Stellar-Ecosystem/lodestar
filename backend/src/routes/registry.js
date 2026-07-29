@@ -64,6 +64,21 @@ function parsePositiveSafeInteger(value) {
 // Appends ttl_warning:true when the entry's estimated remaining TTL falls
 // below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
 // is unavailable so callers can always treat absence as "no warning data".
+function annotateTtlWarning(service, currentLedger) {
+  if (currentLedger == null) return service;
+
+  return {
+    ...service,
+    ttl_warning:
+      currentLedger >=
+      service.registered_at +
+        SERVICE_MAX_TTL -
+        SERVICE_TTL_WARNING_LEDGERS,
+  };
+}
+// Appends ttl_warning:true when the entry's estimated remaining TTL falls
+// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
+// is unavailable so callers can always treat absence as "no warning data".
 router.get("/services", async (req, res) => {
   try {
     const { category, q, page: pageStr } = req.query;
@@ -146,10 +161,18 @@ router.get("/services/:id", async (req, res) => {
 
     const currentLedger =
       ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
-    res.json(annotateTtlWarning(service, currentLedger));
+
+    const response = annotateTtlWarning(service, currentLedger);
+
+    
+
+    res.json(response);
   } catch (err) {
-    logger.error({ err }, "GET /api/services/:id failed");
-    res.status(500).json({ error: "Failed to fetch service", code: "FETCH_ERROR" });
+  logger.error({ err }, "GET /api/services/:id failed");
+  res.status(500).json({
+    error: "Failed to fetch service",
+    code: "FETCH_ERROR",
+  });
   }
 });
 
