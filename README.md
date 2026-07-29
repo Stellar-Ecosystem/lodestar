@@ -321,3 +321,9 @@ Full payment history: [GAY42L…KGU3 on Stellar Explorer](https://stellar.expert
 ## License
 
 MIT
+
+---
+
+## Troubleshooting
+
+See [`docs/troubleshooting.md`](docs/troubleshooting.md) for help with common setup and runtime issues.
