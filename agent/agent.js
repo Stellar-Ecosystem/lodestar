@@ -41,6 +41,86 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
+const NETWORK_RETRY_MAX_ATTEMPTS = Math.max(1, Number(process.env.AGENT_NETWORK_RETRY_ATTEMPTS ?? '3'));
+const NETWORK_RETRY_BASE_DELAY_MS = Math.max(0, Number(process.env.AGENT_NETWORK_RETRY_BASE_DELAY_MS ?? '100'));
+const NETWORK_RETRY_MAX_DELAY_MS = Math.max(0, Number(process.env.AGENT_NETWORK_RETRY_MAX_DELAY_MS ?? '1000'));
+
+function getRetryDelayMs(attempt) {
+  const backoffMs = Math.min(NETWORK_RETRY_MAX_DELAY_MS, NETWORK_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1)));
+  const jitterMs = Math.floor(Math.random() * 100);
+  return backoffMs + jitterMs;
+}
+
+function isRetryableNetworkError(err) {
+  if (!err) return false;
+  const message = (err.message ?? '').toLowerCase();
+  return message.includes('network')
+    || message.includes('fetch')
+    || message.includes('socket')
+    || message.includes('econnreset')
+    || message.includes('eai_again')
+    || message.includes('timeout')
+    || message.includes('aborted')
+    || message.includes('temporarily unavailable')
+    || message.includes('dns');
+}
+
+function isRetryableResponse(response) {
+  if (!response) return false;
+  return response.status === 408 || response.status === 429 || response.status >= 500;
+}
+
+async function withRetry(operation, requestFn, { allowRetry = true, shouldRetry = (err, response) => isRetryableNetworkError(err) || isRetryableResponse(response) } = {}) {
+  let lastError;
+  let lastResponse;
+
+  for (let attempt = 1; attempt <= NETWORK_RETRY_MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await requestFn();
+      lastResponse = response;
+      const retry = allowRetry && attempt < NETWORK_RETRY_MAX_ATTEMPTS && shouldRetry(null, response);
+      if (!retry) return response;
+
+      const delayMs = getRetryDelayMs(attempt);
+      logger.warn(
+        {
+          event: 'network_retry',
+          operation,
+          attempt,
+          maxAttempts: NETWORK_RETRY_MAX_ATTEMPTS,
+          delayMs,
+          status: response?.status,
+          retryable: true,
+        },
+        'Retrying transient network failure'
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    } catch (err) {
+      lastError = err;
+      const retry = allowRetry && attempt < NETWORK_RETRY_MAX_ATTEMPTS && shouldRetry(err, null);
+      if (!retry) throw err;
+
+      const delayMs = getRetryDelayMs(attempt);
+      logger.warn(
+        {
+          event: 'network_retry',
+          operation,
+          attempt,
+          maxAttempts: NETWORK_RETRY_MAX_ATTEMPTS,
+          delayMs,
+          retryable: true,
+          err,
+        },
+        'Retrying transient network failure'
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  if (lastError) throw lastError;
+  return lastResponse;
+}
+
 // ── Canonical event names ─────────────────────────────────────────────────────
 
 export const EVENT = {
@@ -62,7 +142,16 @@ let currentScore = null;
 
 export async function ensureRegistered() {
   try {
-    const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
+    const res = await withRetry(
+      'ensureRegistered',
+      () => fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`),
+      {
+        shouldRetry: (err, response) => {
+          if (response?.status === 503) return false;
+          return isRetryableNetworkError(err) || isRetryableResponse(response);
+        },
+      }
+    );
     if (res.status === 503) {
       logger.info(
         { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false },
@@ -89,18 +178,24 @@ export async function ensureRegistered() {
         { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS },
         'Not registered — registering now…'
       );
-      const regRes = await fetch(`${LODESTAR_API_URL}/api/agents/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agentAddress: AGENT_ADDRESS,
-          name: AGENT_NAME,
-          description: AGENT_DESC,
-          maxPerTxUsdc: MAX_PER_TX,
-          maxPerDayUsdc: MAX_PER_DAY,
-          allowedCategories: ALLOWED_CATS,
+      const regRes = await withRetry(
+        'ensureRegistered.register',
+        () => fetch(`${LODESTAR_API_URL}/api/agents/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentAddress: AGENT_ADDRESS,
+            name: AGENT_NAME,
+            description: AGENT_DESC,
+            maxPerTxUsdc: MAX_PER_TX,
+            maxPerDayUsdc: MAX_PER_DAY,
+            allowedCategories: ALLOWED_CATS,
+          }),
         }),
-      });
+        {
+          shouldRetry: (err, response) => isRetryableNetworkError(err) || isRetryableResponse(response),
+        }
+      );
       if (regRes.ok) {
         currentScore = 100;
         logger.info(
@@ -336,7 +431,11 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     const paymentHeaders = client.encodePaymentSignatureHeader(paymentPayload);
     let response;
     try {
-      response = await fetch(endpointUrl, { headers: paymentHeaders, keepalive: true });
+      response = await withRetry(
+        'payment_submission',
+        () => fetch(endpointUrl, { headers: paymentHeaders, keepalive: true }),
+        { allowRetry: false }
+      );
     } catch (err) {
       logger.error(
         {
