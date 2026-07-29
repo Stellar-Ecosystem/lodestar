@@ -46,3 +46,7 @@ All of the above run automatically on every PR and push to `main` via GitHub Act
 1. Fork the repo and create a branch: `git checkout -b feat/your-feature`
 2. Make your changes and ensure all tests pass locally
 3. Open a PR against `main` with a clear description of what changed and why
+
+## Troubleshooting
+
+If you run into any issues during setup, check our [`docs/troubleshooting.md`](docs/troubleshooting.md) guide. It covers common failures such as missing WASM targets, Stellar CLI installation problems, Freighter configuration, RPC rate limits, and insufficient testnet balance.
