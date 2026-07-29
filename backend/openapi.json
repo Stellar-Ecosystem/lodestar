@@ -1,0 +1,3117 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Lodestar API",
+    "description": "Service discovery backend for x402 on Stellar",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Stellar Ecosystem",
+      "url": "https://github.com/Stellar-Ecosystem/lodestar"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development server"
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Health check endpoint",
+        "description": "Returns the health status of the API and its dependencies",
+        "tags": ["Health"],
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service is unhealthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/services": {
+      "get": {
+        "summary": "List services",
+        "description": "Get a paginated list of registered services with optional filtering",
+        "tags": ["Registry"],
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "description": "Filter by service category",
+            "schema": {
+              "type": "string",
+              "enum": ["search", "weather", "finance", "ai", "data", "compute"]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search query to filter by name or description",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (0-indexed)",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of services",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicesListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/services/{id}": {
+      "get": {
+        "summary": "Get service by ID",
+        "description": "Retrieve detailed information about a specific service",
+        "tags": ["Registry"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Service ID",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Service details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Service"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid service ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/services/{id}/deactivate": {
+      "post": {
+        "summary": "Deactivate service",
+        "description": "Prepare a transaction to deactivate a service (provider-authenticated)",
+        "tags": ["Registry"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Service ID",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeactivateServiceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unsigned transaction prepared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedTransaction"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Provider mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already inactive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Service read failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Transaction timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/services/{id}/history": {
+      "get": {
+        "summary": "Get service reputation history",
+        "description": "Retrieve the reputation history for a specific service",
+        "tags": ["Registry"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Service ID",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reputation history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReputationHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid service ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "summary": "Get registry statistics",
+        "description": "Retrieve overall statistics about the service registry",
+        "tags": ["Registry"],
+        "responses": {
+          "200": {
+            "description": "Registry statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryStats"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registry/by-provider/{address}": {
+      "get": {
+        "summary": "Get services by provider",
+        "description": "Retrieve all services registered by a specific provider address",
+        "tags": ["Registry"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Provider Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of provider's services",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicesListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid address format",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registry/prepare-register": {
+      "post": {
+        "summary": "Prepare service registration",
+        "description": "Build an unsigned transaction to register a new service",
+        "tags": ["Registry"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterServiceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unsigned transaction prepared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedTransaction"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate service",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Transaction timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registry/prepare-deactivate": {
+      "post": {
+        "summary": "Prepare service deactivation",
+        "description": "Build an unsigned transaction to deactivate a service",
+        "tags": ["Registry"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrepareDeactivateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unsigned transaction prepared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedTransaction"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Transaction timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registry/submit-signed-tx": {
+      "post": {
+        "summary": "Submit signed transaction",
+        "description": "Submit a wallet-signed transaction for registry operations",
+        "tags": ["Registry"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitSignedTxRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transaction submitted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitTxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Transaction timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reputation/{id}": {
+      "post": {
+        "summary": "Update service reputation",
+        "description": "Submit a reputation vote for a service (agent-authenticated)",
+        "tags": ["Registry"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Service ID",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReputationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reputation updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReputationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Agent not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Transaction timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Get API health status",
+        "description": "Returns detailed health information about the API and Stellar network",
+        "tags": ["Health"],
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiHealthResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Health check failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiHealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents": {
+      "get": {
+        "summary": "List agents",
+        "description": "Get a paginated and sorted list of registered agents",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (0-indexed)",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "description": "Number of items per page (1-100)",
+            "schema": {
+              "type": "integer",
+              "default": 12,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort order",
+            "schema": {
+              "type": "string",
+              "enum": ["score", "payments", "newest"],
+              "default": "score"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentsListResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/count": {
+      "get": {
+        "summary": "Get agent count",
+        "description": "Retrieve the total number of registered agents",
+        "tags": ["Agents"],
+        "responses": {
+          "200": {
+            "description": "Agent count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/stats": {
+      "get": {
+        "summary": "Get agent statistics",
+        "description": "Retrieve overall statistics about registered agents",
+        "tags": ["Agents"],
+        "responses": {
+          "200": {
+            "description": "Agent statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentStats"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}": {
+      "get": {
+        "summary": "Get agent by address",
+        "description": "Retrieve detailed information about a specific agent",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/policy": {
+      "get": {
+        "summary": "Get agent policy",
+        "description": "Retrieve the spending policy for a specific agent",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentPolicy"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Policy not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/score": {
+      "get": {
+        "summary": "Get agent score",
+        "description": "Retrieve the current score for a specific agent",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent score",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/eligible": {
+      "get": {
+        "summary": "Check agent eligibility",
+        "description": "Check if an agent is eligible based on minimum score requirement",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          },
+          {
+            "name": "min_score",
+            "in": "query",
+            "description": "Minimum score required",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Eligibility status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EligibilityResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/can-spend": {
+      "get": {
+        "summary": "Check if agent can spend",
+        "description": "Check if an agent is allowed to spend a specific amount",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          },
+          {
+            "name": "amount",
+            "in": "query",
+            "required": true,
+            "description": "Amount in USDC",
+            "schema": {
+              "type": "string",
+              "default": "0"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "description": "Service category",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Spending check result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanSpendResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/register": {
+      "post": {
+        "summary": "Register agent",
+        "description": "Register a new agent on-chain",
+        "tags": ["Agents"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterAgentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Agent registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterAgentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Agent already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/payment": {
+      "post": {
+        "summary": "Record agent payment",
+        "description": "Record a payment for an agent (HMAC authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "headers": [
+          {
+            "name": "X-Idempotency-Key",
+            "required": true,
+            "description": "Unique idempotency key for the payment (1-255 printable ASCII characters)",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payment recorded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Transaction timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/payment-history": {
+      "get": {
+        "summary": "Get agent payment history",
+        "description": "Retrieve the payment history for a specific agent",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of items to return",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of items to skip",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payment history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pagination parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/check": {
+      "get": {
+        "summary": "Check agent spending (legacy)",
+        "description": "Legacy endpoint to check if agent can spend a specific amount in stroops",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          },
+          {
+            "name": "amount",
+            "in": "query",
+            "description": "Amount in stroops",
+            "schema": {
+              "type": "string",
+              "default": "0"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Spending check result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyCheckResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/build-tx": {
+      "post": {
+        "summary": "Build agent transaction",
+        "description": "Build an unsigned transaction for agent operations (owner authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "headers": [
+          {
+            "name": "X-Caller-Address",
+            "required": true,
+            "description": "Owner's Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuildAgentTxRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unsigned transaction built",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuildTxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/submit-signed-tx": {
+      "post": {
+        "summary": "Submit signed agent transaction",
+        "description": "Submit a wallet-signed transaction for agent operations",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitAgentTxRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transaction submitted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitAgentTxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/flag": {
+      "post": {
+        "summary": "Flag agent (legacy)",
+        "description": "Flag an agent (legacy route, owner authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlagAgentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Agent flagged successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/agents/{address}/flag": {
+      "post": {
+        "summary": "Flag agent (admin)",
+        "description": "Flag an agent (admin authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlagAgentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Agent flagged successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/agents/{address}/deactivate": {
+      "post": {
+        "summary": "Deactivate agent (admin)",
+        "description": "Deactivate an agent (admin authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent deactivated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/deactivate": {
+      "post": {
+        "summary": "Deactivate agent",
+        "description": "Deactivate an agent (owner authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "headers": [
+          {
+            "name": "X-Caller-Address",
+            "required": true,
+            "description": "Owner's Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent deactivated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/update-policy": {
+      "post": {
+        "summary": "Update agent policy",
+        "description": "Update an agent's spending policy (owner authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "headers": [
+          {
+            "name": "X-Caller-Address",
+            "required": true,
+            "description": "Owner's Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Policy updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{address}/policy": {
+      "put": {
+        "summary": "Update agent policy (PUT)",
+        "description": "Update an agent's spending policy using PUT method (owner authenticated)",
+        "tags": ["Agents"],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "Agent Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "headers": [
+          {
+            "name": "X-Caller-Address",
+            "required": true,
+            "description": "Owner's Stellar address",
+            "schema": {
+              "type": "string",
+              "format": "stellar-address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Policy updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agents contract not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/demo/weather": {
+      "get": {
+        "summary": "Get weather data",
+        "description": "Retrieve real-time weather data for specified coordinates (x402 payment required)",
+        "tags": ["Demo"],
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "description": "Latitude",
+            "schema": {
+              "type": "number",
+              "default": 40.7128
+            }
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "description": "Longitude",
+            "schema": {
+              "type": "number",
+              "default": -74.006
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Weather data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeatherResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid coordinates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Weather fetch failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/demo/search": {
+      "get": {
+        "summary": "Web search",
+        "description": "Perform a web search query (x402 payment required)",
+        "tags": ["Demo"],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Search query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing query parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Search failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/demo/activity": {
+      "get": {
+        "summary": "Get activity feed",
+        "description": "Retrieve the activity feed with pagination",
+        "tags": ["Demo"],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of items to return",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of items to skip",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activity feed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityFeedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pagination parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/demo-run": {
+      "post": {
+        "summary": "Run demo",
+        "description": "Execute a demo run against a registered service",
+        "tags": ["Demo"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemoRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Demo run completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoRunResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Demo run failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error", "code"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Error message"
+          },
+          "code": {
+            "type": "string",
+            "description": "Error code"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status", "rpc", "contract", "timestamp", "queueDepth", "pendingTransactions"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["healthy", "degraded", "unhealthy"]
+          },
+          "rpc": {
+            "type": "string",
+            "enum": ["healthy", "unhealthy"]
+          },
+          "contract": {
+            "type": "string",
+            "enum": ["healthy", "unhealthy"]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "queueDepth": {
+            "type": "integer"
+          },
+          "pendingTransactions": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "Service": {
+        "type": "object",
+        "required": ["id", "name", "description", "endpoint", "price_usdc", "category", "provider", "registered_at", "active"],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri"
+          },
+          "price_usdc": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["search", "weather", "finance", "ai", "data", "compute"]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "pay_to": {
+            "type": "string"
+          },
+          "registered_at": {
+            "type": "integer"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "reputation": {
+            "type": "integer"
+          },
+          "ttl_warning": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ServicesListResponse": {
+        "type": "object",
+        "required": ["services", "count"],
+        "properties": {
+          "services": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Service"
+            }
+          },
+          "count": {
+            "type": "integer"
+          }
+        }
+      },
+      "DeactivateServiceRequest": {
+        "type": "object",
+        "required": ["providerAddress"],
+        "properties": {
+          "providerAddress": {
+            "type": "string",
+            "format": "stellar-address"
+          }
+        }
+      },
+      "PreparedTransaction": {
+        "type": "object",
+        "required": ["xdr", "submitToken"],
+        "properties": {
+          "xdr": {
+            "type": "string",
+            "description": "Unsigned transaction XDR in base64"
+          },
+          "submitToken": {
+            "type": "string",
+            "description": "Token for submitting the signed transaction"
+          }
+        }
+      },
+      "ReputationHistoryResponse": {
+        "type": "object",
+        "required": ["history"],
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "positive": {
+                  "type": "boolean"
+                },
+                "agent": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "RegistryStats": {
+        "type": "object",
+        "required": ["totalServices", "categories", "latestService"],
+        "properties": {
+          "totalServices": {
+            "type": "integer"
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "latestService": {
+            "$ref": "#/components/schemas/Service"
+          }
+        }
+      },
+      "RegisterServiceRequest": {
+        "type": "object",
+        "required": ["name", "description", "endpoint", "priceUsdc", "category", "providerAddress"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 50
+          },
+          "description": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 200
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri"
+          },
+          "priceUsdc": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["search", "weather", "finance", "ai", "data", "compute"]
+          },
+          "providerAddress": {
+            "type": "string",
+            "format": "stellar-address"
+          },
+          "payTo": {
+            "type": "string"
+          }
+        }
+      },
+      "PrepareDeactivateRequest": {
+        "type": "object",
+        "required": ["providerAddress", "id"],
+        "properties": {
+          "providerAddress": {
+            "type": "string",
+            "format": "stellar-address"
+          },
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "SubmitSignedTxRequest": {
+        "type": "object",
+        "required": ["signedXdr", "submitToken"],
+        "properties": {
+          "signedXdr": {
+            "type": "string",
+            "description": "Signed transaction XDR in base64"
+          },
+          "submitToken": {
+            "type": "string"
+          }
+        }
+      },
+      "SubmitTxResponse": {
+        "type": "object",
+        "required": ["success", "hash", "id"],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          }
+        }
+      },
+      "ReputationRequest": {
+        "type": "object",
+        "required": ["positive", "agent"],
+        "properties": {
+          "positive": {
+            "type": "boolean"
+          },
+          "agent": {
+            "type": "string",
+            "format": "stellar-address"
+          }
+        }
+      },
+      "ReputationResponse": {
+        "type": "object",
+        "required": ["success", "newReputation"],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "newReputation": {
+            "type": "integer"
+          }
+        }
+      },
+      "ApiHealthResponse": {
+        "type": "object",
+        "required": ["status", "network", "contractId", "rpc", "contract", "timestamp"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["healthy", "unhealthy"]
+          },
+          "network": {
+            "type": "string"
+          },
+          "contractId": {
+            "type": "string"
+          },
+          "rpc": {
+            "type": "string"
+          },
+          "contract": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentsListResponse": {
+        "type": "object",
+        "required": ["agents", "total", "page", "pageSize"],
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Agent"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "pageSize": {
+            "type": "integer"
+          }
+        }
+      },
+      "Agent": {
+        "type": "object",
+        "required": ["address", "name", "description", "score", "registered_at", "active", "flagged"],
+        "properties": {
+          "address": {
+            "type": "string",
+            "format": "stellar-address"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "score": {
+            "type": "integer"
+          },
+          "registered_at": {
+            "type": "integer"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "flagged": {
+            "type": "boolean"
+          },
+          "total_payments": {
+            "type": "string"
+          },
+          "total_volume_stroops": {
+            "type": "string"
+          }
+        }
+      },
+      "CountResponse": {
+        "type": "object",
+        "required": ["count"],
+        "properties": {
+          "count": {
+            "type": "integer"
+          }
+        }
+      },
+      "AgentStats": {
+        "type": "object",
+        "required": ["totalAgents", "avgScore", "topAgent", "totalVolume", "totalVolumeStroops"],
+        "properties": {
+          "totalAgents": {
+            "type": "integer"
+          },
+          "avgScore": {
+            "type": "integer"
+          },
+          "topAgent": {
+            "$ref": "#/components/schemas/Agent"
+          },
+          "totalVolume": {
+            "type": "string"
+          },
+          "totalVolumeStroops": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentDetails": {
+        "type": "object",
+        "required": ["agent", "policy"],
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/Agent"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/AgentPolicy"
+          }
+        }
+      },
+      "AgentPolicy": {
+        "type": "object",
+        "required": ["max_per_tx_stroops", "max_per_day_stroops", "daily_spent_stroops", "allowed_categories", "min_score_to_earn"],
+        "properties": {
+          "max_per_tx_stroops": {
+            "type": "string"
+          },
+          "max_per_day_stroops": {
+            "type": "string"
+          },
+          "daily_spent_stroops": {
+            "type": "string"
+          },
+          "allowed_categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "min_score_to_earn": {
+            "type": "integer"
+          }
+        }
+      },
+      "ScoreResponse": {
+        "type": "object",
+        "required": ["score"],
+        "properties": {
+          "score": {
+            "type": "integer"
+          }
+        }
+      },
+      "EligibilityResponse": {
+        "type": "object",
+        "required": ["eligible", "score", "required"],
+        "properties": {
+          "eligible": {
+            "type": "boolean"
+          },
+          "score": {
+            "type": "integer"
+          },
+          "required": {
+            "type": "integer"
+          }
+        }
+      },
+      "CanSpendResponse": {
+        "type": "object",
+        "required": ["allowed"],
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "RegisterAgentRequest": {
+        "type": "object",
+        "required": ["agentAddress", "name", "description"],
+        "properties": {
+          "agentAddress": {
+            "type": "string",
+            "format": "stellar-address"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64
+          },
+          "description": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 256
+          }
+        }
+      },
+      "RegisterAgentResponse": {
+        "type": "object",
+        "required": ["success", "agentCount", "agentAddress"],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "agentCount": {
+            "type": "integer"
+          },
+          "agentAddress": {
+            "type": "string",
+            "format": "stellar-address"
+          }
+        }
+      },
+      "PaymentRequest": {
+        "type": "object",
+        "required": ["amountUsdc", "success", "serviceId"],
+        "properties": {
+          "amountUsdc": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "serviceId": {
+            "type": "integer"
+          }
+        }
+      },
+      "PaymentResponse": {
+        "type": "object",
+        "required": ["success", "newScore"],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "newScore": {
+            "type": "integer"
+          },
+          "idempotent": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PaymentHistoryResponse": {
+        "type": "object",
+        "required": ["payments", "pagination"],
+        "properties": {
+          "payments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "agent": {
+                  "type": "string"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "amount": {
+                  "type": "string"
+                },
+                "txHash": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "pagination": {
+            "type": "object",
+            "required": ["total", "limit", "offset", "hasMore"],
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "limit": {
+                "type": "integer"
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "hasMore": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "LegacyCheckResponse": {
+        "type": "object",
+        "required": ["allowed", "agentAddress", "amountStroops"],
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "agentAddress": {
+            "type": "string",
+            "format": "stellar-address"
+          },
+          "amountStroops": {
+            "type": "string"
+          }
+        }
+      },
+      "BuildAgentTxRequest": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["deactivate", "update_policy"]
+          },
+          "maxPerTxStroops": {
+            "oneOf": [
+              {"type": "string"},
+              {"type": "number"}
+            ]
+          },
+          "maxPerDayStroops": {
+            "oneOf": [
+              {"type": "string"},
+              {"type": "number"}
+            ]
+          },
+          "allowedCategories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "minScoreToEarn": {
+            "type": "number"
+          }
+        }
+      },
+      "BuildTxResponse": {
+        "type": "object",
+        "required": ["xdr"],
+        "properties": {
+          "xdr": {
+            "type": "string",
+            "description": "Unsigned transaction XDR in base64"
+          }
+        }
+      },
+      "SubmitAgentTxRequest": {
+        "type": "object",
+        "required": ["signedXdr"],
+        "properties": {
+          "signedXdr": {
+            "type": "string",
+            "description": "Signed transaction XDR in base64"
+          }
+        }
+      },
+      "SubmitAgentTxResponse": {
+        "type": "object",
+        "required": ["success", "hash"],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "hash": {
+            "type": "string"
+          }
+        }
+      },
+      "FlagAgentRequest": {
+        "type": "object",
+        "required": ["reason"],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "UpdatePolicyRequest": {
+        "type": "object",
+        "required": ["maxPerTxStroops", "maxPerDayStroops", "allowedCategories", "minScoreToEarn"],
+        "properties": {
+          "maxPerTxStroops": {
+            "oneOf": [
+              {"type": "string"},
+              {"type": "number"}
+            ]
+          },
+          "maxPerDayStroops": {
+            "oneOf": [
+              {"type": "string"},
+              {"type": "number"}
+            ]
+          },
+          "allowedCategories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "minScoreToEarn": {
+            "type": "number"
+          }
+        }
+      },
+      "WeatherResponse": {
+        "type": "object",
+        "required": ["latitude", "longitude", "temperature_c", "wind_speed_kmh", "weather_code", "time"],
+        "properties": {
+          "latitude": {
+            "type": "number"
+          },
+          "longitude": {
+            "type": "number"
+          },
+          "temperature_c": {
+            "type": "number"
+          },
+          "wind_speed_kmh": {
+            "type": "number"
+          },
+          "weather_code": {
+            "type": "integer"
+          },
+          "time": {
+            "type": "string"
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": ["query", "results"],
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["title", "url", "description"],
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ActivityFeedResponse": {
+        "type": "object",
+        "required": ["activity", "pagination"],
+        "properties": {
+          "activity": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "agent": {
+                  "type": "string"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "amount": {
+                  "type": "string"
+                },
+                "txHash": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "pagination": {
+            "type": "object",
+            "required": ["total", "limit", "offset", "hasMore"],
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "limit": {
+                "type": "integer"
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "hasMore": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "DemoRunRequest": {
+        "type": "object",
+        "required": ["serviceId", "category"],
+        "properties": {
+          "serviceId": {
+            "type": "integer"
+          },
+          "category": {
+            "type": "string"
+          }
+        }
+      },
+      "DemoRunResponse": {
+        "type": "object",
+        "required": ["data", "txHash"],
+        "properties": {
+          "data": {
+            "type": "object"
+          },
+          "txHash": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
