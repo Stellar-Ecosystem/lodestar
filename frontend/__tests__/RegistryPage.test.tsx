@@ -9,6 +9,7 @@ jest.mock('swr', () => ({
 
 import useSWR from 'swr';
 import { fetchServices } from '@/lib/contract';
+import { PAGE_SIZE } from '@/lib/pagination';
 
 jest.mock('@/lib/contract', () => ({
   fetchServices: jest.fn(),
@@ -28,8 +29,6 @@ function makeServices(count: number) {
     registered_at: 1000 + i,
   }));
 }
-
-const PAGE_SIZE = 12;
 
 describe('RegistryPage', () => {
   beforeEach(() => {
