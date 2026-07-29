@@ -60,7 +60,13 @@ describe('filterServices', () => {
   });
 
   it('matches service category', () => {
-    expect(filterServices(SERVICES, 'search').map((service) => service.id)).toEqual([2]);
+    const categoryOnlyMatch: ServiceEntry = {
+      ...SERVICES[1],
+      id: 6,
+      category: 'web-search',
+    };
+    expect(filterServices([...SERVICES, categoryOnlyMatch], 'web-search')
+      .map((service) => service.id)).toEqual([6]);
   });
 
   it('matches service endpoint', () => {
