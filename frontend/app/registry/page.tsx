@@ -4,7 +4,9 @@ import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import ServiceCard from '@/components/ServiceCard';
 import ServiceCardSkeleton from '@/components/ServiceCardSkeleton';
+import EmptyState from '@/components/EmptyState';
 import { CATEGORY_FILTERS, CATEGORY_ICONS } from '@/lib/categoryMeta';
+import { EmptyRegistryIcon, SearchEmptyIcon, CategoryEmptyIcon } from '@/lib/emptyStateIcons';
 import { fetchServices } from '@/lib/contract';
 import { filterServices } from '@/lib/registry';
 import { sortServices } from '@/lib/sort';
@@ -140,16 +142,28 @@ export default function RegistryPage() {
           </button>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-24 text-secondary">
-          <p className="text-base font-medium">No services found</p>
-          <p className="text-sm mt-2">
-            {query.trim()
-              ? `No services match "${query.trim()}". Try a different name or description keyword.`
-              : activeCategory !== 'all'
-                ? `No active services in the "${activeCategory}" category.`
-                : 'The registry is empty. Be the first to register a service.'}
-          </p>
-        </div>
+        query.trim() ? (
+          <EmptyState
+            icon={<SearchEmptyIcon />}
+            title="No matching services"
+            message={`No services match "${query.trim()}". Try adjusting your search terms or looking for a different service name.`}
+            action={{ label: 'Clear search', onClick: () => setQuery('') }}
+          />
+        ) : activeCategory !== 'all' ? (
+          <EmptyState
+            icon={<CategoryEmptyIcon />}
+            title="Empty category"
+            message={`There are no services in the "${activeCategory}" category yet. Try selecting a different category or register the first one.`}
+            action={{ label: 'Show all', onClick: () => handleCategoryChange('all') }}
+          />
+        ) : (
+          <EmptyState
+            icon={<EmptyRegistryIcon />}
+            title="The registry is empty"
+            message="No services have been registered yet. Be the first to register a service and make it discoverable."
+            action={{ href: '/registry/register', label: 'Register a Service' }}
+          />
+        )
       ) : (
         <>
           <div className="grid sm:grid-cols-2 gap-5">
