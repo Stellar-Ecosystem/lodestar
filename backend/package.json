@@ -31,6 +31,7 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
     "supertest": "^7.2.2",
     "vitest": "^1.6.1"
   }
