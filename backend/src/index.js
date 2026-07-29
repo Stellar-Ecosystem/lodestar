@@ -90,6 +90,21 @@ app.get("/healthz", async (_req, res) => {
   }
 });
 
+app.get("/openapi.json", async (_req, res) => {
+  try {
+    const openApiSpec = await import("../openapi.json", {
+      with: { type: "json" },
+    });
+    res.json(openApiSpec.default);
+  } catch (err) {
+    logger.error({ err }, "Failed to load OpenAPI spec");
+    res.status(500).json({
+      error: "Failed to load OpenAPI specification",
+      code: "SPEC_LOAD_ERROR",
+    });
+  }
+});
+
 app.use("/api", registryRouter);
 app.use("/api", agentsRouter);
 app.use("/api", demoRouter);

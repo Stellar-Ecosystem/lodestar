@@ -7,6 +7,7 @@ const { Keypair } = pkg;
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
+import { validateEndpointUrl, createSafeFetch } from './url-validator.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -191,9 +192,21 @@ function buildHttpClient() {
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
 
+  // Create safe fetch wrapper with SSRF protection
+  const safeFetch = createSafeFetch(fetch);
+
   // Implement fetch manually — x402HTTPClient.fetch() was removed in this version
   httpClient.fetch = async (url, init = {}) => {
-    const probe = await fetch(url, init);
+    // Validate endpoint URL before making any request
+    const validation = await validateEndpointUrl(url);
+    if (!validation.valid) {
+      logger.warn({ url, reason: validation.reason }, 'Endpoint URL blocked by SSRF protection');
+      const err = new Error(validation.reason);
+      err.code = 'SSRF_BLOCKED';
+      throw err;
+    }
+
+    const probe = await safeFetch(url, init);
     if (probe.status !== 402) return probe;
 
     const paymentRequired = httpClient.getPaymentRequiredResponse(
@@ -203,7 +216,7 @@ function buildHttpClient() {
 
     const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
     const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
-    return fetch(url, {
+    return safeFetch(url, {
       ...init,
       headers: { ...(init.headers ?? {}), ...paymentHeaders },
     });
