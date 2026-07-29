@@ -273,6 +273,70 @@ The test suite (`__tests__/AgentsPage.test.tsx`) mocks `fetchAgents` to behave l
 
 ---
 
+## Audit Logging
+
+The backend signs every on-chain write with either its own custodied key or, for wallet-signed
+transactions, as the fee-source co-signer. `backend/src/lib/contract.js` records exactly one
+structured audit entry per signed transaction — success, failure, timeout, or retry — so an
+incident review never has to reconstruct "what did the server sign, for whom, and why" from
+free-form logs.
+
+### What's recorded
+
+Each entry is a single JSON line with:
+
+| Field | Meaning |
+|-------|---------|
+| `timestamp` | ISO-8601 time the signature/submission completed |
+| `requestId` | Correlates back to the inbound HTTP request (`X-Request-Id` header/response), propagated via `AsyncLocalStorage` — falls back to a fresh UUID for non-HTTP callers (seed scripts) |
+| `actor` | The Stellar address whose authorization the signature represents (the signing keypair for server-signed calls; the wallet address the contract's `require_auth` actually checks for wallet-signed calls) |
+| `contractId` | The Soroban contract invoked |
+| `function` | The contract function invoked (`register_service`, `record_payment`, `update_policy`, etc.) |
+| `args` | Named call arguments — always public, on-chain data (addresses, amounts, category strings); never a secret |
+| `txHash` | The transaction hash, once assigned |
+| `result` | `success` \| `send_failed` \| `failed_onchain` \| `timeout` \| `bad_seq_retry` \| `return_value_parse_failed` \| `error` |
+| `error` | `{ code, message }`, present only on non-success results |
+
+### Where it's written
+
+A dedicated file, path configurable via `AUDIT_LOG_PATH` (default `audit.log`), separate from
+`stdout`/application logs so it can be shipped and retained independently. Each record is also
+mirrored into the structured application logger (tagged `audit: true`) so it's visible in
+combined log output even without direct access to the audit file.
+
+### Querying
+
+Because every record is a single JSON object per line, it's directly queryable with any
+line-oriented JSON tool:
+
+```sh
+# Every transaction signed on behalf of a given actor
+jq 'select(.actor == "GABC...")' audit.log
+
+# The full history of a specific transaction
+jq 'select(.txHash == "2f76a396...")' audit.log
+```
+
+The same fields work unchanged if the file is shipped to a log aggregator (Loki, CloudWatch
+Insights, etc.) — index on `actor` and `txHash` there for the same queries at scale.
+
+### Retention policy
+
+`audit.log` is intentionally kept separate from operational/application logs specifically so it
+can outlive their retention window. Recommended minimum retention is **1 year** (adjust upward
+for your compliance requirements); rotate it with `logrotate` or by shipping it to a log
+aggregator configured with its own long-lived retention policy — do not let it get caught by a
+shorter operational-log rotation rule.
+
+### No secrets
+
+`args` only ever contains the public call arguments already destined for the public ledger
+(addresses, amounts, category strings) — private keys, HMAC secrets, and signed XDR blobs are
+never passed into it. As defense in depth, any argument whose name matches
+`secret|private|passphrase|password|hmac` is redacted before the record is written.
+
+---
+
 ## Hackathon: Stellar Hacks Agentic AI 2026
 
 Lodestar addresses all three brief requirements:
