@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "seed": "node scripts/seed.js",
     "seed-agents": "node scripts/seed-agents.js",
-    "update-endpoints": "node scripts/update-endpoints.js"
+    "update-endpoints": "node scripts/update-endpoints.js",
+    "openapi": "node scripts/generate-openapi.js"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^15.0.1",
@@ -25,7 +26,8 @@
     "node-fetch": "^3.3.2",
     "p-queue": "^9.3.0",
     "pino": "^9.3.2",
-    "pino-pretty": "^11.2.2"
+    "pino-pretty": "^11.2.2",
+    "zod": "^4.4.3"
   },
   "engines": {
     "node": ">=22.0.0"

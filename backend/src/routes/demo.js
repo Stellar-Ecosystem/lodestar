@@ -9,6 +9,8 @@ import { getService } from '../lib/contract.js';
 import { waitForActivityTxHash } from '../lib/waitForActivityTxHash.js';
 import { recordActivity, getActivityFeed } from './services.js';
 import { validateDemoEndpoint } from './demoValidate.js';
+import { validate } from '../middleware/validate.js';
+import * as schemas from '../schemas/demo.js';
 
 const router = Router();
 
@@ -45,15 +47,11 @@ function buildHttpClient() {
   return httpClient;
 }
 
-router.post('/demo-run', async (req, res) => {
+router.post('/demo-run', validate(schemas.runDemo), async (req, res) => {
   try {
-    const { serviceId, category } = req.body;
+    const { serviceId, category } = req.valid.body;
 
-    if (!serviceId || !category) {
-      return res.status(400).json({ error: 'serviceId and category are required', code: 'INVALID_BODY' });
-    }
-
-    const service = await getService(Number(serviceId));
+    const service = await getService(serviceId);
     if (!service) {
       return res.status(404).json({ error: 'Service not found', code: 'NOT_FOUND' });
     }

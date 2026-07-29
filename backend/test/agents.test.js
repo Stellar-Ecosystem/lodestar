@@ -47,10 +47,8 @@ vi.mock("../src/middleware/rateLimiter.js", () => ({
   paymentRateLimiter: () => (req, res, next) => next(),
 }));
 
-vi.mock("../src/middleware/addressValidator.js", () => ({
-  validateAgentAddressParam: (req, res, next) => next(),
-  isValidStellarAddress: vi.fn(() => true), // Mock all addresses as valid for simplicity
-}));
+// Address validation is no longer mockable middleware — it is part of each
+// route's request schema, so these tests use real Stellar addresses.
 
 const app = express();
 app.use(express.json());
@@ -65,7 +63,7 @@ describe("POST /api/agents/register", () => {
     contract.isAgentRegistered.mockResolvedValue(true);
 
     const response = await request(app).post("/api/agents/register").send({
-      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      agentAddress: "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3",
       name: "Test Agent",
       description: "A valid test agent description",
     });
@@ -74,7 +72,7 @@ describe("POST /api/agents/register", () => {
     expect(response.body).toEqual({
       error: "Agent already registered",
       code: "ALREADY_EXISTS",
-      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      agentAddress: "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3",
     });
 
     // Ensure registerAgentOnChain is never called
@@ -86,7 +84,7 @@ describe("POST /api/agents/register", () => {
     contract.registerAgentOnChain.mockResolvedValue(1);
 
     const response = await request(app).post("/api/agents/register").send({
-      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      agentAddress: "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3",
       name: "Test Agent",
       description: "A valid test agent description",
     });
@@ -95,19 +93,18 @@ describe("POST /api/agents/register", () => {
     expect(response.body).toEqual({
       success: true,
       agentCount: 1,
-      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      agentAddress: "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3",
     });
     expect(contract.registerAgentOnChain).toHaveBeenCalledWith(
-      "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3",
       "Test Agent",
       "A valid test agent description"
     );
   });
 });
 
-const { mockGetActivityFeed, mockParseActivityPagination } = vi.hoisted(() => ({
+const { mockGetActivityFeed } = vi.hoisted(() => ({
   mockGetActivityFeed: vi.fn(() => []),
-  mockParseActivityPagination: vi.fn(() => ({ limit: 20, offset: 0, errors: [] })),
 }));
 
 vi.mock('../src/lib/activityFeed.js', async () => {
@@ -115,7 +112,6 @@ vi.mock('../src/lib/activityFeed.js', async () => {
   return {
     ...actual,
     getActivityFeed: (...args) => mockGetActivityFeed(...args),
-    parseActivityPagination: (...args) => mockParseActivityPagination(...args),
   };
 });
 
@@ -169,7 +165,6 @@ describe('GET /api/agents/:address/payment-history', () => {
       amount: '0.001',
     }));
     mockGetActivityFeed.mockReturnValue(entries);
-    mockParseActivityPagination.mockReturnValueOnce({ limit: 10, offset: 5, errors: [] });
 
     const res = await request(app).get(`/api/agents/${VALID_ADDR}/payment-history?limit=10&offset=5`);
     expect(res.status).toBe(200);
@@ -179,7 +174,6 @@ describe('GET /api/agents/:address/payment-history', () => {
   });
 
   it('returns 400 when pagination params are invalid', async () => {
-    mockParseActivityPagination.mockReturnValueOnce({ limit: 0, offset: 0, errors: ['`limit` must be a positive integer'] });
     mockGetActivityFeed.mockReturnValueOnce([]);
 
     const res = await request(app).get(`/api/agents/${VALID_ADDR}/payment-history?limit=-1`);

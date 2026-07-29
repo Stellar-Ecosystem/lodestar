@@ -199,14 +199,12 @@ describe('POST /admin/agents/:address/deactivate', () => {
 });
 
 const mockGetActivityFeed = vi.fn(() => []);
-const mockParseActivityPagination = vi.fn(() => ({ limit: 20, offset: 0, errors: [] }));
 
 vi.mock('../lib/activityFeed.js', async () => {
   const actual = await vi.importActual('../lib/activityFeed.js');
   return {
     ...actual,
     getActivityFeed: (...args) => mockGetActivityFeed(...args),
-    parseActivityPagination: (...args) => mockParseActivityPagination(...args),
   };
 });
 
@@ -260,7 +258,6 @@ describe('GET /api/agents/:address/payment-history', () => {
       amount: '0.001',
     }));
     mockGetActivityFeed.mockReturnValue(entries);
-    mockParseActivityPagination.mockReturnValueOnce({ limit: 10, offset: 5, errors: [] });
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=10&offset=5`);
     expect(res.status).toBe(200);
@@ -270,7 +267,6 @@ describe('GET /api/agents/:address/payment-history', () => {
   });
 
   it('returns 400 when pagination params are invalid', async () => {
-    mockParseActivityPagination.mockReturnValueOnce({ limit: 0, offset: 0, errors: ['`limit` must be a positive integer'] });
     mockGetActivityFeed.mockReturnValueOnce([]);
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);
