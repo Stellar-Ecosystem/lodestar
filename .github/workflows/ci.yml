@@ -70,7 +70,7 @@ jobs:
         working-directory: contract/agents
         run: cargo test
 
-  # ── Backend: test ─────────────────────────────────────────────────────
+  # ── Backend: test + coverage ─────────────────────────────────────────
   backend-test:
     name: Backend test
     runs-on: ubuntu-latest
@@ -89,9 +89,17 @@ jobs:
         working-directory: backend
         run: npm ci
 
-      - name: Run tests
+      - name: Run tests with coverage
         working-directory: backend
-        run: npm test
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage/
+          retention-days: 7
 
   # ── Frontend: type-check + build ──────────────────────────────────────
   frontend-typecheck:
