@@ -536,4 +536,61 @@ describe('ensureRegistered — structured event fields', () => {
     expect(call).toBeDefined();
     expect(call[0]).toMatchObject({ event: 'agent_registered', score: 95, scoringEnabled: true });
   });
+
+  it('retries transient registration failures with backoff and logs the retry event', async () => {
+    const { ensureRegistered } = await import('./agent.js');
+    global.fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('socket hang up'))
+      .mockResolvedValueOnce(makeResponse({
+        json: () => Promise.resolve({ agent: { score: 88 }, policy: null }),
+      }));
+
+    await ensureRegistered();
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const retryCall = logWarn.mock.calls.find(([fields]) => fields?.event === 'network_retry');
+    expect(retryCall).toBeDefined();
+    expect(retryCall[0]).toMatchObject({ event: 'network_retry', operation: 'ensureRegistered' });
+  });
+
+  it('does not retry terminal registration failures', async () => {
+    const { ensureRegistered } = await import('./agent.js');
+    global.fetch = vi.fn().mockResolvedValueOnce(makeResponse({ ok: false, status: 400 }));
+
+    await ensureRegistered();
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const retryCall = logWarn.mock.calls.find(([fields]) => fields?.event === 'network_retry');
+    expect(retryCall).toBeUndefined();
+  });
+});
+
+describe('runTask — payment submission retries', () => {
+  it('does not retry a payment submission after an initial failure', async () => {
+    const { runTask } = await import('./agent.js');
+    const service = { ...MOCK_SERVICE, endpoint: 'https://service.example.com/ep' };
+
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [service] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+      }
+      if (url.includes('/payment')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      if (url.includes('/reputation')) {
+        return Promise.resolve(makeResponse());
+      }
+      return Promise.reject(new Error('network down'));
+    });
+
+    const result = await runTask('weather', (ep) => ep, true, mockHttpClient);
+
+    expect(result).toEqual({ success: false, priceUsdc: null });
+    const endpointCalls = global.fetch.mock.calls.filter(([url]) => url === service.endpoint);
+    expect(endpointCalls).toHaveLength(1);
+  });
 });
