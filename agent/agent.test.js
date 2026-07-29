@@ -537,3 +537,145 @@ describe('ensureRegistered — structured event fields', () => {
     expect(call[0]).toMatchObject({ event: 'agent_registered', score: 95, scoringEnabled: true });
   });
 });
+
+describe('Event schema validation', () => {
+  it('validates all events match documented schema', async () => {
+    // Schema definitions based on agent/README.md
+    const schemas = {
+      [EVENT.AGENT_START]: {
+        required: ['event', 'agentAddress', 'agentName'],
+        optional: [],
+        types: { event: 'string', agentAddress: 'string', agentName: 'string' },
+      },
+      [EVENT.AGENT_REGISTERED]: {
+        required: ['event', 'agentAddress', 'scoringEnabled'],
+        optional: ['score', 'dailyLimitUsdc', 'err'],
+        types: { event: 'string', agentAddress: 'string', scoringEnabled: 'boolean', score: 'number', dailyLimitUsdc: 'string' },
+      },
+      [EVENT.TASK_START]: {
+        required: ['event', 'category'],
+        optional: ['agentAddress', 'servicesFound', 'minReputation', 'serviceId', 'endpointUrl'],
+        types: { event: 'string', category: 'string', agentAddress: 'string', servicesFound: 'number', minReputation: 'number', serviceId: 'number', endpointUrl: 'string' },
+      },
+      [EVENT.SERVICE_SELECTED]: {
+        required: ['event', 'category', 'serviceId', 'serviceName', 'priceUsdc', 'servicesFound', 'attempt'],
+        optional: [],
+        types: { event: 'string', category: 'string', serviceId: 'number', serviceName: 'string', priceUsdc: 'string', servicesFound: 'number', attempt: 'number' },
+      },
+      [EVENT.SPEND_CHECK_PASSED]: {
+        required: ['event', 'category', 'serviceId', 'serviceName', 'priceUsdc'],
+        optional: [],
+        types: { event: 'string', category: 'string', serviceId: 'number', serviceName: 'string', priceUsdc: 'string' },
+      },
+      [EVENT.SPEND_CHECK_BLOCKED]: {
+        required: ['event', 'category', 'serviceId', 'serviceName', 'priceUsdc', 'reason'],
+        optional: [],
+        types: { event: 'string', category: 'string', serviceId: 'number', serviceName: 'string', priceUsdc: 'string', reason: 'string' },
+      },
+      [EVENT.PAYMENT_SUCCESS]: {
+        required: ['event', 'category', 'serviceId', 'serviceName', 'priceUsdc', 'txHash', 'taskDurationMs'],
+        optional: ['scoreBefore'],
+        types: { event: 'string', category: 'string', serviceId: 'number', serviceName: 'string', priceUsdc: 'string', txHash: 'string', taskDurationMs: 'number', scoreBefore: 'number' },
+      },
+      [EVENT.PAYMENT_FAILED]: {
+        required: ['event', 'category', 'taskDurationMs'],
+        optional: ['serviceId', 'serviceName', 'priceUsdc', 'httpStatus', 'err', 'servicesAttempted'],
+        types: { event: 'string', category: 'string', serviceId: 'number', serviceName: 'string', priceUsdc: 'string', httpStatus: 'number', taskDurationMs: 'number', servicesAttempted: 'number' },
+      },
+      [EVENT.SCORE_UPDATED]: {
+        required: ['event', 'agentAddress', 'scoreBefore', 'scoreAfter'],
+        optional: [],
+        types: { event: 'string', agentAddress: 'string', scoreBefore: 'number', scoreAfter: 'number' },
+      },
+      [EVENT.AGENT_COMPLETE]: {
+        required: ['event', 'agentAddress', 'totalTasks', 'successCount', 'failCount', 'totalUsdcSpent', 'runDurationMs'],
+        optional: ['finalScore', 'scoreDelta'],
+        types: { event: 'string', agentAddress: 'string', totalTasks: 'number', successCount: 'number', failCount: 'number', totalUsdcSpent: 'string', runDurationMs: 'number', finalScore: 'number', scoreDelta: 'number' },
+      },
+    };
+
+    // Collect all logged events
+    const allLoggedEvents = [];
+    
+    // Helper to validate an event against its schema
+    const validateEvent = (fields, eventName) => {
+      const schema = schemas[eventName];
+      if (!schema) {
+        throw new Error(`No schema defined for event: ${eventName}`);
+      }
+
+      // Check required fields
+      for (const field of schema.required) {
+        if (!(field in fields)) {
+          throw new Error(`Event ${eventName} missing required field: ${field}`);
+        }
+      }
+
+      // Check field types
+      for (const [field, expectedType] of Object.entries(schema.types)) {
+        if (field in fields) {
+          const actualType = typeof fields[field];
+          if (actualType !== expectedType) {
+            throw new Error(`Event ${eventName} field ${field} has type ${actualType}, expected ${expectedType}`);
+          }
+        }
+      }
+
+      // Ensure no unexpected fields (optional: can be strict or lenient)
+      // For now, we allow extra fields for flexibility
+    };
+
+    // Run a full agent execution to capture all events
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
+        return Promise.resolve(makeResponse({
+          json: () => Promise.resolve({ agent: { score: 100 }, policy: { max_per_day_stroops: '10000000' } }),
+        }));
+      }
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+      }
+      if (url.includes('/payment')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
+      }
+      if (url.includes('/reputation')) {
+        return Promise.resolve(makeResponse());
+      }
+      return Promise.resolve(makeResponse());
+    });
+
+    await main();
+
+    // Collect all logged events from all log levels
+    const allCalls = [
+      ...logInfo.mock.calls,
+      ...logWarn.mock.calls,
+      ...logError.mock.calls,
+      ...logDebug.mock.calls,
+    ];
+
+    // Validate each event
+    for (const [fields] of allCalls) {
+      if (fields?.event) {
+        allLoggedEvents.push(fields.event);
+        validateEvent(fields, fields.event);
+      }
+    }
+
+    // Ensure all EVENT constants are covered
+    const allEventNames = Object.values(EVENT);
+    for (const eventName of allEventNames) {
+      if (!allLoggedEvents.includes(eventName)) {
+        // Some events may not fire in this test scenario, but schema should exist
+        expect(schemas[eventName]).toBeDefined();
+      }
+    }
+
+    // Verify all schemas are used
+    const definedSchemas = Object.keys(schemas);
+    expect(definedSchemas).toEqual(expect.arrayContaining(allEventNames));
+  });
+});
