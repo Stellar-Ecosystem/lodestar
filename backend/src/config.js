@@ -133,6 +133,9 @@ const config = Object.freeze({
   // and pending transaction checks before force-exiting. Default is just over
   // the max polling window (30 s) so an in-flight poll can finish.
   shutdownTimeoutMs: parsePositiveInt(process.env.SHUTDOWN_TIMEOUT_MS, 35_000, 'SHUTDOWN_TIMEOUT_MS'),
+
+  // Configurable TTL (ms) for response caching on read-heavy registry endpoints.
+  registryCacheTtlMs: parsePositiveInt(process.env.REGISTRY_CACHE_TTL_MS, 10_000, 'REGISTRY_CACHE_TTL_MS'),
 });
 
 export default config;
