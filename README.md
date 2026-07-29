@@ -66,8 +66,8 @@ Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. 
 5. Your service is now permanently discoverable by any agent querying the registry
 
 ### Agent flow
-1. Call `list_services(category)` — returns active services sorted by reputation
-2. Pick the top result (highest reputation, lowest price, or newest)
+1. Call `list_services_page(page, page_size, category)` — returns active services for the requested page, sorted by reputation descending within each page
+2. Select a service — the reference agent uses weighted-random selection among the top-N candidates so higher-reputation services are proportionally preferred without being the sole option
 3. Make an HTTP request to the endpoint — receive a `402 Payment Required` response
 4. Build and sign an x402 payment transaction on Stellar using the agent's keypair
 5. Retry the request with the payment header — receive the data
@@ -197,8 +197,8 @@ Every agent is anonymous. Services cannot distinguish a reliable agent from a br
 - Agents register on-chain and start with score **100**
 - Every successful x402 payment increases score by **+10**
 - Every failed payment decreases score by **−25**
-- Services can set minimum score requirements
-- Spending policies are enforced at contract level — cannot be bypassed
+- Services can call `is_eligible(address, min_score)` to gate access by minimum score
+- Spending policies are stored on-chain; the pre-payment check (`check_spending_allowed`) currently runs in the backend before the x402 call ([tracking: #2](#known-gaps))
 
 ### Score Tiers
 
@@ -217,7 +217,7 @@ Each agent has a programmable spending policy:
 - Maximum USDC per day (resets every ~17,280 ledgers ≈ 24 hours)
 - Allowed service categories
 
-Enforced at smart contract level — cannot be bypassed even if the agent wallet has sufficient balance.
+The policy is stored on-chain and `check_spending_allowed` is a pure read-only contract query. The backend enforces it before initiating any x402 payment. The `record_payment` entrypoint updates the on-chain daily-spend counter after a successful payment but does not currently re-check the limit at write time — see [Known Gaps](#known-gaps) below.
 
 ### Deploy the Agent Contract
 
@@ -235,6 +235,30 @@ Copy the printed contract ID, add to `.env` as `AGENTS_CONTRACT_ID`, then:
 ```sh
 cd backend && npm run seed-agents
 ```
+
+---
+
+## Known Gaps
+
+These are capabilities documented elsewhere as planned; the current implementation differs in the ways described below. Each gap has an open tracking issue.
+
+### \#1 — Global reputation sort across pages
+
+`list_services_page` sorts by reputation **within a single page**. Because the IDs array is stored in registration order, a service with a high reputation on page 2 will not appear ahead of a lower-reputation service on page 1. A globally sorted view requires either a sorted index at write time or an off-chain sort at the API layer.
+
+**Workaround:** the backend's `GET /api/services` response includes all active services in one call; clients that need a globally sorted list should consume that endpoint.
+
+**Tracking:** [GitHub issue #1 — Global reputation sort across registry pages](https://github.com/0xNinx/lodestar/issues/1)
+
+---
+
+### \#2 — Pre-payment spending-limit enforcement is backend-only
+
+The `SpendingPolicy` struct and `check_spending_allowed` query are on-chain. `record_payment` updates the `daily_spent_stroops` counter on-chain after a successful payment. However, `record_payment` does **not** call `check_spending_allowed` internally before writing; if a caller bypasses the backend (e.g. invokes `record_payment` directly via the Stellar CLI), the per-transaction and daily caps are not re-checked at write time.
+
+Concretely: the backend always calls `check_spending_allowed` before initiating an x402 payment, so clients going through the API are protected. Direct contract callers are not.
+
+**Tracking:** [GitHub issue #2 — record_payment should enforce spending limits on-chain](https://github.com/0xNinx/lodestar/issues/2)
 
 ---
 
