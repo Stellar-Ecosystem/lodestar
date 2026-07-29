@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { loadSecretsToEnv } from "./lib/secrets.js";
 import config, { validateConfig } from "./config.js";
 import logger from "./lib/logger.js";
 import { checkRpcHealth } from "./lib/stellar.js";
@@ -43,6 +44,9 @@ if (process.argv.includes("--print-config")) {
   );
   process.exit(0);
 }
+
+// Load secrets from AWS Secrets Manager before validating config
+await loadSecretsToEnv();
 
 validateConfig(logger);
 
@@ -110,7 +114,8 @@ app.use((err, _req, res, _next) => {
     code: "INTERNAL_ERROR",
   });
 });
-let server;
+
+let server = null;
 let shuttingDown = false;
 
 
@@ -180,5 +185,14 @@ async function doDrainAndDump() {
 
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+async function start() {
+  server = app.listen(config.port, () => {
+    logger.info({ port: config.port }, "Server listening");
+  });
+
+  // Resume any pending transactions from previous shutdown
+  await resumePendingTransactions(logger);
+}
 
 start();
