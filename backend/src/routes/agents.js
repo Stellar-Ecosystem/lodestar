@@ -34,6 +34,7 @@ import {
   markFailed,
 } from '../lib/idempotency.js';
 import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js';
+import { getDeadLetterQueue, getDeadLetterCount, clearDeadLetterQueue } from '../lib/contract.js';
 
 const router = Router();
 
@@ -532,6 +533,32 @@ router.post('/admin/agents/:address/flag', requireAgentsContract, adminAuth, asy
     const { address: addr } = req.params;
     logger.error({ err, address: addr }, 'POST /api/admin/agents/:address/flag failed');
     return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
+  }
+});
+
+// GET /api/admin/dead-letter — Admin-only dead-letter queue listing
+router.get('/admin/dead-letter', adminAuth, (_req, res) => {
+  try {
+    const entries = getDeadLetterQueue();
+    const count = getDeadLetterCount();
+    logger.info({ count }, 'Dead-letter queue listed via admin endpoint');
+    res.json({ count, entries });
+  } catch (err) {
+    logger.error({ err }, 'GET /api/admin/dead-letter failed');
+    res.status(500).json({ error: 'Failed to fetch dead-letter queue', code: 'FETCH_ERROR' });
+  }
+});
+
+// POST /api/admin/dead-letter/clear — Admin-only clear dead-letter queue
+router.post('/admin/dead-letter/clear', adminAuth, (_req, res) => {
+  try {
+    const before = getDeadLetterCount();
+    clearDeadLetterQueue();
+    logger.info({ cleared: before }, 'Dead-letter queue cleared via admin endpoint');
+    res.json({ success: true, cleared: before });
+  } catch (err) {
+    logger.error({ err }, 'POST /api/admin/dead-letter/clear failed');
+    res.status(500).json({ error: 'Failed to clear dead-letter queue', code: 'CLEAR_ERROR' });
   }
 });
 

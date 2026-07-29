@@ -70,6 +70,41 @@ let lastSeqSyncTime = 0;
 const preparedRegistrySubmissions = new Map();
 let assembleTransactionForSubmit = rpc.assembleTransaction;
 
+// ── Dead-Letter Queue ────────────────────────────────────────────────────────
+//
+// Submissions that exhaust all internal retries (e.g. txBAD_SEQ × 3) or fail
+// permanently are captured here so operators can inspect and replay them.
+// The queue is bounded to prevent unbounded memory growth.
+
+const DEAD_LETTER_MAX_ENTRIES = 100;
+const deadLetterQueue = [];
+
+function addToDeadLetterQueue(entry) {
+  deadLetterQueue.unshift(entry);
+  if (deadLetterQueue.length > DEAD_LETTER_MAX_ENTRIES) deadLetterQueue.pop();
+  logger.warn(
+    { operation: entry.operation, error: entry.error, code: entry.code },
+    'Submission captured in dead-letter queue',
+  );
+}
+
+export function getDeadLetterQueue() {
+  return [...deadLetterQueue];
+}
+
+export function getDeadLetterCount() {
+  return deadLetterQueue.length;
+}
+
+export function clearDeadLetterQueue() {
+  deadLetterQueue.length = 0;
+}
+
+/** @note Exported for tests — not part of the public API. */
+export function __resetDeadLetterQueue() {
+  deadLetterQueue.length = 0;
+}
+
 // ── Pending Transactions Registry ──────────────────────────────────────────────
 //
 // Tracks every submitted Soroban transaction from sendTransaction until
@@ -358,7 +393,19 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
 }
 
 export function simulateAndSubmit(operation, signer) {
-  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
+  const opName = getOperationName(operation);
+  return submitQueue.add(() =>
+    _simulateAndSubmit(operation, signer, 0).catch((err) => {
+      addToDeadLetterQueue({
+        timestamp: Date.now(),
+        operation: opName,
+        error: err.message,
+        code: err.code ?? 'UNKNOWN',
+        type: err.constructor?.name ?? 'Error',
+      });
+      throw err; // re-throw so callers still receive the error
+    }),
+  );
 }
 
 function prunePreparedRegistrySubmissions(now = Date.now()) {

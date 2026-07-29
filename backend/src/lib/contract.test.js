@@ -878,6 +878,90 @@ describe('resumePendingTransactions', () => {
   });
 });
 
+describe('dead-letter queue', () => {
+  let contract;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contractLib.__resetDeadLetterQueue();
+    contractLib.__resetPendingTransactions();
+    contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+  });
+
+  afterEach(() => {
+    contractLib.__setAssembleTransactionForTest();
+    contractLib.__resetDeadLetterQueue();
+  });
+
+  it('reports zero by default', () => {
+    expect(contractLib.getDeadLetterCount()).toBe(0);
+    expect(contractLib.getDeadLetterQueue()).toEqual([]);
+  });
+
+  it('captures a permanently failed submission in the dead-letter queue', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'ERROR', errorResult: 'txBAD_SEQ' });
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('get_service_count'))
+    ).rejects.toThrow();
+
+    const deadLetters = contractLib.getDeadLetterQueue();
+    expect(deadLetters).toHaveLength(1);
+    expect(deadLetters[0].code).toBe('TRANSACTION_FAILED');
+    expect(deadLetters[0].type).toBe('TransactionFailedError');
+    expect(deadLetters[0].error).toBeTruthy();
+    expect(deadLetters[0].timestamp).toBeGreaterThan(0);
+    expect(contractLib.getDeadLetterCount()).toBe(1);
+  });
+
+  it('captures multiple failed submissions', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'ERROR', errorResult: 'txBAD_SEQ' });
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('register_service'))
+    ).rejects.toThrow();
+
+    const tsBefore = Date.now();
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('deactivate_service'))
+    ).rejects.toThrow();
+
+    const deadLetters = contractLib.getDeadLetterQueue();
+    expect(deadLetters).toHaveLength(2);
+    // Newest submission is first (unshift)
+    expect(deadLetters[0].timestamp).toBeGreaterThanOrEqual(tsBefore);
+    expect(deadLetters[1].timestamp).toBeLessThanOrEqual(tsBefore);
+  });
+
+  it('clears the dead-letter queue', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'ERROR', errorResult: 'txBAD_SEQ' });
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('get_service_count'))
+    ).rejects.toThrow();
+
+    expect(contractLib.getDeadLetterCount()).toBe(1);
+
+    contractLib.clearDeadLetterQueue();
+    expect(contractLib.getDeadLetterCount()).toBe(0);
+    expect(contractLib.getDeadLetterQueue()).toEqual([]);
+  });
+
+  it('does not capture successful submissions', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'ok-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.simulateAndSubmit(contract.call('get_service_count'));
+
+    expect(contractLib.getDeadLetterCount()).toBe(0);
+  });
+});
+
 describe('submitQueue management', () => {
   beforeEach(() => {
     contractLib.__resetPendingTransactions();
