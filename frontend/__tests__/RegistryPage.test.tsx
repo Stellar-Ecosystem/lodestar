@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
+import { axe } from 'jest-axe';
 import RegistryPage from '../app/registry/page';
 
 jest.mock('swr', () => ({
@@ -25,6 +26,7 @@ function makeServices(count: number) {
     provider: `G${'A'.repeat(55)}`,
     reputation: 100,
     active: true,
+    registered_at: 1000 + i,
 
   }));
 }
@@ -93,5 +95,24 @@ describe('RegistryPage', () => {
 
     render(<RegistryPage />);
     expect(await screen.findByRole('navigation', { name: /pagination/i })).toBeInTheDocument();
+  });
+
+  it('has no accessibility violations', async () => {
+    const services = makeServices(5);
+    (useSWR as jest.Mock).mockReturnValue({
+      data: services,
+      isLoading: false,
+      error: null,
+      mutate: jest.fn(),
+    });
+
+    const { container } = render(<RegistryPage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/^Service \d+$/).length).toBe(5);
+    });
+
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
   });
 });

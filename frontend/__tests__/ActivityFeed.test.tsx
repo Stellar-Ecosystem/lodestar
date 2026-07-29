@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { axe } from 'jest-axe';
 import ActivityFeed from '../components/ActivityFeed';
 
 global.fetch = jest.fn();
@@ -109,5 +110,21 @@ describe('ActivityFeed Pagination', () => {
       const logArg = (console.error as jest.Mock).mock.calls[0][0];
       expect(logArg).toContain('activity_feed_fetch_failed');
     });
+  });
+
+  it('has no accessibility violations', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ activity: mockActivities.slice(0, 3) }),
+    });
+
+    const { container } = render(<ActivityFeed />);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+    });
+
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
   });
 });

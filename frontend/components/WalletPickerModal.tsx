@@ -42,12 +42,16 @@ export default function WalletPickerModal({ onClose }: Props) {
       <div
         className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Connect Wallet"
       >
         <div className="flex items-center justify-between mb-5">
           <h2 className="font-semibold text-base">Connect Wallet</h2>
           <button
             onClick={onClose}
             className="text-secondary hover:text-primary text-xl leading-none"
+            aria-label="Close"
           >
             ×
           </button>

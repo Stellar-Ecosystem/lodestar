@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { axe } from 'jest-axe';
 import Navbar from '../components/Navbar';
 
 let mockPathname = '/';
@@ -79,5 +80,12 @@ describe('Navbar active-link highlighting', () => {
         screen.getByRole('link', { name: label })
       ).not.toHaveAttribute('aria-current');
     }
+  });
+
+  it('has no accessibility violations', async () => {
+    setPathname('/registry');
+    const { container } = render(<Navbar />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
   });
 });

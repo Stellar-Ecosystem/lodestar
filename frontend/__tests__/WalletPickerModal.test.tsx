@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { axe } from 'jest-axe';
 import WalletPickerModal from '../components/WalletPickerModal';
 import { useWallet } from '../components/WalletContext';
 import { WalletError, WalletErrorType } from '../lib/wallet';
@@ -84,5 +85,11 @@ describe('WalletPickerModal', () => {
       expect(screen.getByText('Cancelled')).toBeInTheDocument();
       expect(screen.getByText('Retry Connection')).toBeInTheDocument();
     });
+  });
+
+  it('has no accessibility violations', async () => {
+    const { container } = render(<WalletPickerModal onClose={mockOnClose} />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
   });
 });
