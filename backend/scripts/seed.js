@@ -1,10 +1,19 @@
 import 'dotenv/config';
+import { fileURLToPath } from 'url';
 import { Address } from '@stellar/stellar-sdk';
 import config from '../src/config.js';
 import { listServicesByProvider, registerServiceOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 
 process.env.SEEDING_MODE ??= 'true';
+
+function printTargetInfo() {
+  logger.info({
+    network: config.stellar.network,
+    contractId: config.contract.id,
+    serverAddress: config.server.address,
+  }, 'Target network and contract');
+}
 
 const SERVICES = [
   {
@@ -37,7 +46,7 @@ const SERVICES = [
   },
 ];
 
-async function seed() {
+export async function seed({ dryRun = false } = {}) {
   try {
     const providerAddress = Address.fromString(config.server.address).toString();
     const existingServices = await listServicesByProvider(providerAddress);
@@ -46,11 +55,22 @@ async function seed() {
     logger.info({
       total: SERVICES.length,
       existing: existingNames.size,
+      dryRun,
     }, 'Starting seed idempotency check');
+
+    let registered = 0;
+    let skipped = 0;
 
     for (const svc of SERVICES) {
       if (existingNames.has(svc.name)) {
         logger.info({ name: svc.name }, 'Service already registered — skipping');
+        skipped++;
+        continue;
+      }
+
+      if (dryRun) {
+        logger.info({ name: svc.name, endpoint: svc.endpoint, category: svc.category, priceUsdc: svc.priceUsdc }, '[DRY RUN] Would register service');
+        registered++;
         continue;
       }
 
@@ -63,17 +83,35 @@ async function seed() {
           svc.category
         );
         logger.info({ id, name: svc.name }, 'Registered service');
+        registered++;
       } catch (err) {
         logger.error({ err, name: svc.name }, 'Failed to register service');
       }
     }
 
-    logger.info('Seed complete');
-    process.exit(0);
+    logger.info({ registered, skipped, dryRun }, 'Seed complete');
+    if (dryRun) {
+      logger.info('DRY RUN — no transactions were submitted. Re-run with --yes to execute.');
+    }
   } catch (err) {
     logger.error({ err }, 'Seed script failed');
     process.exit(1);
   }
 }
 
-seed();
+// CLI entry point — only when run directly (not imported)
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  const args = process.argv.slice(2);
+  const isDryRun = args.includes('--dry-run');
+  const isYes = args.includes('--yes');
+
+  printTargetInfo();
+
+  if (!isDryRun && !isYes) {
+    logger.error('Live run requires --yes confirmation. Use --dry-run to preview what will happen first.');
+    process.exit(1);
+  }
+
+  seed({ dryRun: isDryRun }).then(() => process.exit(0));
+}
