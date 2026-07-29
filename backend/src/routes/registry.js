@@ -1,105 +1,40 @@
 import { Router } from "express";
-import {
-  listServices,
-  listServicesByProvider,
-  getService,
-  getServiceCount,
-  deactivateServiceOnChain,
-  updateReputation,
-  isAllowedReputationAgent,
-  buildUnsignedRegistryTx,
-  validatePreparedRegistrySubmission,
-  submitSignedRegistryTx,
-  SERVICE_MAX_TTL,
-  SERVICE_TTL_WARNING_LEDGERS,
-} from "../lib/contract.js";
-import { getCurrentLedgerSequence } from "../lib/stellar.js";
-import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
+import {
+  parsePositiveSafeInteger,
+  validateRegisterBody,
+  validateDeactivateBody,
+  validateSubmitSignedTxBody,
+  validateReputationBody,
+  ValidationError,
+} from "../lib/registryValidation.js";
+import {
+  listServicesWithTtl,
+  getServiceWithTtl,
+  listServicesByProviderWithTtl,
+  getStats as fetchStats,
+  deactivateService,
+  prepareRegister,
+  prepareDeactivate,
+  submitSignedTx,
+  castReputationVote,
+  getServiceHistory,
+} from "../lib/registryService.js";
 
 const router = Router();
 
-const PAGE_SIZE = 20;
-const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
-const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+// ── GET /services ─────────────────────────────────────────────────────
 
-function normalizePriceUsdc(value) {
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) return null;
-    const normalized = String(value);
-    if (!PRICE_USDC_REGEX.test(normalized)) return null;
-    return value >= 0.0001 ? normalized : null;
-  }
-
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized !== value || !PRICE_USDC_REGEX.test(normalized)) {
-    return null;
-  }
-
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed) || parsed < 0.0001) {
-    return null;
-  }
-
-  return normalized;
-}
-
-function parsePositiveSafeInteger(value) {
-  if (typeof value === "number") {
-    return Number.isSafeInteger(value) && value > 0 ? value : null;
-  }
-
-  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
-    return null;
-  }
-
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : null;
-}
-
-// Appends ttl_warning:true when the entry's estimated remaining TTL falls
-// below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
-// is unavailable so callers can always treat absence as "no warning data".
 router.get("/services", async (req, res) => {
   try {
     const { category, q, page: pageStr } = req.query;
     const page = Math.max(0, parseInt(pageStr, 10) || 0);
 
-    const [servicesResult, ledgerResult] = await Promise.allSettled([
-      listServices({ category: category || undefined, page, pageSize: PAGE_SIZE }),
-      getCurrentLedgerSequence(),
-    ]);
-
-    if (servicesResult.status === "rejected") throw servicesResult.reason;
-
-    if (ledgerResult.status === "rejected") {
-      logger.warn(
-        { err: ledgerResult.reason },
-        "Failed to fetch current ledger for TTL annotation on GET /api/services",
-      );
-    }
-
-    const currentLedger =
-      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
-
-    let services = servicesResult.value.map((s) =>
-      annotateTtlWarning(s, currentLedger),
-    );
-
-    if (q && typeof q === "string" && q.trim()) {
-      const query = q.trim().toLowerCase();
-      services = services.filter(
-        (s) =>
-          (s.name && s.name.toLowerCase().includes(query)) ||
-          (s.description && s.description.toLowerCase().includes(query)),
-      );
-    }
-
-    res.json({ services, count: services.length });
+    const result = await listServicesWithTtl({ category, q, page });
+    res.json(result);
   } catch (err) {
     if (err instanceof ContractError) {
       if (err.code === "SIMULATION_FAILED") {
@@ -114,6 +49,8 @@ router.get("/services", async (req, res) => {
   }
 });
 
+// ── GET /services/:id ─────────────────────────────────────────────────
+
 router.get("/services/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -123,47 +60,22 @@ router.get("/services/:id", async (req, res) => {
         .json({ error: "Invalid service ID", code: "INVALID_ID" });
     }
 
-    const [serviceResult, ledgerResult] = await Promise.allSettled([
-      getService(id),
-      getCurrentLedgerSequence(),
-    ]);
-
-    if (serviceResult.status === "rejected") throw serviceResult.reason;
-
-    const service = serviceResult.value;
+    const service = await getServiceWithTtl(id);
     if (!service) {
       return res
         .status(404)
         .json({ error: "Service not found", code: "NOT_FOUND" });
     }
 
-    if (ledgerResult.status === "rejected") {
-      logger.warn(
-        { err: ledgerResult.reason },
-        "Failed to fetch current ledger for TTL annotation on GET /api/services/:id",
-      );
-    }
-
-    const currentLedger =
-      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
-    res.json(annotateTtlWarning(service, currentLedger));
+    res.json(service);
   } catch (err) {
     logger.error({ err }, "GET /api/services/:id failed");
     res.status(500).json({ error: "Failed to fetch service", code: "FETCH_ERROR" });
   }
 });
 
-/**
- * POST /api/services/:id/deactivate
- * Provider-authenticated deactivation. The caller must supply a valid
- * `providerAddress` that matches the service's registered provider.
- * The on-chain contract enforces `provider.require_auth()` so the returned
- * unsigned transaction must be signed by the provider's wallet (e.g.
- * Freighter) and submitted through POST /api/registry/submit-signed-tx.
- *
- * Body: { providerAddress: string }
- * Returns: { xdr, submitToken } — unsigned tx ready for wallet signing
- */
+// ── POST /services/:id/deactivate ─────────────────────────────────────
+
 router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => {
   const parsedId = parsePositiveSafeInteger(req.params.id);
   if (parsedId == null) {
@@ -181,7 +93,7 @@ router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => 
       });
     }
 
-    const prepared = await deactivateServiceOnChain(parsedId, providerAddress);
+    const prepared = await deactivateService(parsedId, providerAddress);
     logger.info({ id: parsedId, providerAddress }, "Built unsigned deactivation tx");
     res.json(prepared);
   } catch (err) {
@@ -211,6 +123,8 @@ router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => 
   }
 });
 
+// ── GET /services/:id/history ──────────────────────────────────────────
+
 router.get("/services/:id/history", async (req, res) => {
   let id;
   try {
@@ -220,43 +134,32 @@ router.get("/services/:id/history", async (req, res) => {
         .status(400)
         .json({ error: "Invalid service ID", code: "INVALID_ID" });
     }
-    const service = await getService(id);
-    if (!service) {
+    const result = await getServiceHistory(id);
+    if (!result) {
       return res
         .status(404)
         .json({ error: "Service not found", code: "NOT_FOUND" });
     }
-    const history = getReputationHistory(id);
-    res.json({ history });
+    res.json({ history: result.history });
   } catch (err) {
     logger.error({ err, id }, "GET /api/services/:id/history failed");
     res.status(500).json({ error: "Failed to fetch reputation history", code: "FETCH_ERROR" });
   }
 });
 
+// ── GET /stats ────────────────────────────────────────────────────────
+
 router.get("/stats", async (req, res) => {
   try {
-    const totalServices = await getServiceCount();
-    const totalPages = Math.ceil(totalServices / PAGE_SIZE);
-    let allServices = [];
-    for (let i = 0; i < totalPages; i++) {
-      const page = await listServices({ page: i, pageSize: PAGE_SIZE });
-      allServices.push(...page);
-    }
-
-    const categories = [...new Set(allServices.map((s) => s.category))];
-    const latestService = allServices.reduce(
-      (latest, s) =>
-        s.registered_at > (latest?.registered_at ?? 0) ? s : latest,
-      null,
-    );
-
-    res.json({ totalServices, categories, latestService });
+    const stats = await fetchStats();
+    res.json(stats);
   } catch (err) {
     logger.error({ err }, "GET /api/stats failed");
     res.status(500).json({ error: "Failed to fetch stats", code: "FETCH_ERROR" });
   }
 });
+
+// ── GET /registry/by-provider/:address ────────────────────────────────
 
 router.get("/registry/by-provider/:address", async (req, res) => {
   try {
@@ -268,28 +171,8 @@ router.get("/registry/by-provider/:address", async (req, res) => {
       });
     }
 
-    const [servicesResult, ledgerResult] = await Promise.allSettled([
-      listServicesByProvider(address),
-      getCurrentLedgerSequence(),
-    ]);
-
-    if (servicesResult.status === "rejected") throw servicesResult.reason;
-
-    if (ledgerResult.status === "rejected") {
-      logger.warn(
-        { err: ledgerResult.reason },
-        "Failed to fetch current ledger for TTL annotation on GET /api/registry/by-provider/:address",
-      );
-    }
-
-    const currentLedger =
-      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
-
-    const services = servicesResult.value.map((s) =>
-      annotateTtlWarning(s, currentLedger),
-    );
-
-    res.json({ services, count: services.length });
+    const result = await listServicesByProviderWithTtl(address);
+    res.json(result);
   } catch (err) {
     if (err instanceof ContractError) {
       if (err.code === "SIMULATION_FAILED") {
@@ -304,53 +187,30 @@ router.get("/registry/by-provider/:address", async (req, res) => {
   }
 });
 
+// ── POST /registry/prepare-register ───────────────────────────────────
+
 router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) => {
   try {
-    const {
-      name,
-      description,
-      endpoint,
-      priceUsdc,
-      category,
-      providerAddress,
-      payTo,
-    } = req.body ?? {};
+    const body = req.body ?? {};
+    const validated = validateRegisterBody(body);
 
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
-    if (typeof name !== "string" || name.trim().length < 3 || name.trim().length > 50) {
-      return res.status(400).json({ error: "`name` must be 3-50 characters", code: "INVALID_BODY" });
-    }
-    if (typeof description !== "string" || description.trim().length < 10 || description.trim().length > 200) {
-      return res.status(400).json({ error: "`description` must be 10-200 characters", code: "INVALID_BODY" });
-    }
-    if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
-      return res.status(400).json({ error: "`endpoint` must start with https://", code: "INVALID_BODY" });
-    }
-    if (!SERVICE_CATEGORIES.has(category)) {
-      return res.status(400).json({ error: "`category` is invalid", code: "INVALID_BODY" });
-    }
-
-    const normalizedPriceUsdc = normalizePriceUsdc(priceUsdc);
-    if (!normalizedPriceUsdc) {
-      return res.status(400).json({ error: "`priceUsdc` must be at least 0.0001", code: "INVALID_BODY" });
-    }
-    if (payTo !== undefined && (typeof payTo !== "string" || payTo.trim().length === 0)) {
-      return res.status(400).json({ error: "`payTo` must be a non-empty string when provided", code: "INVALID_BODY" });
-    }
-
-    const prepared = await buildUnsignedRegistryTx("register", providerAddress, {
-      name: name.trim(),
-      description: description.trim(),
-      endpoint: endpoint.trim(),
-      priceUsdc: normalizedPriceUsdc,
-      category,
-      payTo: payTo?.trim(),
+    const prepared = await prepareRegister(validated.providerAddress, {
+      name: validated.name,
+      description: validated.description,
+      endpoint: validated.endpoint,
+      priceUsdc: validated.priceUsdc,
+      category: validated.category,
+      payTo: validated.payTo,
     });
-    logger.info({ providerAddress, endpoint, category }, "Built unsigned registry registration tx");
+    logger.info(
+      { providerAddress: validated.providerAddress, endpoint: validated.endpoint, category: validated.category },
+      "Built unsigned registry registration tx",
+    );
     res.json(prepared);
   } catch (err) {
+    if (err instanceof ValidationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     if (err instanceof ContractError) {
       const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : err.code === "DUPLICATE_SERVICE" ? 409 : 400;
       return res.status(status).json({ error: err.message, code: err.code });
@@ -360,22 +220,23 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
   }
 });
 
+// ── POST /registry/prepare-deactivate ─────────────────────────────────
+
 router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res) => {
   try {
-    const { providerAddress, id } = req.body ?? {};
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
+    const body = req.body ?? {};
+    const validated = validateDeactivateBody(body);
 
-    const parsedId = parsePositiveSafeInteger(id);
-    if (parsedId == null) {
-      return res.status(400).json({ error: "`id` must be a positive integer", code: "INVALID_BODY" });
-    }
-
-    const prepared = await buildUnsignedRegistryTx("deactivate", providerAddress, { id: parsedId });
-    logger.info({ providerAddress, id: parsedId }, "Built unsigned registry deactivation tx");
+    const prepared = await prepareDeactivate(validated.providerAddress, validated.id);
+    logger.info(
+      { providerAddress: validated.providerAddress, id: validated.id },
+      "Built unsigned registry deactivation tx",
+    );
     res.json(prepared);
   } catch (err) {
+    if (err instanceof ValidationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     if (err instanceof ContractError) {
       const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
       return res.status(status).json({ error: err.message, code: err.code });
@@ -385,21 +246,20 @@ router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res)
   }
 });
 
+// ── POST /registry/submit-signed-tx ───────────────────────────────────
+
 router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) => {
   try {
-    const { signedXdr, submitToken } = req.body ?? {};
-    if (!signedXdr || typeof signedXdr !== "string") {
-      return res.status(400).json({ error: "`signedXdr` is required", code: "INVALID_BODY" });
-    }
-    if (!submitToken || typeof submitToken !== "string") {
-      return res.status(400).json({ error: "`submitToken` is required", code: "INVALID_BODY" });
-    }
-    validatePreparedRegistrySubmission(submitToken, signedXdr);
+    const body = req.body ?? {};
+    const validated = validateSubmitSignedTxBody(body);
 
-    const result = await submitSignedRegistryTx(signedXdr);
+    const result = await submitSignedTx(validated.signedXdr, validated.submitToken);
     logger.info({ hash: result.hash, id: result.id }, "Submitted wallet-signed registry tx");
     res.json({ success: true, ...result });
   } catch (err) {
+    if (err instanceof ValidationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     if (err instanceof ContractError) {
       const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
       return res.status(status).json({ error: err.message, code: err.code });
@@ -409,10 +269,8 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
   }
 });
 
-// POST /api/reputation/:id — Body: { positive: boolean, agent: string }
-// `agent` must be a registered agent the backend is allowed to sign for. The
-// on-chain contract enforces require_auth + agent registration + a per-agent
-// cooldown, so reputation can no longer be moved by anonymous callers.
+// ── POST /reputation/:id ──────────────────────────────────────────────
+
 router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   let id;
   try {
@@ -423,33 +281,15 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
         .json({ error: "Invalid service ID", code: "INVALID_ID" });
     }
 
-    // Default to {} so a missing/non-JSON body yields a 400 INVALID_BODY rather
-    // than a TypeError surfacing as a generic 500.
-    const { positive, agent } = req.body ?? {};
-    if (typeof positive !== "boolean") {
-      return res
-        .status(400)
-        .json({ error: "`positive` must be a boolean", code: "INVALID_BODY" });
-    }
-    if (!isValidStellarAddress(agent)) {
-      return res.status(400).json({
-        error: "`agent` must be a valid Stellar address",
-        code: "INVALID_BODY",
-      });
-    }
-    if (!isAllowedReputationAgent(agent)) {
-      return res.status(403).json({
-        error:
-          "This agent is not permitted to vote through the hosted backend. Only registered demo agents may; other agents must submit a wallet-signed transaction.",
-        code: "AGENT_NOT_ALLOWED",
-      });
-    }
+    const body = req.body ?? {};
+    const validated = validateReputationBody(body);
 
-    const newReputation = await updateReputation(id, positive, agent);
+    const newReputation = await castReputationVote(id, validated.positive, validated.agent);
     res.json({ success: true, newReputation });
   } catch (err) {
-    // SIMULATION_FAILED covers on-chain rejections such as the vote cooldown
-    // or an unregistered agent — surface it as an actionable 400.
+    if (err instanceof ValidationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     if (err instanceof ContractError) {
       if (err.code === "AGENT_NOT_ALLOWED") {
         return res.status(403).json({ error: err.message, code: err.code });
@@ -463,6 +303,8 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
     res.status(500).json({ error: "Failed to update reputation", code: "UPDATE_ERROR" });
   }
 });
+
+// ── GET /health ───────────────────────────────────────────────────────
 
 router.get("/health", async (req, res) => {
   const { default: config } = await import("../config.js");

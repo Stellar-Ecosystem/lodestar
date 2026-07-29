@@ -21,11 +21,11 @@ function makeServices(count: number) {
     description: `Description ${i + 1}`,
     endpoint: `https://example.com/${i + 1}`,
     price_usdc: '0.001',
-    category: 'weather',
+    category: 'weather' as const,
     provider: `G${'A'.repeat(55)}`,
     reputation: 100,
     active: true,
-
+    registered_at: 1000 + i,
   }));
 }
 
