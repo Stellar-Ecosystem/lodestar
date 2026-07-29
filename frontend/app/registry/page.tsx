@@ -144,10 +144,12 @@ export default function RegistryPage() {
           <p className="text-base font-medium">No services found</p>
           <p className="text-sm mt-2">
             {query.trim()
-              ? `No services match "${query.trim()}". Try a different name or description keyword.`
+              ? `No services match "${query.trim()}" in the full dataset of ${services.length} service${services.length !== 1 ? 's' : ''}. Try a different search term.`
               : activeCategory !== 'all'
                 ? `No active services in the "${activeCategory}" category.`
-                : 'The registry is empty. Be the first to register a service.'}
+                : services.length === 0
+                  ? 'The registry is empty. Be the first to register a service.'
+                  : 'No services match the current filters.'}
           </p>
         </div>
       ) : (
@@ -169,7 +171,7 @@ export default function RegistryPage() {
                 </span>{' '}
                 of{' '}
                 <span className="font-medium text-foreground">{filtered.length}</span>{' '}
-                services
+                {query.trim() ? 'matching services' : 'services'}
               </p>
 
               {/* Page buttons */}
