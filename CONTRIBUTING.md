@@ -38,6 +38,8 @@ All of the above run automatically on every PR and push to `main` via GitHub Act
 
 ## Code style
 
+This project uses [EditorConfig](https://editorconfig.org) to maintain consistent formatting across editors and languages. Ensure your editor supports EditorConfig to automatically apply the project's indentation and line-ending settings.
+
 - Rust: run `cargo fmt` before committing; `cargo fmt --all --check` runs in CI under the `contract-build` job
 - JS/TS: follow the existing ESLint and TypeScript configuration in each package (JS lint CI steps are a planned follow-up)
 
