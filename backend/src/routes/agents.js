@@ -37,6 +37,12 @@ import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js
 
 const router = Router();
 
+// Shared page-size constants — keep in sync with frontend/lib/pagination.ts.
+// CONTRACT_PAGE_SIZE_CAP must match the .min(20u32) clamp in contract/src/lib.rs
+// so the backend never promises a slice larger than the contract can return.
+const PAGE_SIZE = 12;
+const CONTRACT_PAGE_SIZE_CAP = 20;
+
 // In-memory cache: avoids fetching all agents from Soroban on every paginated request.
 // TTL matches the frontend's 30s auto-refresh interval.
 let agentsCache = null;
@@ -84,9 +90,9 @@ function requireAgentsContract(_req, res, next) {
 router.get('/agents', requireAgentsContract, async (req, res) => {
   try {
     const parsedPage = Number.parseInt(String(req.query.page ?? '0'), 10);
-    const parsedPageSize = Number.parseInt(String(req.query.pageSize ?? '12'), 10);
+    const parsedPageSize = Number.parseInt(String(req.query.pageSize ?? String(PAGE_SIZE)), 10);
     const page = Number.isFinite(parsedPage) ? Math.max(0, parsedPage) : 0;
-    const pageSize = Number.isFinite(parsedPageSize) ? Math.min(100, Math.max(1, parsedPageSize)) : 12;
+    const pageSize = Number.isFinite(parsedPageSize) ? Math.min(CONTRACT_PAGE_SIZE_CAP, Math.max(1, parsedPageSize)) : PAGE_SIZE;
     const sort = ['score', 'payments', 'newest'].includes(req.query.sort)
       ? req.query.sort
       : 'score';
