@@ -25,11 +25,11 @@ describe('ScoreHistoryChart', () => {
       />
     );
     expect(screen.getByText('Score History (approx)')).toBeInTheDocument();
-    
+
     // Check for polyline and circle elements
     const polyline = document.querySelector('polyline');
     expect(polyline).toBeInTheDocument();
-    
+
     const circle = document.querySelector('circle');
     expect(circle).toBeInTheDocument();
   });
@@ -43,7 +43,7 @@ describe('ScoreHistoryChart', () => {
         failedPayments={0}
       />
     );
-    
+
     const polyline = document.querySelector('polyline');
     expect(polyline).toBeInTheDocument();
     // we just ensure it doesn't crash and renders the chart

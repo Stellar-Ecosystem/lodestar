@@ -53,7 +53,7 @@ describe('update-endpoints', () => {
       'Weather data',
       'https://example.com/weather',
       '0.001',
-      'weather',
+      'weather'
     );
     expect(processExitSpy).toHaveBeenCalledWith(0);
   });
@@ -74,7 +74,7 @@ describe('update-endpoints', () => {
 
     const logger = (await import('../src/lib/logger.js')).default;
     expect(logger.info).toHaveBeenCalledWith(
-      'All endpoints already point to the deployed host — nothing to do',
+      'All endpoints already point to the deployed host — nothing to do'
     );
     expect(processExitSpy).toHaveBeenCalledWith(0);
   });
@@ -93,18 +93,27 @@ describe('update-endpoints', () => {
   it('processes both weather and search services', async () => {
     mockListServices.mockResolvedValueOnce([
       {
-        name: 'Weather', description: 'Weather', endpoint: 'http://localhost:3001/weather',
-        price_usdc: '0.001', category: 'weather',
+        name: 'Weather',
+        description: 'Weather',
+        endpoint: 'http://localhost:3001/weather',
+        price_usdc: '0.001',
+        category: 'weather',
       },
       {
-        name: 'Weather2', description: 'More weather', endpoint: 'http://localhost:3001/weather2',
-        price_usdc: '0.002', category: 'weather',
+        name: 'Weather2',
+        description: 'More weather',
+        endpoint: 'http://localhost:3001/weather2',
+        price_usdc: '0.002',
+        category: 'weather',
       },
     ]);
     mockListServices.mockResolvedValueOnce([
       {
-        name: 'Search', description: 'Search', endpoint: 'http://localhost:3001/search',
-        price_usdc: '0.001', category: 'search',
+        name: 'Search',
+        description: 'Search',
+        endpoint: 'http://localhost:3001/search',
+        price_usdc: '0.001',
+        category: 'search',
       },
     ]);
     mockRegisterServiceOnChain.mockResolvedValue(1);

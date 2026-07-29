@@ -35,10 +35,7 @@ async function creditPayment(agentAddress, txHash, serviceId, priceStroops, serv
   }
   const agent = await getAgent(agentAddress);
   if (!agent) {
-    logger.warn(
-      { agentAddress },
-      `${serviceLabel} payment skipped: agent not registered on-chain`
-    );
+    logger.warn({ agentAddress }, `${serviceLabel} payment skipped: agent not registered on-chain`);
     return;
   }
 
@@ -58,11 +55,7 @@ export {
   ACTIVITY_MAX_LIMIT,
 } from '../lib/activityFeed.js';
 
-import {
-  recordActivity,
-  getActivityFeed,
-  parseActivityPagination,
-} from '../lib/activityFeed.js';
+import { recordActivity, getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js';
 
 const facilitator = new HTTPFacilitatorClient({ url: config.x402.facilitatorUrl });
 const stellarScheme = new ExactStellarScheme();
@@ -101,7 +94,9 @@ router.get('/weather', async (req, res) => {
 
     if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
       logger.warn({ lat, lon }, 'Invalid coordinates supplied to GET /demo/weather');
-      return res.status(400).json({ error: 'Coordinates out of range', code: 'INVALID_COORDINATES' });
+      return res
+        .status(400)
+        .json({ error: 'Coordinates out of range', code: 'INVALID_COORDINATES' });
     }
 
     const url =
@@ -141,8 +136,8 @@ router.get('/weather', async (req, res) => {
 
     if (agentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.weatherPrice) * 10_000_000));
-      creditPayment(agentAddress, txHash, WEATHER_SERVICE_ID, priceStroops, 'weather').catch((err) =>
-        logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
+      creditPayment(agentAddress, txHash, WEATHER_SERVICE_ID, priceStroops, 'weather').catch(
+        (err) => logger.warn({ err, agentAddress }, 'Failed to record weather payment for agent')
       );
     }
 
@@ -159,20 +154,19 @@ router.get('/search', async (req, res) => {
   try {
     const q = req.query.q;
     if (!q) {
-      return res.status(400).json({ error: 'Query parameter `q` is required', code: 'MISSING_QUERY' });
+      return res
+        .status(400)
+        .json({ error: 'Query parameter `q` is required', code: 'MISSING_QUERY' });
     }
 
-    const response = await fetch(
-      'https://google.serper.dev/search',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': config.braveApiKey,
-        },
-        body: JSON.stringify({ q, num: 5 }),
-      }
-    );
+    const response = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-KEY': config.braveApiKey,
+      },
+      body: JSON.stringify({ q, num: 5 }),
+    });
 
     if (!response.ok) {
       throw new Error(`Serper Search error: ${response.status}`);
@@ -199,8 +193,17 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       const priceStroops = BigInt(Math.round(parseFloat(config.x402.searchPrice) * 10_000_000));
-      creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search').catch((err) =>
-        logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
+      creditPayment(
+        searchAgentAddress,
+        searchTxHash,
+        SEARCH_SERVICE_ID,
+        priceStroops,
+        'search'
+      ).catch((err) =>
+        logger.warn(
+          { err, agentAddress: searchAgentAddress },
+          'Failed to record search payment for agent'
+        )
       );
     }
 

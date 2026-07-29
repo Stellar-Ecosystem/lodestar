@@ -133,17 +133,13 @@ export async function fetchAgents(
   pageSize = 12,
   sort: AgentSortOption = 'score'
 ): Promise<AgentsResponse> {
-  return apiFetch<AgentsResponse>(
-    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`
-  );
+  return apiFetch<AgentsResponse>(`/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`);
 }
 
 export async function fetchAgent(
   address: string
 ): Promise<{ agent: AgentEntry; policy: SpendingPolicy | null }> {
-  return apiFetch<{ agent: AgentEntry; policy: SpendingPolicy | null }>(
-    `/api/agents/${address}`
-  );
+  return apiFetch<{ agent: AgentEntry; policy: SpendingPolicy | null }>(`/api/agents/${address}`);
 }
 
 export async function fetchAgentStats(): Promise<AgentStats> {

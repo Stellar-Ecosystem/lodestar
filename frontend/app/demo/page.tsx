@@ -9,9 +9,9 @@ export default function DemoPage() {
       <div className="mb-10 max-w-2xl">
         <h1 className="text-2xl font-semibold mb-3">Live Agent Demo</h1>
         <p className="text-secondary text-sm leading-relaxed">
-          Watch an AI agent discover and pay for services using Lodestar — with zero
-          hardcoded URLs. The agent queries the on-chain registry, selects the best
-          service by reputation, and pays via x402 on Stellar in real time.
+          Watch an AI agent discover and pay for services using Lodestar — with zero hardcoded URLs.
+          The agent queries the on-chain registry, selects the best service by reputation, and pays
+          via x402 on Stellar in real time.
         </p>
       </div>
 

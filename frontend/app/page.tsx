@@ -7,12 +7,11 @@ export default function HomePage() {
       {/* Hero */}
       <section className="py-24 text-center">
         <h1 className="text-5xl sm:text-6xl font-semibold tracking-tight leading-tight mb-6">
-          Navigate the{' '}
-          <span className="text-accent italic">agent economy</span>
+          Navigate the <span className="text-accent italic">agent economy</span>
         </h1>
         <p className="text-lg text-secondary max-w-2xl mx-auto mb-10 leading-relaxed">
-          The on-chain discovery layer that lets AI agents find, evaluate, and
-          pay for x402 services on Stellar — autonomously.
+          The on-chain discovery layer that lets AI agents find, evaluate, and pay for x402 services
+          on Stellar — autonomously.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-4">
           <Link href="/registry" className="btn-primary px-7 py-3 text-base">
@@ -51,13 +50,11 @@ export default function HomePage() {
         <div className="card p-8 md:p-12 flex flex-col md:flex-row items-start gap-8">
           <div className="flex-1">
             <span className="badge bg-violet-50 text-violet-700 mb-4 inline-block">New</span>
-            <h2 className="text-2xl font-semibold tracking-tight mb-3">
-              Agent Credit Scoring
-            </h2>
+            <h2 className="text-2xl font-semibold tracking-tight mb-3">Agent Credit Scoring</h2>
             <p className="text-secondary text-sm leading-relaxed mb-6 max-w-lg">
-              Every AI agent that pays for services through Lodestar builds an on-chain
-              credit score. Providers can gate access by score, set per-transaction and
-              daily spend limits, and detect misbehaving agents — all enforced by Soroban.
+              Every AI agent that pays for services through Lodestar builds an on-chain credit
+              score. Providers can gate access by score, set per-transaction and daily spend limits,
+              and detect misbehaving agents — all enforced by Soroban.
             </p>
             <div className="flex flex-wrap gap-3">
               <Link href="/agents" className="btn-primary px-5 py-2.5 text-sm">
@@ -74,7 +71,10 @@ export default function HomePage() {
               { score: 600, name: 'Established agent', detail: '50 successful payments' },
               { score: 950, name: 'Trusted agent', detail: '85 payments, consistent record' },
             ].map(({ score, name, detail }) => (
-              <div key={score} className="bg-background border border-border rounded-lg px-4 py-3 flex items-center gap-4">
+              <div
+                key={score}
+                className="bg-background border border-border rounded-lg px-4 py-3 flex items-center gap-4"
+              >
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium">{name}</div>
                   <div className="text-xs text-secondary">{detail}</div>
@@ -116,10 +116,15 @@ export default function HomePage() {
 
 function ScorePill({ score }: { score: number }) {
   const tier =
-    score >= 1000 ? 'elite' :
-    score >= 900  ? 'trusted' :
-    score >= 600  ? 'established' :
-    score >= 300  ? 'building' : 'new';
+    score >= 1000
+      ? 'elite'
+      : score >= 900
+        ? 'trusted'
+        : score >= 600
+          ? 'established'
+          : score >= 300
+            ? 'building'
+            : 'new';
   const colors: Record<string, string> = {
     new: 'text-gray-500 bg-gray-50',
     building: 'text-blue-600 bg-blue-50',
@@ -128,11 +133,16 @@ function ScorePill({ score }: { score: number }) {
     elite: 'text-amber-600 bg-amber-50',
   };
   const dot: Record<string, string> = {
-    new: 'bg-gray-400', building: 'bg-blue-500',
-    established: 'bg-violet-500', trusted: 'bg-emerald-500', elite: 'bg-amber-500',
+    new: 'bg-gray-400',
+    building: 'bg-blue-500',
+    established: 'bg-violet-500',
+    trusted: 'bg-emerald-500',
+    elite: 'bg-amber-500',
   };
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${colors[tier]}`}>
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${colors[tier]}`}
+    >
       <span className={`w-1.5 h-1.5 rounded-full ${dot[tier]}`} />
       {score}
     </span>

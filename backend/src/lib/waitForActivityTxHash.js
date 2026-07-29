@@ -14,7 +14,7 @@ export async function waitForActivityTxHash(
   activityCountBefore,
   { maxWaitMs, initialDelayMs, maxDelayMs },
   matchesEntry,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 ) {
   let elapsedMs = 0;
   let currentDelay = initialDelayMs;
@@ -25,7 +25,7 @@ export async function waitForActivityTxHash(
     if (addedCount > 0) {
       const recentEntries = feed.slice(0, addedCount);
       const matched = recentEntries.find(
-        (entry) => entry?.txHash && (!matchesEntry || matchesEntry(entry)),
+        (entry) => entry?.txHash && (!matchesEntry || matchesEntry(entry))
       );
       if (matched) return matched.txHash;
     }

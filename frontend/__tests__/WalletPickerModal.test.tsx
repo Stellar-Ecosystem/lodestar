@@ -21,9 +21,9 @@ jest.mock('@/lib/wallet', () => {
   return {
     WALLET_OPTIONS: [
       { id: 'freighter', name: 'Freighter' },
-      { id: 'albedo',    name: 'Albedo' },
-      { id: 'xbull',     name: 'xBull' },
-      { id: 'lobstr',    name: 'Lobstr' },
+      { id: 'albedo', name: 'Albedo' },
+      { id: 'xbull', name: 'xBull' },
+      { id: 'lobstr', name: 'Lobstr' },
     ],
     WalletError: MockWalletError,
     WalletErrorType: {
@@ -51,11 +51,13 @@ describe('WalletPickerModal', () => {
   });
 
   it('handles WALLET_NOT_FOUND error', async () => {
-    mockConnect.mockRejectedValue(new WalletError(WalletErrorType.WALLET_NOT_FOUND, 'Wallet missing'));
+    mockConnect.mockRejectedValue(
+      new WalletError(WalletErrorType.WALLET_NOT_FOUND, 'Wallet missing')
+    );
     render(<WalletPickerModal onClose={mockOnClose} />);
-    
+
     fireEvent.click(screen.getByText('Freighter'));
-    
+
     await waitFor(() => {
       expect(screen.getByText('Wallet missing')).toBeInTheDocument();
       expect(screen.getByText('Install Freighter')).toBeInTheDocument();
@@ -63,11 +65,13 @@ describe('WalletPickerModal', () => {
   });
 
   it('handles UNSUPPORTED_BROWSER error', async () => {
-    mockConnect.mockRejectedValue(new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'Browser not supported'));
+    mockConnect.mockRejectedValue(
+      new WalletError(WalletErrorType.UNSUPPORTED_BROWSER, 'Browser not supported')
+    );
     render(<WalletPickerModal onClose={mockOnClose} />);
-    
+
     fireEvent.click(screen.getByText('Freighter'));
-    
+
     await waitFor(() => {
       expect(screen.getByText('Browser not supported')).toBeInTheDocument();
       expect(screen.getByText('Learn More')).toBeInTheDocument();
@@ -77,9 +81,9 @@ describe('WalletPickerModal', () => {
   it('handles USER_REJECTED error', async () => {
     mockConnect.mockRejectedValue(new WalletError(WalletErrorType.USER_REJECTED, 'Cancelled'));
     render(<WalletPickerModal onClose={mockOnClose} />);
-    
+
     fireEvent.click(screen.getByText('Freighter'));
-    
+
     await waitFor(() => {
       expect(screen.getByText('Cancelled')).toBeInTheDocument();
       expect(screen.getByText('Retry Connection')).toBeInTheDocument();

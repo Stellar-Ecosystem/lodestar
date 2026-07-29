@@ -1,7 +1,12 @@
 import 'dotenv/config';
 import pkg from '@stellar/stellar-sdk';
 const { Keypair } = pkg;
-import { getAgentCount, getAgent, registerAgentOnChain, recordPaymentOnChain } from '../src/lib/contract.js';
+import {
+  getAgentCount,
+  getAgent,
+  registerAgentOnChain,
+  recordPaymentOnChain,
+} from '../src/lib/contract.js';
 import config from '../src/config.js';
 import logger from '../src/lib/logger.js';
 
@@ -24,7 +29,11 @@ async function ensureServerVoterRegistered() {
     return;
   }
   logger.info({ address }, 'Registering server key as reputation voter agent…');
-  await registerAgentOnChain(address, 'Lodestar Demo Voter', 'Backend demo agent used to cast reputation votes.');
+  await registerAgentOnChain(
+    address,
+    'Lodestar Demo Voter',
+    'Backend demo agent used to cast reputation votes.'
+  );
   logger.info({ address }, 'Server voter agent registered');
 }
 
@@ -47,21 +56,22 @@ const AGENTS = [
     keypair: resolveKeypair('DEMO_AGENT_1_SECRET'),
     name: 'NewAgent',
     description: 'A freshly registered agent. Just getting started on the Lodestar network.',
-    successPayments: 1,   // score → 110
+    successPayments: 1, // score → 110
     failPayments: 0,
   },
   {
     keypair: resolveKeypair('DEMO_AGENT_2_SECRET'),
     name: 'EstablishedAgent',
     description: 'Mid-tier agent with a solid track record of successful x402 payments.',
-    successPayments: 50,  // score → 600
+    successPayments: 50, // score → 600
     failPayments: 0,
   },
   {
     keypair: resolveKeypair('DEMO_AGENT_3_SECRET'),
     name: 'TrustedAgent',
-    description: 'High-trust agent. Consistent payment history across weather, search, and finance services.',
-    successPayments: 90,  // score → 1000 (capped)
+    description:
+      'High-trust agent. Consistent payment history across weather, search, and finance services.',
+    successPayments: 90, // score → 1000 (capped)
     failPayments: 0,
   },
 ];

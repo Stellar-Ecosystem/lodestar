@@ -15,9 +15,7 @@ export default function WalletConnect() {
   if (status === 'connected') {
     return (
       <div className="flex items-center gap-3">
-        <span className="mono text-xs text-secondary hidden sm:block">
-          {balance} USDC
-        </span>
+        <span className="mono text-xs text-secondary hidden sm:block">{balance} USDC</span>
         <div className="flex items-center gap-2 border border-border rounded-full px-3 py-1.5">
           <span className="w-2 h-2 rounded-full bg-success inline-block" />
           <span className="mono text-xs font-medium">{truncate(address)}</span>

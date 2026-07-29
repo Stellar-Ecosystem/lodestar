@@ -17,10 +17,7 @@ export function hmacAuth(req, res, next) {
   }
 
   const body = JSON.stringify(req.body);
-  const expected = crypto
-    .createHmac('sha256', config.server.secret)
-    .update(body)
-    .digest('hex');
+  const expected = crypto.createHmac('sha256', config.server.secret).update(body).digest('hex');
 
   const sigBuf = Buffer.from(signature);
   const expBuf = Buffer.from(expected);

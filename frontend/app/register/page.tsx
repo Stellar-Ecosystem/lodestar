@@ -14,8 +14,8 @@ export default function RegisterPage() {
       <div className="mb-10">
         <h1 className="text-2xl font-semibold mb-2">Register a Service</h1>
         <p className="text-secondary text-sm">
-          List your x402-enabled endpoint on the Lodestar registry. AI agents will
-          discover and pay for it autonomously — no integration required on their end.
+          List your x402-enabled endpoint on the Lodestar registry. AI agents will discover and pay
+          for it autonomously — no integration required on their end.
         </p>
       </div>
 

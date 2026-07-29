@@ -63,10 +63,7 @@ export default function ServiceDetailPage() {
           <Link href="/registry" className="btn-secondary px-5 py-2.5 text-sm">
             Back to registry
           </Link>
-          <button
-            onClick={() => router.refresh()}
-            className="btn-primary px-5 py-2.5 text-sm"
-          >
+          <button onClick={() => router.refresh()} className="btn-primary px-5 py-2.5 text-sm">
             Retry
           </button>
         </div>
@@ -87,4 +84,3 @@ export default function ServiceDetailPage() {
     </div>
   );
 }
-

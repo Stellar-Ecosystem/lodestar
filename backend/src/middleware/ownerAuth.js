@@ -21,7 +21,9 @@ export async function ownerAuth(req, res, next) {
       return res.status(404).json({ error: 'Agent not found', code: 'NOT_FOUND' });
     }
     if (agent.owner !== callerAddress) {
-      return res.status(403).json({ error: 'Caller is not the owner of this agent', code: 'FORBIDDEN' });
+      return res
+        .status(403)
+        .json({ error: 'Caller is not the owner of this agent', code: 'FORBIDDEN' });
     }
     // Attach to request for downstream handlers
     req.callerAddress = callerAddress;

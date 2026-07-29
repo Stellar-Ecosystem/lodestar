@@ -6,7 +6,10 @@
   "main": "agent.js",
   "scripts": {
     "start": "node agent.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint .",
+    "format": "prettier --check .",
+    "format:write": "prettier --write ."
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^13.0.0",

@@ -5,11 +5,11 @@
 @tailwind utilities;
 
 :root {
-  --background: #FAFAF7;
-  --primary: #1A1A1A;
-  --accent: #E85D3A;
-  --secondary: #6B6B6B;
-  --border: #E5E5E5;
+  --background: #fafaf7;
+  --primary: #1a1a1a;
+  --accent: #e85d3a;
+  --secondary: #6b6b6b;
+  --border: #e5e5e5;
 }
 
 * {
@@ -63,12 +63,20 @@ body {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .spinner {

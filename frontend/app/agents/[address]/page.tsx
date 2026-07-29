@@ -156,9 +156,7 @@ export default function AgentProfilePage() {
   const failedPayments = Number(agent.failed_payments);
 
   const successRate =
-    totalPayments > 0
-      ? Math.round((successfulPayments / totalPayments) * 100)
-      : null;
+    totalPayments > 0 ? Math.round((successfulPayments / totalPayments) * 100) : null;
 
   const tier = scoreTier(agent.score);
   const totalVolumeStroops = BigInt(agent.total_volume_stroops);
@@ -236,12 +234,12 @@ export default function AgentProfilePage() {
                 tier === 'elite'
                   ? 'bg-amber-500'
                   : tier === 'trusted'
-                  ? 'bg-emerald-500'
-                  : tier === 'established'
-                  ? 'bg-violet-500'
-                  : tier === 'building'
-                  ? 'bg-blue-500'
-                  : 'bg-gray-400'
+                    ? 'bg-emerald-500'
+                    : tier === 'established'
+                      ? 'bg-violet-500'
+                      : tier === 'building'
+                        ? 'bg-blue-500'
+                        : 'bg-gray-400'
               }`}
               style={{ width: `${(agent.score / 1000) * 100}%` }}
             />
@@ -328,22 +326,22 @@ export default function AgentProfilePage() {
             min="0"
             max="1000"
           />
-          <button
-            onClick={checkEligibility}
-            disabled={checkingEligibility}
-            className="btn-primary"
-          >
+          <button onClick={checkEligibility} disabled={checkingEligibility} className="btn-primary">
             {checkingEligibility ? 'Checking...' : 'Check Eligibility'}
           </button>
         </div>
         {isEligible !== null && !checkingEligibility && (
-          <div className={`mt-4 p-3 rounded-lg border flex items-center gap-3 fade-in ${
-            isEligible ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-600' : 'bg-red-500/5 border-red-500/20 text-red-600'
-          }`}>
+          <div
+            className={`mt-4 p-3 rounded-lg border flex items-center gap-3 fade-in ${
+              isEligible
+                ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-600'
+                : 'bg-red-500/5 border-red-500/20 text-red-600'
+            }`}
+          >
             <span className="text-lg font-bold">{isEligible ? '✓' : '×'}</span>
             <span className="text-sm font-medium">
-              {isEligible 
-                ? `Agent is ELIGIBLE for services requiring a score of ${customMinScore}+` 
+              {isEligible
+                ? `Agent is ELIGIBLE for services requiring a score of ${customMinScore}+`
                 : `Agent is NOT ELIGIBLE for services requiring a score of ${customMinScore}+`}
             </span>
           </div>
@@ -354,9 +352,19 @@ export default function AgentProfilePage() {
       <div className="card p-5 flex flex-wrap gap-6">
         <MetaItem label="Tier" value={TIER_LABELS[tier]} />
         <MetaItem label="Total volume" value={`$${totalVolumeUsdc} USDC`} />
-        <MetaItem label="Registered at ledger" value={`#${Number(agent.registered_at).toLocaleString()}`} />
-        <MetaItem label="Last active at ledger" value={`#${Number(agent.last_active).toLocaleString()}`} />
-        <MetaItem label="Owner" value={`${agent.owner.slice(0, 6)}…${agent.owner.slice(-4)}`} mono />
+        <MetaItem
+          label="Registered at ledger"
+          value={`#${Number(agent.registered_at).toLocaleString()}`}
+        />
+        <MetaItem
+          label="Last active at ledger"
+          value={`#${Number(agent.last_active).toLocaleString()}`}
+        />
+        <MetaItem
+          label="Owner"
+          value={`${agent.owner.slice(0, 6)}…${agent.owner.slice(-4)}`}
+          mono
+        />
       </div>
     </div>
   );

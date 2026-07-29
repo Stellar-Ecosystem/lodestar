@@ -21,7 +21,9 @@ export default function AgentCard({ agent }: Props) {
       : null;
 
   return (
-    <div className={`card p-6 flex flex-col gap-4 fade-in ${agent.flagged ? 'border-error/40' : ''}`}>
+    <div
+      className={`card p-6 flex flex-col gap-4 fade-in ${agent.flagged ? 'border-error/40' : ''}`}
+    >
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
@@ -44,9 +46,7 @@ export default function AgentCard({ agent }: Props) {
       </div>
 
       {/* Description */}
-      <p className="text-sm text-secondary leading-relaxed line-clamp-2">
-        {agent.description}
-      </p>
+      <p className="text-sm text-secondary leading-relaxed line-clamp-2">{agent.description}</p>
 
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-3">
@@ -65,7 +65,9 @@ export default function AgentCard({ agent }: Props) {
 
       {/* Footer */}
       <div className="border-t border-border pt-3 mt-1 flex items-center justify-between">
-        <span className="text-xs text-secondary">Ledger #{Number(agent.registered_at).toLocaleString()}</span>
+        <span className="text-xs text-secondary">
+          Ledger #{Number(agent.registered_at).toLocaleString()}
+        </span>
         <Link
           href={`/agents/${agent.address}`}
           className="text-xs text-accent hover:underline font-medium"

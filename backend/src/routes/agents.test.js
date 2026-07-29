@@ -44,7 +44,10 @@ vi.mock('../lib/logger.js', () => ({
 vi.mock('../config.js', () => ({
   default: {
     contract: { agentsId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4' },
-    server: { address: 'GADMINXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', secret: 'test_admin_secret_key' },
+    server: {
+      address: 'GADMINXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+      secret: 'test_admin_secret_key',
+    },
     rateLimit: { payment: { max: 10, windowMs: 60000 } },
   },
 }));
@@ -110,9 +113,7 @@ describe('POST /admin/agents/:address/flag', () => {
   });
 
   it('returns 401 when X-Admin-Key is missing', async () => {
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/flag`)
-      .send({ reason: 'test' });
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/flag`).send({ reason: 'test' });
 
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('ADMIN_KEY_MISSING');
@@ -165,9 +166,7 @@ describe('POST /admin/agents/:address/deactivate', () => {
   });
 
   it('returns 401 when X-Admin-Key is missing', async () => {
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/deactivate`)
-      .send({});
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/deactivate`).send({});
 
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('ADMIN_KEY_MISSING');
@@ -219,9 +218,27 @@ describe('GET /api/agents/:address/payment-history', () => {
 
   it('returns paginated payment history for a given agent', async () => {
     mockGetActivityFeed.mockReturnValue([
-      { agent: VALID_ADDR, txHash: 'abc123', service: 'Weather', amount: '0.001', timestamp: '2026-01-01T00:00:00Z' },
-      { agent: VALID_ADDR, txHash: 'def456', service: 'Search', amount: '0.002', timestamp: '2026-01-01T01:00:00Z' },
-      { agent: 'GOTHER', txHash: 'other1', service: 'Weather', amount: '0.001', timestamp: '2026-01-01T02:00:00Z' },
+      {
+        agent: VALID_ADDR,
+        txHash: 'abc123',
+        service: 'Weather',
+        amount: '0.001',
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+      {
+        agent: VALID_ADDR,
+        txHash: 'def456',
+        service: 'Search',
+        amount: '0.002',
+        timestamp: '2026-01-01T01:00:00Z',
+      },
+      {
+        agent: 'GOTHER',
+        txHash: 'other1',
+        service: 'Weather',
+        amount: '0.001',
+        timestamp: '2026-01-01T02:00:00Z',
+      },
     ]);
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history`);
@@ -270,7 +287,11 @@ describe('GET /api/agents/:address/payment-history', () => {
   });
 
   it('returns 400 when pagination params are invalid', async () => {
-    mockParseActivityPagination.mockReturnValueOnce({ limit: 0, offset: 0, errors: ['`limit` must be a positive integer'] });
+    mockParseActivityPagination.mockReturnValueOnce({
+      limit: 0,
+      offset: 0,
+      errors: ['`limit` must be a positive integer'],
+    });
     mockGetActivityFeed.mockReturnValueOnce([]);
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);

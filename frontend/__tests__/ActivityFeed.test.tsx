@@ -9,7 +9,7 @@ const mockActivities = Array.from({ length: 25 }).map((_, i) => ({
   service: `Service${i}`,
   amount: (i + 1).toString(),
   timestamp: new Date().toISOString(),
-  txHash: `hash${i}`
+  txHash: `hash${i}`,
 }));
 
 describe('ActivityFeed Pagination', () => {
@@ -25,7 +25,7 @@ describe('ActivityFeed Pagination', () => {
   it('renders initial loading state and then 10 items initially', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
-      json: async () => ({ activity: mockActivities })
+      json: async () => ({ activity: mockActivities }),
     });
 
     render(<ActivityFeed />);
@@ -45,7 +45,7 @@ describe('ActivityFeed Pagination', () => {
   it('increments by 10 when clicking Show More and hides button at the end', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
-      json: async () => ({ activity: mockActivities })
+      json: async () => ({ activity: mockActivities }),
     });
 
     render(<ActivityFeed />);
@@ -68,13 +68,15 @@ describe('ActivityFeed Pagination', () => {
     });
 
     // Button should be hidden
-    expect(screen.queryByRole('button', { name: 'Show more activity entries' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Show more activity entries' })
+    ).not.toBeInTheDocument();
   });
 
   it('does not show button if less than 10 items', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
-      json: async () => ({ activity: mockActivities.slice(0, 5) })
+      json: async () => ({ activity: mockActivities.slice(0, 5) }),
     });
 
     render(<ActivityFeed />);
@@ -83,13 +85,15 @@ describe('ActivityFeed Pagination', () => {
       expect(screen.getAllByText(/Agent/).length).toBe(5);
     });
 
-    expect(screen.queryByRole('button', { name: 'Show more activity entries' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Show more activity entries' })
+    ).not.toBeInTheDocument();
   });
 
   it('handles empty feed correctly', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
-      json: async () => ({ activity: [] })
+      json: async () => ({ activity: [] }),
     });
 
     render(<ActivityFeed />);

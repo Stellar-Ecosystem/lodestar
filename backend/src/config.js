@@ -10,7 +10,6 @@ const required = [
   'USDC_CONTRACT_ID',
 ];
 
-
 /**
  * Parse a positive-integer env var, falling back to a safe default when the
  * value is missing, non-numeric, or non-positive. Logs a warning so a typo in
@@ -21,7 +20,7 @@ function parsePositiveInt(value, fallback, name) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     console.warn(
-      `[config] Invalid ${name}="${value}" (expected a positive integer). Using fallback ${fallback}.`,
+      `[config] Invalid ${name}="${value}" (expected a positive integer). Using fallback ${fallback}.`
     );
     return fallback;
   }
@@ -44,7 +43,6 @@ function parseTrustProxy(value) {
   if (Number.isInteger(num) && num >= 0) return num;
   return value;
 }
-
 
 const config = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -118,21 +116,41 @@ const config = Object.freeze({
     max: parsePositiveInt(process.env.RATE_LIMIT_MAX, 20, 'RATE_LIMIT_MAX'),
     // Tighter, per-agent limit for the payment route.
     payment: {
-      windowMs: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_WINDOW_MS, 60_000, 'PAYMENT_RATE_LIMIT_WINDOW_MS'),
+      windowMs: parsePositiveInt(
+        process.env.PAYMENT_RATE_LIMIT_WINDOW_MS,
+        60_000,
+        'PAYMENT_RATE_LIMIT_WINDOW_MS'
+      ),
       max: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_MAX, 10, 'PAYMENT_RATE_LIMIT_MAX'),
     },
   },
 
   demoRun: {
-    pollMaxWaitMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_WAIT_MS, 8_000, 'DEMO_RUN_POLL_MAX_WAIT_MS'),
-    pollInitialDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_INITIAL_DELAY_MS, 250, 'DEMO_RUN_POLL_INITIAL_DELAY_MS'),
-    pollMaxDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_DELAY_MS, 2_000, 'DEMO_RUN_POLL_MAX_DELAY_MS'),
+    pollMaxWaitMs: parsePositiveInt(
+      process.env.DEMO_RUN_POLL_MAX_WAIT_MS,
+      8_000,
+      'DEMO_RUN_POLL_MAX_WAIT_MS'
+    ),
+    pollInitialDelayMs: parsePositiveInt(
+      process.env.DEMO_RUN_POLL_INITIAL_DELAY_MS,
+      250,
+      'DEMO_RUN_POLL_INITIAL_DELAY_MS'
+    ),
+    pollMaxDelayMs: parsePositiveInt(
+      process.env.DEMO_RUN_POLL_MAX_DELAY_MS,
+      2_000,
+      'DEMO_RUN_POLL_MAX_DELAY_MS'
+    ),
   },
 
   // Graceful shutdown: how long (ms) to wait for the submit queue to drain
   // and pending transaction checks before force-exiting. Default is just over
   // the max polling window (30 s) so an in-flight poll can finish.
-  shutdownTimeoutMs: parsePositiveInt(process.env.SHUTDOWN_TIMEOUT_MS, 35_000, 'SHUTDOWN_TIMEOUT_MS'),
+  shutdownTimeoutMs: parsePositiveInt(
+    process.env.SHUTDOWN_TIMEOUT_MS,
+    35_000,
+    'SHUTDOWN_TIMEOUT_MS'
+  ),
 });
 
 export default config;
@@ -156,19 +174,16 @@ export function validateConfig(log = _consoleLog) {
   const missing = required.filter((key) => !process.env[key]);
   const errors = missing.map((k) => `${k} is not set`);
 
-  if (
-    process.env.PAYMENT_ADDRESS &&
-    !/^G[A-Z2-7]{55}$/.test(process.env.PAYMENT_ADDRESS)
-  ) {
+  if (process.env.PAYMENT_ADDRESS && !/^G[A-Z2-7]{55}$/.test(process.env.PAYMENT_ADDRESS)) {
     errors.push(
-      `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`,
+      `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`
     );
   }
 
   if (errors.length > 0) {
     log.fatal(
       { missingVars: missing, errors },
-      `Server startup failed: missing required environment variables: ${missing.join(', ')}`,
+      `Server startup failed: missing required environment variables: ${missing.join(', ')}`
     );
     process.exit(1);
   }
@@ -176,7 +191,7 @@ export function validateConfig(log = _consoleLog) {
   if (!process.env.AGENTS_CONTRACT_ID) {
     log.warn(
       'AGENTS_CONTRACT_ID is not set. Agent credit scoring will return 503 AGENTS_NOT_CONFIGURED. ' +
-        'Set AGENTS_CONTRACT_ID in your environment if credit scoring is required.',
+        'Set AGENTS_CONTRACT_ID in your environment if credit scoring is required.'
     );
   }
 }

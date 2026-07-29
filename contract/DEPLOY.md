@@ -16,6 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/stellar/stellar-cli/main/install.sh
 ```
 
 Or via cargo (slower but also works):
+
 ```sh
 cargo install --locked stellar-cli
 ```
@@ -46,6 +47,7 @@ stellar contract build
 ```
 
 The compiled WASM files will be at:
+
 - `contract/target/wasm32-unknown-unknown/release/lodestar_registry.wasm`
 - `contract/agents/target/wasm32v1-none/release/lodestar_agents.wasm`
 

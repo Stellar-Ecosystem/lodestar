@@ -26,34 +26,20 @@ describe('SpendingPolicyDisplay', () => {
   });
 
   it('does not show Edit button when wallet is not the owner', () => {
-    render(
-      <SpendingPolicyDisplay
-        policy={mockPolicy}
-        walletAddress="GDIF"
-        agentOwner="GOTHER"
-      />,
-    );
+    render(<SpendingPolicyDisplay policy={mockPolicy} walletAddress="GDIF" agentOwner="GOTHER" />);
     expect(screen.queryByText('Edit')).not.toBeInTheDocument();
   });
 
   it('shows Edit button when wallet matches owner', () => {
     render(
-      <SpendingPolicyDisplay
-        policy={mockPolicy}
-        walletAddress="GOWNER"
-        agentOwner="GOWNER"
-      />,
+      <SpendingPolicyDisplay policy={mockPolicy} walletAddress="GOWNER" agentOwner="GOWNER" />
     );
     expect(screen.getByText('Edit')).toBeInTheDocument();
   });
 
   it('enters edit mode and shows form inputs', async () => {
     render(
-      <SpendingPolicyDisplay
-        policy={mockPolicy}
-        walletAddress="GOWNER"
-        agentOwner="GOWNER"
-      />,
+      <SpendingPolicyDisplay policy={mockPolicy} walletAddress="GOWNER" agentOwner="GOWNER" />
     );
 
     fireEvent.click(screen.getByText('Edit'));
@@ -69,11 +55,7 @@ describe('SpendingPolicyDisplay', () => {
 
   it('cancels edit mode and returns to read mode', async () => {
     render(
-      <SpendingPolicyDisplay
-        policy={mockPolicy}
-        walletAddress="GOWNER"
-        agentOwner="GOWNER"
-      />,
+      <SpendingPolicyDisplay policy={mockPolicy} walletAddress="GOWNER" agentOwner="GOWNER" />
     );
 
     fireEvent.click(screen.getByText('Edit'));
@@ -92,7 +74,7 @@ describe('SpendingPolicyDisplay', () => {
         walletAddress="GOWNER"
         agentOwner="GOWNER"
         onUpdate={onUpdate}
-      />,
+      />
     );
 
     fireEvent.click(screen.getByText('Edit'));
@@ -105,18 +87,14 @@ describe('SpendingPolicyDisplay', () => {
           maxPerDayStroops: '10000000',
           allowedCategories: ['search', 'weather'],
           minScoreToEarn: 100,
-        }),
+        })
       );
     });
   });
 
   it('toggles category selection in edit mode', () => {
     render(
-      <SpendingPolicyDisplay
-        policy={mockPolicy}
-        walletAddress="GOWNER"
-        agentOwner="GOWNER"
-      />,
+      <SpendingPolicyDisplay policy={mockPolicy} walletAddress="GOWNER" agentOwner="GOWNER" />
     );
 
     fireEvent.click(screen.getByText('Edit'));

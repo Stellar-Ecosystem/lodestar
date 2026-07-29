@@ -39,40 +39,36 @@ describe('boost() dry-run', () => {
 
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'agent-1', payments: 1 }),
-      'Building score…',
+      'Building score…'
     );
 
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'agent-2', payments: 10 }),
-      'Building score…',
+      'Building score…'
     );
 
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ dryRun: true }),
-      'Score boost complete',
+      'Score boost complete'
     );
   });
 
   it('skips agents already at target score', async () => {
-    listAgents.mockResolvedValue([
-      makeAgent({ name: 'agent-1', score: 110 }),
-    ]);
+    listAgents.mockResolvedValue([makeAgent({ name: 'agent-1', score: 110 })]);
 
     await boost({ dryRun: true, targets: [110] });
 
     expect(recordPaymentOnChain).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
       { name: 'agent-1', score: 110 },
-      'Score already at target — skipping',
+      'Score already at target — skipping'
     );
   });
 });
 
 describe('boost() live mode', () => {
   it('calls recordPaymentOnChain for each payment', async () => {
-    listAgents.mockResolvedValue([
-      makeAgent({ name: 'agent-1', score: 100 }),
-    ]);
+    listAgents.mockResolvedValue([makeAgent({ name: 'agent-1', score: 100 })]);
 
     await boost({ dryRun: false, targets: [110], amount: 10_000n });
 
@@ -82,7 +78,7 @@ describe('boost() live mode', () => {
 
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'agent-1', targetScore: 110 }),
-      'Done',
+      'Done'
     );
   });
 });

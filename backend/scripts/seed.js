@@ -9,14 +9,16 @@ process.env.SEEDING_MODE ??= 'true';
 const SERVICES = [
   {
     name: 'Lodestar Weather Service',
-    description: 'Real-time weather data for any coordinates. Returns temperature, wind speed, and weather code.',
+    description:
+      'Real-time weather data for any coordinates. Returns temperature, wind speed, and weather code.',
     endpoint: 'https://lodestar-8na4.onrender.com/demo/weather',
     priceUsdc: '0.001',
     category: 'weather',
   },
   {
     name: 'Lodestar Search Service',
-    description: 'Web search powered by Brave Search API. Returns top 5 results with title, URL, and description.',
+    description:
+      'Web search powered by Brave Search API. Returns top 5 results with title, URL, and description.',
     endpoint: 'https://lodestar-8na4.onrender.com/demo/search',
     priceUsdc: '0.001',
     category: 'search',
@@ -43,10 +45,13 @@ async function seed() {
     const existingServices = await listServicesByProvider(providerAddress);
     const existingNames = new Set(existingServices.map((s) => s.name));
 
-    logger.info({
-      total: SERVICES.length,
-      existing: existingNames.size,
-    }, 'Starting seed idempotency check');
+    logger.info(
+      {
+        total: SERVICES.length,
+        existing: existingNames.size,
+      },
+      'Starting seed idempotency check'
+    );
 
     for (const svc of SERVICES) {
       if (existingNames.has(svc.name)) {

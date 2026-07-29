@@ -35,7 +35,12 @@ interface Props {
   }) => Promise<void>;
 }
 
-export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwner, onUpdate }: Props) {
+export default function SpendingPolicyDisplay({
+  policy,
+  walletAddress,
+  agentOwner,
+  onUpdate,
+}: Props) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,9 +69,7 @@ export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwne
   }
 
   function toggleCategory(cat: string) {
-    setCategories((prev) =>
-      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat],
-    );
+    setCategories((prev) => (prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]));
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -99,8 +102,8 @@ export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwne
   }
 
   const dailyUsed = Number(
-    BigInt(policy.daily_spent_stroops) * 100n /
-    BigInt(policy.max_per_day_stroops === '0' ? '1' : policy.max_per_day_stroops),
+    (BigInt(policy.daily_spent_stroops) * 100n) /
+      BigInt(policy.max_per_day_stroops === '0' ? '1' : policy.max_per_day_stroops)
   );
 
   return (
@@ -121,7 +124,9 @@ export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwne
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
-              <label className="text-xs text-secondary block mb-1">Max per transaction (USDC)</label>
+              <label className="text-xs text-secondary block mb-1">
+                Max per transaction (USDC)
+              </label>
               <input
                 type="number"
                 value={maxPerTx}
@@ -177,7 +182,9 @@ export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwne
                 ))}
               </div>
               <p className="text-[11px] text-secondary mt-1">
-                {categories.length === 0 ? 'All categories allowed' : `${categories.length} selected`}
+                {categories.length === 0
+                  ? 'All categories allowed'
+                  : `${categories.length} selected`}
               </p>
             </div>
           </div>
@@ -188,7 +195,12 @@ export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwne
             <button type="submit" disabled={saving} className="btn-primary text-sm">
               {saving ? 'Updating…' : 'Save changes'}
             </button>
-            <button type="button" onClick={cancelEdit} disabled={saving} className="btn-secondary text-sm">
+            <button
+              type="button"
+              onClick={cancelEdit}
+              disabled={saving}
+              className="btn-secondary text-sm"
+            >
               Cancel
             </button>
           </div>
@@ -224,7 +236,8 @@ export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwne
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-secondary">Daily spend used</span>
               <span className="mono text-xs text-primary">
-                ${stroopsToUsdc(policy.daily_spent_stroops)} / ${stroopsToUsdc(policy.max_per_day_stroops)} USDC
+                ${stroopsToUsdc(policy.daily_spent_stroops)} / $
+                {stroopsToUsdc(policy.max_per_day_stroops)} USDC
               </span>
             </div>
             <div className="w-full bg-border rounded-full h-1.5">
@@ -252,8 +265,18 @@ function PolicyRow({ label, value, tooltip }: { label: string; value: string; to
         {label}
         {tooltip && (
           <span className="group relative cursor-help" title={tooltip}>
-            <svg className="w-3.5 h-3.5 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z" />
+            <svg
+              className="w-3.5 h-3.5 text-muted"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z"
+              />
             </svg>
           </span>
         )}

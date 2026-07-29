@@ -74,9 +74,11 @@ export default function CreditScoreDemo() {
     try {
       const res = await fetchAgentSpendCheck(established.address, SIMULATE_AMOUNT, 'weather');
       setSpendResult(res.allowed ? 'allowed' : 'blocked');
-      setSpendDetail(res.allowed
-        ? `$${SIMULATE_AMOUNT} USDC within daily limit of $${DAILY_LIMIT_USDC} USDC`
-        : res.reason);
+      setSpendDetail(
+        res.allowed
+          ? `$${SIMULATE_AMOUNT} USDC within daily limit of $${DAILY_LIMIT_USDC} USDC`
+          : res.reason
+      );
     } catch {
       setSpendResult('blocked');
       setSpendDetail('Policy check failed');
@@ -94,8 +96,8 @@ export default function CreditScoreDemo() {
           Agent Credit Scores — Live Demo
         </h2>
         <p className="text-secondary text-sm leading-relaxed max-w-2xl">
-          Three agents, three score levels, three different levels of access. Scores are
-          pulled live from the Soroban contract every 10 seconds.
+          Three agents, three score levels, three different levels of access. Scores are pulled live
+          from the Soroban contract every 10 seconds.
         </p>
       </div>
 
@@ -132,7 +134,9 @@ export default function CreditScoreDemo() {
 
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-background border border-border rounded px-2 py-1.5 text-center">
-                  <div className="mono font-semibold">{Number(agent.total_payments).toLocaleString()}</div>
+                  <div className="mono font-semibold">
+                    {Number(agent.total_payments).toLocaleString()}
+                  </div>
                   <div className="text-secondary">payments</div>
                 </div>
                 <div className="bg-background border border-border rounded px-2 py-1.5 text-center">
@@ -163,7 +167,9 @@ export default function CreditScoreDemo() {
                         : 'bg-error/10 text-error border border-error/20'
                     }`}
                   >
-                    {accessResults[agent.address] === 'granted' ? 'Access Granted' : 'Access Denied'}
+                    {accessResults[agent.address] === 'granted'
+                      ? 'Access Granted'
+                      : 'Access Denied'}
                     <div className="font-normal text-secondary mt-0.5">
                       {accessDetails[agent.address]}
                     </div>
@@ -180,8 +186,8 @@ export default function CreditScoreDemo() {
         <div className="card p-6">
           <h3 className="font-semibold text-base mb-1">Spending Policy Simulation</h3>
           <p className="text-secondary text-sm mb-5">
-            The EstablishedAgent has a daily limit of ${DAILY_LIMIT_USDC} USDC.
-            Simulate a ${SIMULATE_AMOUNT} USDC transaction to see if it passes.
+            The EstablishedAgent has a daily limit of ${DAILY_LIMIT_USDC} USDC. Simulate a $
+            {SIMULATE_AMOUNT} USDC transaction to see if it passes.
           </p>
 
           <div className="flex items-center gap-4 flex-wrap">

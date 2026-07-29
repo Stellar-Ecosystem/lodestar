@@ -39,9 +39,7 @@ describe('StatsBar auto-refresh', () => {
   });
 
   it('re-fetches on the 30s interval and updates the displayed totals', async () => {
-    mockFetchStats
-      .mockResolvedValueOnce(makeStats(3))
-      .mockResolvedValueOnce(makeStats(7));
+    mockFetchStats.mockResolvedValueOnce(makeStats(3)).mockResolvedValueOnce(makeStats(7));
     render(<StatsBar />);
 
     expect(await screen.findByText('3')).toBeInTheDocument();

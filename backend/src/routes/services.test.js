@@ -28,7 +28,12 @@ vi.mock('../config.js', () => ({
   default: {
     contract: { agentsId: 'mock-agents-contract' },
     server: { address: 'mock_address', secret: 'mock_secret' },
-    x402: { facilitatorUrl: 'https://mock', weatherPrice: '0.001', searchPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
+    x402: {
+      facilitatorUrl: 'https://mock',
+      weatherPrice: '0.001',
+      searchPrice: '0.001',
+      payTo: 'G_MOCK_PAYMENT',
+    },
     braveApiKey: 'mock_key',
     corsOrigin: ['http://localhost:3000'],
     nodeEnv: 'test',
@@ -104,7 +109,9 @@ describe('GET /demo/weather coordinate validation', () => {
   it('accepts valid boundary coordinates (90, 180)', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ current: { temperature_2m: 20, wind_speed_10m: 5, weather_code: 1, time: 'now' } }),
+      json: async () => ({
+        current: { temperature_2m: 20, wind_speed_10m: 5, weather_code: 1, time: 'now' },
+      }),
     });
     const res = await request(app).get('/demo/weather?lat=90&lon=180');
     expect(res.status).toBe(200);
@@ -115,7 +122,9 @@ describe('GET /demo/weather coordinate validation', () => {
   it('accepts valid boundary coordinates (-90, -180)', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ current: { temperature_2m: -5, wind_speed_10m: 10, weather_code: 3, time: 'now' } }),
+      json: async () => ({
+        current: { temperature_2m: -5, wind_speed_10m: 10, weather_code: 3, time: 'now' },
+      }),
     });
     const res = await request(app).get('/demo/weather?lat=-90&lon=-180');
     expect(res.status).toBe(200);
@@ -126,7 +135,9 @@ describe('GET /demo/weather coordinate validation', () => {
   it('falls back to default coordinates when no query params supplied', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ current: { temperature_2m: 22, wind_speed_10m: 3, weather_code: 0, time: 'now' } }),
+      json: async () => ({
+        current: { temperature_2m: 22, wind_speed_10m: 3, weather_code: 0, time: 'now' },
+      }),
     });
     const res = await request(app).get('/demo/weather');
     expect(res.status).toBe(200);

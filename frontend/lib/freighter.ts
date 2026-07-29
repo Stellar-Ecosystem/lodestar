@@ -1,9 +1,4 @@
-import {
-  isConnected,
-  getAddress,
-  signTransaction,
-  requestAccess,
-} from '@stellar/freighter-api';
+import { isConnected, getAddress, signTransaction, requestAccess } from '@stellar/freighter-api';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
 
 export function isFreighterInstalled(): boolean {
@@ -51,8 +46,7 @@ export function publicKeyFromSecret(secret: string): string {
 
 export async function getBalance(address: string): Promise<string> {
   try {
-    const horizonUrl =
-      process.env.NEXT_PUBLIC_HORIZON_URL ?? 'https://horizon-testnet.stellar.org';
+    const horizonUrl = process.env.NEXT_PUBLIC_HORIZON_URL ?? 'https://horizon-testnet.stellar.org';
 
     const res = await fetch(`${horizonUrl}/accounts/${address}`);
     if (!res.ok) return '0.0000';

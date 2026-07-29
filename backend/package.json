@@ -11,7 +11,10 @@
     "test:watch": "vitest",
     "seed": "node scripts/seed.js",
     "seed-agents": "node scripts/seed-agents.js",
-    "update-endpoints": "node scripts/update-endpoints.js"
+    "update-endpoints": "node scripts/update-endpoints.js",
+    "lint": "eslint .",
+    "format": "prettier --check .",
+    "format:write": "prettier --write ."
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^15.0.1",

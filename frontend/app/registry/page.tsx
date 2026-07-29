@@ -20,42 +20,45 @@ import { PAGE_SIZE } from '@/lib/pagination';
 
 export default function RegistryPage() {
   const [activeCategory, setActive] = useState<Category | 'all'>('all');
-  const [sort, setSort]             = useState<SortOption>('newest');
-  const [query, setQuery]           = useState('');
-  const [page, setPage]             = useState(1);
+  const [sort, setSort] = useState<SortOption>('newest');
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
 
   // SWR replaces the manual setInterval poll: it dedupes concurrent requests,
   // revalidates every 30s, and only re-renders when the returned data changes.
-  const { data: services = [], isLoading: loading, error: swrError, mutate } = useSWR(
+  const {
+    data: services = [],
+    isLoading: loading,
+    error: swrError,
+    mutate,
+  } = useSWR(
     ['services', activeCategory],
     () => fetchServices(activeCategory === 'all' ? undefined : activeCategory),
     { refreshInterval: 30_000, revalidateOnFocus: false, keepPreviousData: true }
   );
 
-  const error = swrError
-    ? swrError instanceof Error
-      ? swrError.message
-      : 'Failed to load'
-    : null;
+  const error = swrError ? (swrError instanceof Error ? swrError.message : 'Failed to load') : null;
 
   // Reset to page 1 whenever the filtered set changes
   useEffect(() => {
     setPage(1);
   }, [query, sort, activeCategory]);
 
-  const sorted   = sortServices(services, sort);
+  const sorted = sortServices(services, sort);
   const filtered = filterServices(sorted, query);
 
-  const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage    = Math.min(page, totalPages);
-  const startIndex  = (safePage - 1) * PAGE_SIZE;
-  const paginated   = filtered.slice(startIndex, startIndex + PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const startIndex = (safePage - 1) * PAGE_SIZE;
+  const paginated = filtered.slice(startIndex, startIndex + PAGE_SIZE);
 
   // Build a compact page-number list: always show first, last, current ±1, with ellipsis gaps
   function buildPageNumbers(total: number, current: number): (number | '…')[] {
     if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
     const pages: (number | '…')[] = [];
-    const show = new Set([1, total, current - 1, current, current + 1].filter((p) => p >= 1 && p <= total));
+    const show = new Set(
+      [1, total, current - 1, current, current + 1].filter((p) => p >= 1 && p <= total)
+    );
     let prev = 0;
     for (const p of [...show].sort((a, b) => a - b)) {
       if (p - prev > 1) pages.push('…');
@@ -78,9 +81,7 @@ export default function RegistryPage() {
       <div className="flex items-center justify-between mb-8 flex-wrap gap-4">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold">Service Registry</h1>
-          <span className="badge bg-primary text-white mono">
-            {filtered.length}
-          </span>
+          <span className="badge bg-primary text-white mono">{filtered.length}</span>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
@@ -97,7 +98,9 @@ export default function RegistryPage() {
             className="border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
           >
             {SORTS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
             ))}
           </select>
         </div>
@@ -167,9 +170,7 @@ export default function RegistryPage() {
                 <span className="font-medium text-foreground">
                   {startIndex + 1}–{Math.min(startIndex + PAGE_SIZE, filtered.length)}
                 </span>{' '}
-                of{' '}
-                <span className="font-medium text-foreground">{filtered.length}</span>{' '}
-                services
+                of <span className="font-medium text-foreground">{filtered.length}</span> services
               </p>
 
               {/* Page buttons */}
