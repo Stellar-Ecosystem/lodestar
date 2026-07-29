@@ -133,6 +133,10 @@ const config = Object.freeze({
   // and pending transaction checks before force-exiting. Default is just over
   // the max polling window (30 s) so an in-flight poll can finish.
   shutdownTimeoutMs: parsePositiveInt(process.env.SHUTDOWN_TIMEOUT_MS, 35_000, 'SHUTDOWN_TIMEOUT_MS'),
+
+  // Idempotency store: path to SQLite database for persistent idempotency keys.
+  // Defaults to ./data/idempotency.db in the backend directory.
+  idempotencyDbPath: process.env.IDEMPOTENCY_DB_PATH ?? './data/idempotency.db',
 });
 
 export default config;

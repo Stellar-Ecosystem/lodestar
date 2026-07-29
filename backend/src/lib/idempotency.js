@@ -1,25 +1,51 @@
 /**
- * In-memory idempotency store for the payment route.
+ * Persistent idempotency store for the payment route using SQLite.
  *
  * Keys expire after TTL_MS (default 24 h). Entries are pruned lazily on
- * every lookup so the Map never grows unboundedly during a normal workday.
+ * every lookup so the table never grows unboundedly during a normal workday.
  *
  * Lifecycle of a key:
  *   'pending'  — request is in-flight; a concurrent retry gets 409
  *   'complete' — request finished; replays cached response with 200
  *   'failed'   — request threw; replays the error response
+ *
+ * Using SQLite provides persistence across restarts and replicas, solving the
+ * issue where in-memory storage would lose state on process restart or in
+ * multi-replica deployments.
  */
+
+import Database from 'better-sqlite3';
+import config from '../config.js';
+import { dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { mkdirSync } from 'fs';
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-/**
- * @type {Map<string, {
- *   status: 'pending' | 'complete' | 'failed',
- *   result: { newScore?: number, error?: string, code?: string, httpStatus?: number } | null,
- *   expiresAt: number
- * }>}
- */
-const store = new Map();
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const dbPath = config.idempotencyDbPath.startsWith('./')
+  ? `${__dirname}/../../${config.idempotencyDbPath}`
+  : config.idempotencyDbPath;
+
+// Ensure the data directory exists
+const dbDir = dirname(dbPath);
+mkdirSync(dbDir, { recursive: true });
+
+const db = new Database(dbPath);
+
+// Enable WAL mode for better concurrency
+db.pragma('journal_mode = WAL');
+
+// Create the idempotency table if it doesn't exist
+db.exec(`
+  CREATE TABLE IF NOT EXISTS idempotency (
+    key TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    result TEXT,
+    expiresAt INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_expiresAt ON idempotency(expiresAt);
+`);
 
 /**
  * Validate that `key` is a non-empty string of at most 255 characters
@@ -44,11 +70,8 @@ export function isValidIdempotencyKey(key) {
  */
 function purgeExpired() {
   const now = Date.now();
-  for (const [k, entry] of store) {
-    if (entry.expiresAt <= now) {
-      store.delete(k);
-    }
-  }
+  const stmt = db.prepare('DELETE FROM idempotency WHERE expiresAt <= ?');
+  stmt.run(now);
 }
 
 /**
@@ -60,13 +83,18 @@ function purgeExpired() {
  */
 export function getEntry(key) {
   purgeExpired();
-  const entry = store.get(key);
-  if (!entry) return null;
-  if (entry.expiresAt <= Date.now()) {
-    store.delete(key);
+  const stmt = db.prepare('SELECT status, result, expiresAt FROM idempotency WHERE key = ?');
+  const row = stmt.get(key);
+  if (!row) return null;
+  if (row.expiresAt <= Date.now()) {
+    const deleteStmt = db.prepare('DELETE FROM idempotency WHERE key = ?');
+    deleteStmt.run(key);
     return null;
   }
-  return entry;
+  return {
+    status: row.status,
+    result: row.result ? JSON.parse(row.result) : null,
+  };
 }
 
 /**
@@ -76,11 +104,8 @@ export function getEntry(key) {
  * @param {string} key
  */
 export function markPending(key) {
-  store.set(key, {
-    status: 'pending',
-    result: null,
-    expiresAt: Date.now() + TTL_MS,
-  });
+  const stmt = db.prepare('INSERT INTO idempotency (key, status, result, expiresAt) VALUES (?, ?, ?, ?)');
+  stmt.run(key, 'pending', null, Date.now() + TTL_MS);
 }
 
 /**
@@ -90,11 +115,8 @@ export function markPending(key) {
  * @param {{ newScore: number }} result
  */
 export function markComplete(key, result) {
-  const entry = store.get(key);
-  if (entry) {
-    entry.status = 'complete';
-    entry.result = result;
-  }
+  const stmt = db.prepare('UPDATE idempotency SET status = ?, result = ? WHERE key = ?');
+  stmt.run('complete', JSON.stringify(result), key);
 }
 
 /**
@@ -104,14 +126,11 @@ export function markComplete(key, result) {
  * @param {{ httpStatus: number, error: string, code: string }} result
  */
 export function markFailed(key, result) {
-  const entry = store.get(key);
-  if (entry) {
-    entry.status = 'failed';
-    entry.result = result;
-  }
+  const stmt = db.prepare('UPDATE idempotency SET status = ?, result = ? WHERE key = ?');
+  stmt.run('failed', JSON.stringify(result), key);
 }
 
 /** Exposed for testing only — resets internal state. */
 export function _reset() {
-  store.clear();
+  db.exec('DELETE FROM idempotency');
 }
