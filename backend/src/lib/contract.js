@@ -396,13 +396,19 @@ export function simulateAndSubmit(operation, signer) {
   const opName = getOperationName(operation);
   return submitQueue.add(() =>
     _simulateAndSubmit(operation, signer, 0).catch((err) => {
-      addToDeadLetterQueue({
-        timestamp: Date.now(),
-        operation: opName,
-        error: err.message,
-        code: err.code ?? 'UNKNOWN',
-        type: err.constructor?.name ?? 'Error',
-      });
+      // Only capture permanent failures (exhausted retries, on-chain failures,
+      // or irrecoverable timeouts). Transient errors like SimulationError and
+      // ReturnValueParseError are not captured — they typically resolve on retry
+      // or are client-side issues unrelated to the on-chain submission.
+      if (err instanceof TransactionFailedError || err instanceof TransactionTimeoutError) {
+        addToDeadLetterQueue({
+          timestamp: Date.now(),
+          operation: opName,
+          error: err.message,
+          code: err.code ?? 'UNKNOWN',
+          type: err.constructor?.name ?? 'Error',
+        });
+      }
       throw err; // re-throw so callers still receive the error
     }),
   );
@@ -1286,58 +1292,78 @@ export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
 }
 
 async function submitSignedTx(signedXdr) {
-  const server = getStellarServer();
-  const passphrase = getNetworkPassphrase();
-  const keypair = getServerKeypair();
+  try {
+    const server = getStellarServer();
+    const passphrase = getNetworkPassphrase();
+    const keypair = getServerKeypair();
 
-  const tx = new Transaction(signedXdr, passphrase);
-  tx.sign(keypair);
+    const tx = new Transaction(signedXdr, passphrase);
+    tx.sign(keypair);
 
-  const sendStart = Date.now();
-  const sendResult = await server.sendTransaction(tx);
-  logRpcCall('sendTransaction', Date.now() - sendStart);
-  if (sendResult.status === 'ERROR') {
-    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
-  }
-
-  const signedTxHash = sendResult.hash;
-  trackPendingTransaction(signedTxHash, 'signed-transaction');
-
-  logger.debug({ hash: signedTxHash }, 'Submitted signed Soroban transaction');
-
-  let getResult;
-  for (let i = 0; i < 20; i++) {
-    const txStart = Date.now();
-    getResult = await server.getTransaction(sendResult.hash);
-    logRpcCall('getTransaction', Date.now() - txStart);
-    if (getResult.status !== 'NOT_FOUND') break;
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-
-  if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
-  }
-
-  removePendingTransaction(signedTxHash);
-
-  if (getResult.status === 'FAILED') {
-    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
-  }
-
-  let nativeReturnValue;
-  if (getResult.returnValue) {
-    try {
-      nativeReturnValue = scValToNative(getResult.returnValue);
-    } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+    const sendStart = Date.now();
+    const sendResult = await server.sendTransaction(tx);
+    logRpcCall('sendTransaction', Date.now() - sendStart);
+    if (sendResult.status === 'ERROR') {
+      throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
     }
-  }
 
-  return {
-    hash: sendResult.hash,
-    returnValue: getResult.returnValue ?? null,
-    nativeReturnValue,
-  };
+    const signedTxHash = sendResult.hash;
+    trackPendingTransaction(signedTxHash, 'signed-transaction');
+
+    logger.debug({ hash: signedTxHash }, 'Submitted signed Soroban transaction');
+
+    let getResult;
+    for (let i = 0; i < 20; i++) {
+      const txStart = Date.now();
+      getResult = await server.getTransaction(sendResult.hash);
+      logRpcCall('getTransaction', Date.now() - txStart);
+      if (getResult.status !== 'NOT_FOUND') break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    if (!getResult || getResult.status === 'NOT_FOUND') {
+      throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
+    }
+
+    removePendingTransaction(signedTxHash);
+
+    if (getResult.status === 'FAILED') {
+      throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+    }
+
+    let nativeReturnValue;
+    if (getResult.returnValue) {
+      try {
+        nativeReturnValue = scValToNative(getResult.returnValue);
+      } catch (err) {
+        throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+      }
+    }
+
+    return {
+      hash: sendResult.hash,
+      returnValue: getResult.returnValue ?? null,
+      nativeReturnValue,
+    };
+  } catch (err) {
+    // Capture permanently failed wallet-signed transactions so operators can
+    // inspect and replay them just like server-signed submissions.
+    //
+    // NOTE: The operation is always 'signed-transaction' — unlike
+    // simulateAndSubmit, submitSignedTx receives a pre-built XDR and cannot
+    // extract the contract function name without decoding. Operators can
+    // identify the specific operation from the transaction hash in err.message.
+    if (err instanceof TransactionFailedError || err instanceof TransactionTimeoutError) {
+      addToDeadLetterQueue({
+        timestamp: Date.now(),
+        operation: 'signed-transaction',
+        error: err.message,
+        code: err.code ?? 'UNKNOWN',
+        type: err.constructor?.name ?? 'Error',
+      });
+    }
+    throw err;
+  }
 }
 
 /**

@@ -47,10 +47,11 @@ Permanently failed on-chain submissions (e.g. txBAD_SEQ after exhausting retries
 
 ```bash
 # List all dead-letter entries (requires X-Admin-Key header)
-curl -H "X-Admin-Key: <your-admin-key>" http://localhost:3001/api/admin/dead-letter
+# Note: the port may differ if you set PORT in your .env file; the default is 3001
+curl -H "X-Admin-Key: <your-admin-key>" http://localhost:${PORT:-3001}/api/admin/dead-letter
 
 # Clear the dead-letter queue after resolving issues
-curl -X POST -H "X-Admin-Key: <your-admin-key>" http://localhost:3001/api/admin/dead-letter/clear
+curl -X POST -H "X-Admin-Key: <your-admin-key>" http://localhost:${PORT:-3001}/api/admin/dead-letter/clear
 ```
 
 **Replay path:** Each dead-letter entry contains `operation` (the contract function name), `error` (the failure message), `code` (the error code), `type` (the error class name), and `timestamp`. To replay:

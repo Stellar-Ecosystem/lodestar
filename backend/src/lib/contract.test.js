@@ -960,6 +960,87 @@ describe('dead-letter queue', () => {
 
     expect(contractLib.getDeadLetterCount()).toBe(0);
   });
+
+  it('does not capture transient ReturnValueParseError in the dead-letter queue', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'parse-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: 'not-an-scval' });
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('get_service_count'))
+    ).rejects.toMatchObject({ name: 'ReturnValueParseError' });
+
+    expect(contractLib.getDeadLetterCount()).toBe(0);
+  });
+
+  it('does not capture SimulationError in the dead-letter queue', async () => {
+    mockSimulateTransaction.mockResolvedValue({ error: 'HostError: boom' });
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('get_service_count'))
+    ).rejects.toMatchObject({ name: 'SimulationError' });
+
+    expect(contractLib.getDeadLetterCount()).toBe(0);
+  });
+
+  it('captures TransactionTimeoutError in the dead-letter queue', { timeout: 40000 }, async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'timeout-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('get_service_count'))
+    ).rejects.toThrow();
+
+    const deadLetters = contractLib.getDeadLetterQueue();
+    expect(deadLetters).toHaveLength(1);
+    expect(deadLetters[0].code).toBe('TRANSACTION_TIMEOUT');
+    expect(deadLetters[0].type).toBe('TransactionTimeoutError');
+  });
+
+  it('captures permanently failed wallet-signed transactions in the dead-letter queue', async () => {
+    // Build a minimal transaction to produce a valid signed XDR
+    const keypair = sdkPkg.Keypair.fromSecret('SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2');
+    const account = new sdkPkg.Account(keypair.publicKey(), '1');
+    const tx = new sdkPkg.TransactionBuilder(account, {
+      fee: sdkPkg.BASE_FEE,
+      networkPassphrase: 'Test SDF Network ; September 2015',
+    })
+      .setTimeout(30)
+      .build();
+    tx.sign(keypair);
+    const signedXdr = tx.toXDR();
+
+    mockSendTransaction.mockResolvedValue({ status: 'ERROR', errorResult: 'opLowReserve', hash: 'signed-fail-hash' });
+
+    await expect(
+      contractLib.submitSignedAgentTx(signedXdr)
+    ).rejects.toThrow();
+
+    const deadLetters = contractLib.getDeadLetterQueue();
+    expect(deadLetters).toHaveLength(1);
+    expect(deadLetters[0].operation).toBe('signed-transaction');
+    expect(deadLetters[0].code).toBe('TRANSACTION_FAILED');
+    expect(deadLetters[0].type).toBe('TransactionFailedError');
+  });
+
+  it('does not capture successful wallet-signed transactions in the dead-letter queue', async () => {
+    const keypair = sdkPkg.Keypair.fromSecret('SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2');
+    const account = new sdkPkg.Account(keypair.publicKey(), '1');
+    const tx = new sdkPkg.TransactionBuilder(account, {
+      fee: sdkPkg.BASE_FEE,
+      networkPassphrase: 'Test SDF Network ; September 2015',
+    })
+      .setTimeout(30)
+      .build();
+    tx.sign(keypair);
+    const signedXdr = tx.toXDR();
+
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'signed-ok-hash' });
+    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+
+    await contractLib.submitSignedAgentTx(signedXdr);
+
+    expect(contractLib.getDeadLetterCount()).toBe(0);
+  });
 });
 
 describe('submitQueue management', () => {
