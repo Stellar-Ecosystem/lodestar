@@ -12,8 +12,10 @@ Each component has its own test command. Run them from the repo root:
 
 ```bash
 # Soroban contracts
-cd contract && cargo test
-cd contract/agents && cargo test
+cargo test --manifest-path contract/Cargo.toml
+cargo test --manifest-path contract/agents/Cargo.toml
+cargo clippy --manifest-path contract/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path contract/agents/Cargo.toml --all-targets -- -D warnings
 
 # Backend (vitest)
 cd backend && npm ci && npm test
@@ -38,7 +40,7 @@ All of the above run automatically on every PR and push to `main` via GitHub Act
 
 ## Code style
 
-- Rust: run `cargo fmt` before committing; `cargo fmt --all --check` runs in CI under the `contract-build` job
+- Rust: run `cargo fmt` and Clippy before committing; `cargo fmt --all --check` and strict Clippy checks run in CI under the `contract-build` job
 - JS/TS: follow the existing ESLint and TypeScript configuration in each package (JS lint CI steps are a planned follow-up)
 
 ## Submitting a pull request

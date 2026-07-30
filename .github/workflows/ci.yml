@@ -27,7 +27,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown,wasm32v1-none
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
@@ -43,6 +43,14 @@ jobs:
       - name: Check Rust formatting
         working-directory: contract
         run: cargo fmt --all --check
+
+      - name: Lint registry contract
+        working-directory: contract
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Lint agents contract
+        working-directory: contract/agents
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Install system dependencies for stellar-cli
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libssl-dev libudev-dev

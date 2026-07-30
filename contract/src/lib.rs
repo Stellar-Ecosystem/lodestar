@@ -191,7 +191,7 @@ impl LodestarRegistry {
         page_size: u32,
         category: Option<String>,
     ) -> Vec<ServiceEntry> {
-        let page_size = page_size.min(20u32).max(1u32);
+        let page_size = page_size.clamp(1u32, 20u32);
         let start: u32 = page * page_size;
 
         let ids: Vec<u64> = if let Some(ref cat) = category {
