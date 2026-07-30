@@ -26,6 +26,11 @@ import {
   TransactionFailedError,
   TransactionTimeoutError,
 } from './contractErrors.js';
+import {
+  submitQueueDepth,
+  submissionDuration,
+  contractErrorsTotal,
+} from './metrics.js';
 
 
 const TIMEOUT = 30;
@@ -358,7 +363,37 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
 }
 
 export function simulateAndSubmit(operation, signer) {
-  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
+  const operationName = getOperationName(operation);
+
+  // Update the queue-depth gauge each time a task is enqueued so dashboards
+  // reflect the backlog even before the task starts executing.
+  submitQueueDepth.set(submitQueue.size + submitQueue.pending + 1);
+
+  return submitQueue.add(async () => {
+    // Re-read depth once the task is actually executing (size has decremented).
+    submitQueueDepth.set(submitQueue.size + submitQueue.pending);
+
+    const startSec = Date.now() / 1000;
+    try {
+      const result = await _simulateAndSubmit(operation, signer, 0);
+      submissionDuration.observe(
+        { operation: operationName, status: 'success' },
+        Date.now() / 1000 - startSec,
+      );
+      return result;
+    } catch (err) {
+      const code = err instanceof ContractError ? err.code : 'UNKNOWN_ERROR';
+      contractErrorsTotal.inc({ code });
+      submissionDuration.observe(
+        { operation: operationName, status: 'error' },
+        Date.now() / 1000 - startSec,
+      );
+      throw err;
+    } finally {
+      // After the task completes the queue depth drops by one.
+      submitQueueDepth.set(submitQueue.size + submitQueue.pending);
+    }
+  });
 }
 
 function prunePreparedRegistrySubmissions(now = Date.now()) {

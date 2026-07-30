@@ -11,6 +11,7 @@ import {
   dumpPendingTransactions,
   resumePendingTransactions,
 } from "./lib/contract.js";
+import { register, httpRequestsTotal } from "./lib/metrics.js";
 import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
@@ -55,6 +56,33 @@ app.set("trust proxy", config.trustProxy);
 
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: config.jsonBodyLimit }));
+
+// ── Prometheus HTTP request counter ──────────────────────────────────────────
+// Increments lodestar_http_requests_total after every response.
+// Route is normalised to the matched Express pattern so label cardinality stays
+// bounded (e.g. /api/services/42 → /api/services/:id).
+app.use((req, res, next) => {
+  res.on("finish", () => {
+    const route = req.route?.path ?? req.path ?? "unknown";
+    httpRequestsTotal.inc({
+      method: req.method,
+      route,
+      status: String(res.statusCode),
+    });
+  });
+  next();
+});
+
+// ── Prometheus metrics endpoint ───────────────────────────────────────────────
+app.get("/metrics", async (_req, res) => {
+  try {
+    res.set("Content-Type", register.contentType);
+    res.end(await register.metrics());
+  } catch (err) {
+    logger.error({ err }, "Failed to collect Prometheus metrics");
+    res.status(500).end();
+  }
+});
 
 app.get("/healthz", async (_req, res) => {
   try {
