@@ -618,7 +618,7 @@ impl LodestarAgents {
     }
 
     // Get the current scoring configuration constants
-    pub fn get_scoring_config(env: Env) -> ScoringConfig {
+    pub fn get_scoring_config(_env: Env) -> ScoringConfig {
         ScoringConfig {
             initial_score: INITIAL_SCORE,
             score_success: SCORE_SUCCESS,
@@ -669,16 +669,16 @@ mod test {
 
     fn setup_with_registry(env: &Env) -> (Address, Address) {
         // Deploy mock registry
-        let registry_id = env.register_contract(None, MockRegistry);
-        
+        let registry_id = env.register(MockRegistry, ());
+
         // Deploy agents contract with admin
         let admin = Address::generate(env);
         let contract_id = env.register(LodestarAgents, (admin.clone(),));
         let client = LodestarAgentsClient::new(env, &contract_id);
-        
+
         // Initialize with registry
         client.init(&registry_id);
-        
+
         (contract_id, admin)
     }
 

@@ -1,0 +1,4 @@
+# Soroban contract methods include Env in their Rust signature. The deployed
+# register_service ABI already exposes seven service fields separately, so allow
+# its eight Rust arguments without hiding functions that grow beyond that.
+too-many-arguments-threshold = 8
