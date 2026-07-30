@@ -429,7 +429,7 @@ describe('buildHttpClient.fetch — x402 retry/backoff', () => {
 
     const res = await client.fetch('https://api.example.com/weather', { method: 'GET' });
     expect(res.status).toBe(402);
-    expect(callCount).toBe(4);
+    expect(callCount).toBe(5);
   });
 });
 

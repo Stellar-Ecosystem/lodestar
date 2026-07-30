@@ -176,7 +176,7 @@ export function dispose() {
 }
 
 const STROOPS_PER_USDC = 10_000_000;
-const X402_PAYMENT_MAX_ATTEMPTS = 3;
+const X402_PAYMENT_MAX_ATTEMPTS = 4;
 const X402_PAYMENT_BACKOFF_MS = 200;
 
 function stroopsToUsdcStr(stroops) {
@@ -211,22 +211,17 @@ export function buildHttpClient() {
       await probe.json().catch(() => undefined)
     );
 
+    let paymentPayload;
+    try {
+      paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
+    } catch (err) {
+      throw err;
+    }
+
+    const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+    const retryInit = { ...init, headers: { ...originalHeaders, ...paymentHeaders } };
+
     for (let attempt = 1; attempt <= X402_PAYMENT_MAX_ATTEMPTS; attempt += 1) {
-      let paymentPayload;
-      try {
-        paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
-      } catch (err) {
-        if (attempt === X402_PAYMENT_MAX_ATTEMPTS) throw err;
-        await delay(X402_PAYMENT_BACKOFF_MS * 2 ** (attempt - 1));
-        continue;
-      }
-
-      const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
-      const retryInit = {
-        ...init,
-        headers: { ...originalHeaders, ...paymentHeaders },
-      };
-
       try {
         probe = await fetch(url, retryInit);
       } catch (err) {
@@ -383,6 +378,24 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
           taskDurationMs: Date.now() - taskStart,
         },
         'Payment failed — network error'
+      );
+      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
+      failed.add(selected.id);
+      continue;
+    }
+
+    if (response.status === 402) {
+      logger.error(
+        {
+          event: EVENT.PAYMENT_FAILED,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+          httpStatus: response.status,
+          taskDurationMs: Date.now() - taskStart,
+        },
+        'Payment failed — retry budget exhausted'
       );
       if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
       failed.add(selected.id);
