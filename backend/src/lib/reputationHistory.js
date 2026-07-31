@@ -30,3 +30,8 @@ export function recordReputationChange(serviceId, timestamp, delta, newValue) {
 export function getReputationHistory(serviceId) {
   return reputationHistory.get(serviceId) || [];
 }
+
+/** Clear all in-memory reputation history (for tests). */
+export function clearReputationHistory() {
+  reputationHistory.clear();
+}
