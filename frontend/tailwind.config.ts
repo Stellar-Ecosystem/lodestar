@@ -6,6 +6,7 @@ const config: Config = {
     './components/**/*.{ts,tsx}',
     './lib/**/*.{ts,tsx}',
   ],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
@@ -16,6 +17,13 @@ const config: Config = {
         border: '#E5E5E5',
         success: '#15803D',
         error: '#DC2626',
+        background: 'var(--background)',
+        primary: 'var(--primary)',
+        accent: 'var(--accent)',
+        secondary: 'var(--secondary)',
+        border: 'var(--border)',
+        success: '#22C55E',
+        error: '#EF4444',
       },
       fontFamily: {
         sans: ['Inter', 'sans-serif'],
