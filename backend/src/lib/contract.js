@@ -26,6 +26,24 @@ import {
   TransactionFailedError,
   TransactionTimeoutError,
 } from './contractErrors.js';
+import {
+  trackPendingTransaction,
+  removePendingTransaction,
+  getPendingTransactionCount,
+  getPendingTransactions,
+  dumpPendingTransactions,
+  resumePendingTransactions,
+  __resetPendingTransactions,
+} from './pendingTx.js';
+
+// Re-export pendingTx functions so contract.js public interface is unchanged
+export {
+  getPendingTransactionCount,
+  getPendingTransactions,
+  dumpPendingTransactions,
+  resumePendingTransactions,
+  __resetPendingTransactions,
+};
 
 
 const TIMEOUT = 30;
@@ -232,6 +250,10 @@ export async function resumePendingTransactions() {
     );
   }
 }
+// Pending transaction tracking is now imported from ./pendingTx.js
+// (trackPendingTransaction, removePendingTransaction, getPendingTransactionCount,
+// getPendingTransactions, dumpPendingTransactions, resumePendingTransactions,
+// __resetPendingTransactions).
 
 export function __setAssembleTransactionForTest(fn) {
   assembleTransactionForSubmit = fn ?? rpc.assembleTransaction;
@@ -513,7 +535,7 @@ export async function simulateReadBatch(operations) {
 }
 
 
-export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
+export async function listServices({ category, offset = 0, limit = 20 } = {}) {
   try {
     const contract = getContract();
 
@@ -522,9 +544,9 @@ export async function listServices({ category, page = 0, pageSize = 20 } = {}) {
       : xdr.ScVal.scvVoid();
 
     const callOp = contract.call(
-      'list_services_page',
-      nativeToScVal(page, { type: 'u32' }),
-      nativeToScVal(pageSize, { type: 'u32' }),
+      'list_services',
+      nativeToScVal(offset, { type: 'u32' }),
+      nativeToScVal(limit, { type: 'u32' }),
       optionArg,
     );
     const retval = await simulateRead(callOp);
@@ -593,11 +615,11 @@ export async function getServiceCount() {
 
 export const contractHelpers = {
   activeServiceExists: async function (provider, endpoint, fetchServices = listServices) {
-    let page = 0;
-    const pageSize = 20;
+    let offset = 0;
+    const limit = 20;
 
     while (true) {
-      const services = await fetchServices({ page, pageSize });
+      const services = await fetchServices({ offset, limit });
       if (!services.length) {
         return false;
       }
@@ -606,16 +628,16 @@ export const contractHelpers = {
         return true;
       }
 
-      page += 1;
+      offset += limit;
     }
   },
 
   activeServiceExistsByName: async function (provider, name, fetchServices = listServices) {
-    let page = 0;
-    const pageSize = 20;
+    let offset = 0;
+    const limit = 20;
 
     while (true) {
-      const services = await fetchServices({ page, pageSize });
+      const services = await fetchServices({ offset, limit });
       if (!services.length) {
         return false;
       }
@@ -624,7 +646,7 @@ export const contractHelpers = {
         return true;
       }
 
-      page += 1;
+      offset += limit;
     }
   },
 };
@@ -638,18 +660,18 @@ export async function activeServiceExistsByName(provider, name, fetchServices = 
 }
 
 export async function listServicesByProvider(provider, fetchServices = listServices) {
-  let page = 0;
-  const pageSize = 20;
+  let offset = 0;
+  const limit = 20;
   const matches = [];
 
   while (true) {
-    const services = await fetchServices({ page, pageSize });
+    const services = await fetchServices({ offset, limit });
     if (!services.length) {
       return matches;
     }
 
     matches.push(...services.filter((service) => service.provider === provider));
-    page += 1;
+    offset += limit;
   }
 }
 
