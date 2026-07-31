@@ -130,6 +130,7 @@ async function pollForTransaction(hash) {
   let getResult;
 
   while (pollCount === 0 || Date.now() < deadlineAt) {
+    pollCount += 1;
     const txStart = Date.now();
     getResult = await getTransactionWithDeadline(hash, deadlineAt);
     if (getResult === POLL_DEADLINE_EXCEEDED) {
@@ -137,7 +138,6 @@ async function pollForTransaction(hash) {
       break;
     }
     logRpcCall('getTransaction', Date.now() - txStart);
-    pollCount += 1;
 
     if (getResult.status !== 'NOT_FOUND') break;
 

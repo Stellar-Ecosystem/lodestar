@@ -668,6 +668,10 @@ describe('simulateAndSubmit transaction polling', () => {
       await rejection;
       expect(mockGetTransaction).toHaveBeenCalledTimes(1);
       expect(contractLib.getSubmitQueueDepth()).toBe(0);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ hash: 'txhash123', pollCount: 1 }),
+        expect.stringContaining('remains pending'),
+      );
     } finally {
       vi.useRealTimers();
     }
