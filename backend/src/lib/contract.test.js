@@ -63,6 +63,14 @@ function resetMockServer() {
   mockGetTransaction.mockReset();
 }
 
+function mockTransactionPollServer() {
+  const pollServer = {
+    getTransaction: mockGetTransaction,
+    httpClient: { defaults: {} },
+  };
+  contractLib.__setTransactionPollServerForTest(() => pollServer);
+}
+
 describe('registerServiceOnChain duplicate checks', () => {
   let activeServiceExistsSpy;
   let activeServiceExistsByNameSpy;
@@ -574,6 +582,7 @@ describe('simulateAndSubmit transaction polling', () => {
 
   beforeEach(() => {
     resetMockServer();
+    mockTransactionPollServer();
     contractLib.resetRpcMetrics();
     contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
     mockGetAccount.mockResolvedValue({ sequence: '1' });
@@ -583,6 +592,7 @@ describe('simulateAndSubmit transaction polling', () => {
   });
 
   afterEach(() => {
+    contractLib.__setTransactionPollServerForTest();
     contractLib.__setAssembleTransactionForTest();
   });
 
@@ -736,6 +746,7 @@ describe('pendingTransactions registry', () => {
 
   beforeEach(() => {
     resetMockServer();
+    mockTransactionPollServer();
     contractLib.resetRpcMetrics();
     contractLib.__resetPendingTransactions();
     contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
@@ -745,6 +756,7 @@ describe('pendingTransactions registry', () => {
   });
 
   afterEach(() => {
+    contractLib.__setTransactionPollServerForTest();
     contractLib.__setAssembleTransactionForTest();
     contractLib.__resetPendingTransactions();
   });
@@ -947,12 +959,14 @@ describe('submitQueue management', () => {
   beforeEach(() => {
     contractLib.__resetPendingTransactions();
     resetMockServer();
+    mockTransactionPollServer();
     mockGetAccount.mockResolvedValue({ sequence: '1' });
     mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
     contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
   });
 
   afterEach(() => {
+    contractLib.__setTransactionPollServerForTest();
     contractLib.__setAssembleTransactionForTest();
   });
 

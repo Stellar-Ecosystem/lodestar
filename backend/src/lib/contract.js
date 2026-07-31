@@ -73,12 +73,26 @@ function logRpcCall(method, latencyMs) {
   logger.debug({ method, latencyMs, totalCalls: rpcMetrics[method] }, 'RPC call completed');
 }
 
-async function getTransactionWithDeadline(server, hash, deadlineAt) {
+function createTransactionPollServer() {
+  return new rpc.Server(config.stellar.rpcUrl, {
+    allowHttp: config.stellar.rpcUrl.startsWith('http://'),
+  });
+}
+
+let transactionPollServerFactory = createTransactionPollServer;
+
+/** @note Exported for tests; not part of the public API. */
+export function __setTransactionPollServerForTest(factory) {
+  transactionPollServerFactory = factory ?? createTransactionPollServer;
+}
+
+async function getTransactionWithDeadline(hash, deadlineAt) {
   const remainingMs = deadlineAt - Date.now();
   if (remainingMs <= 0) return POLL_DEADLINE_EXCEEDED;
 
   const controller = new AbortController();
-  const clientDefaults = server.httpClient?.defaults;
+  const pollServer = transactionPollServerFactory();
+  const clientDefaults = pollServer.httpClient.defaults;
   const previousTimeout = clientDefaults?.timeout;
   const previousSignal = clientDefaults?.signal;
   let timeoutId;
@@ -90,7 +104,7 @@ async function getTransactionWithDeadline(server, hash, deadlineAt) {
 
   try {
     return await Promise.race([
-      server.getTransaction(hash),
+      pollServer.getTransaction(hash),
       new Promise((resolve) => {
         timeoutId = setTimeout(() => {
           controller.abort();
@@ -107,7 +121,7 @@ async function getTransactionWithDeadline(server, hash, deadlineAt) {
   }
 }
 
-async function pollForTransaction(server, hash) {
+async function pollForTransaction(hash) {
   const maxWaitMs = config.contract.txPollMaxWaitMs;
   const startedAt = Date.now();
   const deadlineAt = startedAt + maxWaitMs;
@@ -117,7 +131,7 @@ async function pollForTransaction(server, hash) {
 
   while (pollCount === 0 || Date.now() < deadlineAt) {
     const txStart = Date.now();
-    getResult = await getTransactionWithDeadline(server, hash, deadlineAt);
+    getResult = await getTransactionWithDeadline(hash, deadlineAt);
     if (getResult === POLL_DEADLINE_EXCEEDED) {
       getResult = undefined;
       break;
@@ -290,7 +304,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
 
   logger.debug({ hash: txHash }, 'Submitted Soroban transaction');
 
-  const getResult = await pollForTransaction(server, sendResult.hash);
+  const getResult = await pollForTransaction(sendResult.hash);
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
     // Leave in pendingTransactions — the tx may still confirm on-chain
@@ -1219,7 +1233,7 @@ async function submitSignedTx(signedXdr) {
 
   logger.debug({ hash: signedTxHash }, 'Submitted signed Soroban transaction');
 
-  const getResult = await pollForTransaction(server, sendResult.hash);
+  const getResult = await pollForTransaction(sendResult.hash);
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
     throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
