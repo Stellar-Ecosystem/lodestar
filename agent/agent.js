@@ -24,7 +24,7 @@ const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent'
 const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
 const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
 const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
-const MAX_PER_RUN          = process.env.AGENT_MAX_PER_RUN    ?? '5.00';
+const MAX_PER_RUN          = process.env.AGENT_MAX_PER_RUN    ?? '5.0';
 const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
   ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
   : ['weather', 'search'];
@@ -443,6 +443,12 @@ export async function main() {
         'Run halted: cumulative spend cap reached'
       );
       break;
+    }
+
+    if (shuttingDown) {
+      logger.warn({ event: 'shutdown_skip_task', category }, 'Skipping task due to shutdown');
+      failCount++;
+      continue;
     }
 
     const result = await runTask(category, buildUrl, scoringEnabled, httpClient);
