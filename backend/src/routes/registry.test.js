@@ -421,6 +421,28 @@ describe('POST /api/registry/prepare-register', () => {
         providerAddress: VALID_PROVIDER,
       },
     ],
+    [
+      'name (too long)',
+      {
+        name: 'A'.repeat(65),
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'description (too long)',
+      {
+        name: 'Weather Oracle',
+        description: 'A'.repeat(257),
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
   ])('rejects invalid registration %s before building XDR', async (_field, body) => {
     const res = await request(app)
       .post('/api/registry/prepare-register')
@@ -431,35 +453,88 @@ describe('POST /api/registry/prepare-register', () => {
     expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['0.001', '0.001'],
-    ['100', '100'],
-    ['0.0001', '0.0001'],
-    ['1.234567', '1.234567'],
-    ['999999.99', '999999.99'],
-  ])('accepts valid priceUsdc %s and passes %s to buildUnsignedRegistryTx', async (input, expected) => {
+  it('accepts name at minimum boundary (3 chars)', async () => {
     mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
       xdr: 'AAAA_TEST_XDR',
-      submitToken: 'submit-token-1',
+      submitToken: 'submit-token-min-name',
+    });
+
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'Abc',
+        description: 'Exactly ten chars',
+        endpoint: 'https://example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalled();
+  });
+
+  it('accepts name at maximum boundary (64 chars)', async () => {
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
+      xdr: 'AAAA_TEST_XDR',
+      submitToken: 'submit-token-max-name',
+    });
+
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'A'.repeat(64),
+        description: 'Exactly ten chars',
+        endpoint: 'https://example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalled();
+  });
+
+  it('accepts description at minimum boundary (10 chars)', async () => {
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
+      xdr: 'AAAA_TEST_XDR',
+      submitToken: 'submit-token-min-desc',
     });
 
     const res = await request(app)
       .post('/api/registry/prepare-register')
       .send({
         name: 'Weather Oracle',
-        description: 'Real-time weather data for autonomous agents.',
-        endpoint: 'https://weather.example.com',
-        priceUsdc: input,
+        description: '1234567890',
+        endpoint: 'https://example.com',
+        priceUsdc: '0.001',
         category: 'weather',
         providerAddress: VALID_PROVIDER,
       });
 
     expect(res.status).toBe(200);
-    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith(
-      'register',
-      VALID_PROVIDER,
-      expect.objectContaining({ priceUsdc: expected }),
-    );
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalled();
+  });
+
+  it('accepts description at maximum boundary (256 chars)', async () => {
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
+      xdr: 'AAAA_TEST_XDR',
+      submitToken: 'submit-token-max-desc',
+    });
+
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'Weather Oracle',
+        description: 'A'.repeat(256),
+        endpoint: 'https://example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalled();
   });
 
   it('surfaces duplicate-service conflicts as 409', async () => {

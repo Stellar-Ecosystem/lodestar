@@ -82,6 +82,24 @@ stellar contract deploy \
 
 Copy the printed registry contract ID — referred to below as `<CONTRACT_ID>`.
 
+**Record the deployment** in `contract/deployments.json` so the team has a
+shared source of truth:
+
+```sh
+# Compute the WASM hash (also printed by `stellar contract install`)
+sha256sum contract/target/wasm32-unknown-unknown/release/lodestar_registry.wasm
+
+# Update deployments.json with the new values:
+#   - contractId: the printed contract ID
+#   - wasmHash:  the sha256sum output
+#   - deployer:  your deployer public key
+#   - deploymentLedger: the ledger number printed during deploy
+#   - deployedAt: ISO timestamp (date -u +"%Y-%m-%dT%H:%M:%SZ")
+```
+
+The file is checked into version control so every contributor points at the
+same deployment and can independently verify the WASM hash on-chain.
+
 ## 7. Point the agents contract at the registry
 
 The agents contract verifies service providers against the registry, so link it
