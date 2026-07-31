@@ -77,6 +77,36 @@ function parsePositiveSafeInteger(value) {
 // Appends ttl_warning:true when the entry's estimated remaining TTL falls
 // below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
 // is unavailable so callers can always treat absence as "no warning data".
+function parseFiniteNumericValue(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function annotateTtlWarning(service, currentLedger) {
+  const parsedCurrentLedger = parseFiniteNumericValue(currentLedger);
+  const registeredAt = parseFiniteNumericValue(service?.registered_at);
+
+  if (parsedCurrentLedger === null || registeredAt === null) {
+    return { ...service };
+  }
+
+  const expiryLedger = registeredAt + SERVICE_MAX_TTL;
+  const warningOnset = expiryLedger - SERVICE_TTL_WARNING_LEDGERS;
+
+  return {
+    ...service,
+    ttl_warning: parsedCurrentLedger >= warningOnset,
+  };
+}
+
 router.get("/services", async (req, res) => {
   try {
     const { category, q, offset: offsetStr, limit: limitStr } = req.query;
