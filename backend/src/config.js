@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import pkg from '@stellar/stellar-sdk';
+const { Keypair } = pkg;
 
 const required = [
   'CONTRACT_ID',
@@ -163,6 +165,19 @@ export function validateConfig(log = _consoleLog) {
     errors.push(
       `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`,
     );
+  }
+
+  if (process.env.SERVER_STELLAR_SECRET && process.env.SERVER_STELLAR_ADDRESS) {
+    try {
+      const kp = Keypair.fromSecret(process.env.SERVER_STELLAR_SECRET);
+      if (kp.publicKey() !== process.env.SERVER_STELLAR_ADDRESS) {
+        errors.push(
+          `SERVER_STELLAR_SECRET does not match SERVER_STELLAR_ADDRESS`,
+        );
+      }
+    } catch (err) {
+      errors.push(`SERVER_STELLAR_SECRET is malformed or invalid`);
+    }
   }
 
   if (errors.length > 0) {
