@@ -65,6 +65,19 @@ function normalizePriceUsdc(value) {
   return normalized;
 }
 
+/**
+ * Annotate a service entry with a ttl_warning flag.
+ * Returns true when the estimated remaining TTL falls below
+ * SERVICE_TTL_WARNING_LEDGERS. Omits the field when currentLedger
+ * is unavailable so callers treat absence as "no warning data".
+ */
+function annotateTtlWarning(service, currentLedger) {
+  if (currentLedger == null) return service;
+  const expiry = service.registered_at + SERVICE_MAX_TTL;
+  const warnOnset = expiry - SERVICE_TTL_WARNING_LEDGERS;
+  return { ...service, ttl_warning: currentLedger >= warnOnset };
+}
+
 function parsePositiveSafeInteger(value) {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -81,27 +94,44 @@ function parsePositiveSafeInteger(value) {
 // Appends ttl_warning:true when the entry's estimated remaining TTL falls
 // below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
 // is unavailable so callers can always treat absence as "no warning data".
+function parseFiniteNumericValue(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function annotateTtlWarning(service, currentLedger) {
+  const parsedCurrentLedger = parseFiniteNumericValue(currentLedger);
+  const registeredAt = parseFiniteNumericValue(service?.registered_at);
+
+  if (parsedCurrentLedger === null || registeredAt === null) {
+    return { ...service };
+  }
+
+  const expiryLedger = registeredAt + SERVICE_MAX_TTL;
+  const warningOnset = expiryLedger - SERVICE_TTL_WARNING_LEDGERS;
+
+  return {
+    ...service,
+    ttl_warning: parsedCurrentLedger >= warningOnset,
+  };
+}
+
 router.get("/services", async (req, res) => {
   try {
-    const cacheKey = generateCacheKey(req);
-    const ttlMs = config.registryCacheTtlMs;
-    const maxAgeSec = Math.floor(ttlMs / 1000);
-    res.setHeader("Cache-Control", `public, max-age=${maxAgeSec}`);
-
-    const cached = getRegistryCache(cacheKey, ttlMs);
-    if (cached) {
-      res.setHeader("ETag", cached.etag);
-      if (req.headers["if-none-match"] === cached.etag) {
-        return res.status(304).end();
-      }
-      return res.json(cached.data);
-    }
-
-    const { category, q, page: pageStr } = req.query;
-    const page = Math.max(0, parseInt(pageStr, 10) || 0);
+    const { category, q, offset: offsetStr, limit: limitStr } = req.query;
+    const offset = Math.max(0, parseInt(offsetStr, 10) || 0);
+    const limit = Math.min(50, Math.max(1, parseInt(limitStr, 10) || PAGE_SIZE));
 
     const [servicesResult, ledgerResult] = await Promise.allSettled([
-      listServices({ category: category || undefined, page, pageSize: PAGE_SIZE }),
+      listServices({ category: category || undefined, offset, limit }),
       getCurrentLedgerSequence(),
     ]);
 
@@ -313,7 +343,7 @@ router.get("/stats", async (req, res) => {
     const totalPages = Math.ceil(totalServices / PAGE_SIZE);
     let allServices = [];
     for (let i = 0; i < totalPages; i++) {
-      const page = await listServices({ page: i, pageSize: PAGE_SIZE });
+      const page = await listServices({ offset: i * PAGE_SIZE, limit: PAGE_SIZE });
       allServices.push(...page);
     }
 
@@ -418,11 +448,11 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
     if (!isValidStellarAddress(providerAddress)) {
       return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
     }
-    if (typeof name !== "string" || name.trim().length < 3 || name.trim().length > 50) {
-      return res.status(400).json({ error: "`name` must be 3-50 characters", code: "INVALID_BODY" });
+    if (typeof name !== "string" || name.trim().length < 3 || name.trim().length > 64) {
+      return res.status(400).json({ error: "`name` must be 3-64 characters", code: "INVALID_BODY" });
     }
-    if (typeof description !== "string" || description.trim().length < 10 || description.trim().length > 200) {
-      return res.status(400).json({ error: "`description` must be 10-200 characters", code: "INVALID_BODY" });
+    if (typeof description !== "string" || description.trim().length < 10 || description.trim().length > 256) {
+      return res.status(400).json({ error: "`description` must be 10-256 characters", code: "INVALID_BODY" });
     }
     if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
       return res.status(400).json({ error: "`endpoint` must start with https://", code: "INVALID_BODY" });

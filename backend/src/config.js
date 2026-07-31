@@ -88,7 +88,14 @@ const config = Object.freeze({
     ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
     : ['http://localhost:3000'],
 
+  // Whether CORS_ORIGIN was explicitly provided (vs. the localhost fallback
+  // above). Used by validateConfig() to fail startup in production instead
+  // of silently trusting localhost.
+  _corsOriginExplicit: Boolean(process.env.CORS_ORIGIN),
+
   jsonBodyLimit: process.env.JSON_BODY_LIMIT ?? '100kb',
+
+  redisUrl: process.env.REDIS_URL,
 
   // Trust proxy setting for Express — required so rate limiting reads the real
   // client IP (X-Forwarded-For) when running behind a reverse proxy (e.g. Render).
@@ -165,6 +172,24 @@ export function validateConfig(log = _consoleLog) {
   ) {
     errors.push(
       `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`,
+    );
+  }
+
+  // A forgotten CORS_ORIGIN in production silently falls back to
+  // http://localhost:3000, which fails closed for real users but is
+  // confusing to diagnose. Require it to be set explicitly instead.
+  if (config.nodeEnv === 'production' && !config._corsOriginExplicit) {
+    errors.push(
+      'CORS_ORIGIN must be set explicitly when NODE_ENV=production (refusing to fall back to http://localhost:3000)',
+    );
+  }
+
+  // credentials: true is always enabled on the CORS middleware (see index.js),
+  // so an origin of "*" is both spec-invalid and a footgun that would trust
+  // any site with credentialed requests. Reject it in every environment.
+  if (config.corsOrigin.includes('*')) {
+    errors.push(
+      "CORS_ORIGIN cannot include '*' because CORS is mounted with credentials: true — list explicit origin(s) instead",
     );
   }
 
