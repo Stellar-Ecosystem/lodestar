@@ -15,13 +15,21 @@ vi.mock("@x402/stellar/exact/server", () => ({
 }));
 
 // Mock dependencies required by index.js imports
-vi.mock("../src/lib/logger.js", () => ({
-  default: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
+const mockLoggerInstance = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+  child: vi.fn(() => mockLoggerInstance),
+  levels: {
+    values: { fatal: 60, error: 50, warn: 40, info: 30, debug: 20, trace: 10 },
+    labels: { 10: "trace", 20: "debug", 30: "info", 40: "warn", 50: "error", 60: "fatal" },
   },
+};
+
+vi.mock("../src/lib/logger.js", () => ({
+  default: mockLoggerInstance,
+  requestContext: { getStore: vi.fn() },
 }));
 
 vi.mock("../src/lib/stellar.js", () => ({
