@@ -1,6 +1,13 @@
 import rateLimit from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
+import { Redis } from 'ioredis';
 import config from '../config.js';
 import logger from '../lib/logger.js';
+
+let client;
+if (config.redisUrl) {
+  client = new Redis(config.redisUrl);
+}
 
 /**
  * express-rate-limit middleware for public write routes.
@@ -16,9 +23,16 @@ export function writeRateLimiter(
   max = config.rateLimit.max,
   windowMs = config.rateLimit.windowMs,
 ) {
+  let store;
+  if (client) {
+    store = new RedisStore({
+      sendCommand: (command, ...args) => client.call(command, ...args),
+    });
+  }
   return rateLimit({
     windowMs,
     limit: max,
+    store,
     standardHeaders: true,
     legacyHeaders: false,
     handler: (req, res) => {

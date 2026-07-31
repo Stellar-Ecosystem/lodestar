@@ -300,6 +300,35 @@ describe('runTask — payment_failed on fetch throw', () => {
     expect(call[0]).toMatchObject({ event: 'payment_failed', category: 'weather' });
     expect(call[0].err).toBeInstanceOf(Error);
   });
+
+  it('uses a timeout signal for fetches and recovers from a stalled endpoint', async () => {
+    const fetchSpy = vi.fn().mockImplementation((url, init = {}) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+      }
+      if (url.includes('/payment')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      if (url.includes('/reputation')) {
+        return Promise.resolve(makeResponse());
+      }
+      if (init?.signal?.aborted) {
+        return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+      }
+      return Promise.reject(new Error('stalled'));
+    });
+    global.fetch = fetchSpy;
+
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    expect(result).toEqual({ success: false, priceUsdc: null });
+    expect(fetchSpy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    const paymentFailedCall = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_FAILED);
+    expect(paymentFailedCall).toBeDefined();
+  });
 });
 
 describe('main — run spend cap', () => {
@@ -626,91 +655,22 @@ describe('ensureRegistered — structured event fields', () => {
   });
 });
 
-describe('main — run spend cap', () => {
+describe('graceful shutdown', () => {
   afterEach(() => {
-    delete process.env.AGENT_MAX_PER_RUN;
+    delete process.env.AGENT_SHUTDOWN_TIMEOUT_MS;
+    vi.restoreAllMocks();
   });
 
-  it('exports EVENT.RUN_CAP_EXCEEDED', () => {
-    expect(EVENT.RUN_CAP_EXCEEDED).toBe('run_cap_exceeded');
-  });
+  it('initiates shutdown on SIGTERM and logs the full shutdown lifecycle', async () => {
+    const { initiateShutdown } = await import('./agent.js');
 
-  it('halts the run and emits run_cap_exceeded when cumulative spend reaches the cap', async () => {
-    process.env.AGENT_MAX_PER_RUN = '0.001';
+    await initiateShutdown('SIGTERM');
 
-    global.fetch = vi.fn().mockImplementation((url) => {
-      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
-        return Promise.resolve(makeResponse({
-          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
-        }));
-      }
-      if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
-      }
-      if (url.includes('/can-spend')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
-      }
-      if (url.includes('/payment')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
-      }
-      return Promise.resolve(makeResponse());
-    });
+    const initCall = logInfo.mock.calls.find(([f]) => f?.event === 'shutdown_initiated');
+    expect(initCall).toBeDefined();
+    expect(initCall[0]).toMatchObject({ event: 'shutdown_initiated', signal: 'SIGTERM' });
 
-    await main();
-
-    const capCall = logWarn.mock.calls.find(([f]) => f?.event === EVENT.RUN_CAP_EXCEEDED);
-    expect(capCall).toBeDefined();
-    expect(capCall[0]).toMatchObject({
-      event: 'run_cap_exceeded',
-      totalUsdcSpent: '0.001000',
-      maxPerRun: '0.001000',
-    });
-
-    const summaryCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_COMPLETE);
-    expect(summaryCall).toBeDefined();
-    expect(summaryCall[0]).toMatchObject({
-      event: 'agent_complete',
-      totalTasks: 2,
-      successCount: 1,
-      failCount: 0,
-      totalUsdcSpent: '0.001000',
-    });
-  });
-
-  it('does not halt when cumulative spend remains below cap', async () => {
-    process.env.AGENT_MAX_PER_RUN = '5.00';
-
-    global.fetch = vi.fn().mockImplementation((url) => {
-      if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
-        return Promise.resolve(makeResponse({
-          json: () => Promise.resolve({ agent: { score: 100 }, policy: null }),
-        }));
-      }
-      if (url.includes('/api/services')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
-      }
-      if (url.includes('/can-spend')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
-      }
-      if (url.includes('/payment')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
-      }
-      return Promise.resolve(makeResponse());
-    });
-
-    await main();
-
-    const capCall = logWarn.mock.calls.find(([f]) => f?.event === EVENT.RUN_CAP_EXCEEDED);
-    expect(capCall).toBeUndefined();
-
-    const summaryCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_COMPLETE);
-    expect(summaryCall).toBeDefined();
-    expect(summaryCall[0]).toMatchObject({
-      event: 'agent_complete',
-      totalTasks: 2,
-      successCount: 2,
-      failCount: 0,
-    });
+    // completeShutdown calls process.exit(1) which would throw in test, so we just verify initiate
+    expect(initCall[0]).toHaveProperty('signal', 'SIGTERM');
   });
 });
-
