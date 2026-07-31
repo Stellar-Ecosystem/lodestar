@@ -1,26 +1,40 @@
 import React from 'react';
 
 /**
- * Renders a sparkline chart approximating the agent's score history.
- *
- * It reconstructs the history backwards using the known score deltas:
- * +10 for a successful payment, -25 for a failed payment.
+ * A single point in a real score history, sourced from indexed contract events.
+ * Once the Lodestar agents contract emits events, the backend will index them and
+ * pass them here as `scoreHistory`.
  */
-export function ScoreHistoryChart({
-  currentScore,
-  totalPayments,
-  successfulPayments,
-  failedPayments,
-}: {
+export interface ScoreEvent {
+  /** Unix timestamp (seconds) of the on-chain event */
+  timestamp: number;
+  /** Agent score after this event */
+  score: number;
+}
+
+interface Props {
   currentScore: number;
   totalPayments: number;
   successfulPayments: number;
   failedPayments: number;
-}) {
-  if (successfulPayments === 0 && failedPayments === 0) {
-    return null;
-  }
+  /**
+   * Real, indexed score history sourced from contract events.
+   * Pass `null` (or omit) while events are not yet available — the chart will
+   * fall back to a synthesised approximation and label it as such.
+   * Pass an empty array to show the "no history yet" empty state without any line.
+   */
+  scoreHistory?: ScoreEvent[] | null;
+}
 
+const WIDTH = 120;
+const HEIGHT = 30;
+
+/** Build a synthetic history by replaying deltas backwards from the current score. */
+function buildSyntheticPoints(
+  currentScore: number,
+  successfulPayments: number,
+  failedPayments: number
+): number[] {
   const history: number[] = [];
   let score = currentScore - successfulPayments * 10 + failedPayments * 25;
   history.push(Math.max(0, Math.min(1000, score)));
@@ -39,40 +53,116 @@ export function ScoreHistoryChart({
     history.push(Math.max(0, Math.min(1000, score)));
   }
 
+  // Guarantee the last point is the known current score.
   history[history.length - 1] = currentScore;
+  return history;
+}
 
-  const width = 120;
-  const height = 30;
-
-  const stepX = width / Math.max(1, history.length - 1);
-
-  const points = history
+function toPolylinePoints(values: number[]): string {
+  const stepX = WIDTH / Math.max(1, values.length - 1);
+  return values
     .map((val, i) => {
       const x = i * stepX;
-      const y = height - (val / 1000) * height;
+      const y = HEIGHT - (val / 1000) * HEIGHT;
       return `${x},${y}`;
     })
     .join(' ');
+}
+
+export function ScoreHistoryChart({
+  currentScore,
+  totalPayments,
+  successfulPayments,
+  failedPayments,
+  scoreHistory = null,
+}: Props) {
+  // ── Real event data path ────────────────────────────────────────────────────
+  if (scoreHistory !== null) {
+    if (scoreHistory.length === 0) {
+      // Events are available but there are none yet — honest empty state.
+      return (
+        <div className="flex flex-col items-end">
+          <div className="text-[10px] text-secondary mb-1">Score History</div>
+          <div
+            className="text-[10px] text-secondary italic"
+            style={{ width: WIDTH, height: HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            No history yet
+          </div>
+        </div>
+      );
+    }
+
+    // Real events — render without any caveats.
+    const values = scoreHistory.map((e) => e.score);
+    const points = toPolylinePoints(values);
+    const lastY = HEIGHT - (values[values.length - 1] / 1000) * HEIGHT;
+
+    return (
+      <div className="flex flex-col items-end">
+        <div className="text-[10px] text-secondary mb-1">Score History</div>
+        <svg
+          width={WIDTH}
+          height={HEIGHT}
+          className="overflow-visible"
+          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+          aria-label="Score history chart"
+        >
+          <polyline
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            className="text-primary opacity-80"
+            points={points}
+          />
+          <circle cx={WIDTH} cy={lastY} r="3" className="fill-primary" />
+        </svg>
+      </div>
+    );
+  }
+
+  // ── Synthetic data path ─────────────────────────────────────────────────────
+  // No real events available. Only render when the agent has made at least one
+  // payment, otherwise there is nothing to reconstruct.
+  if (successfulPayments === 0 && failedPayments === 0) {
+    return null;
+  }
+
+  const syntheticValues = buildSyntheticPoints(
+    currentScore,
+    successfulPayments,
+    failedPayments
+  );
+  const points = toPolylinePoints(syntheticValues);
+  const lastY = HEIGHT - (syntheticValues[syntheticValues.length - 1] / 1000) * HEIGHT;
 
   return (
     <div className="flex flex-col items-end">
-      <div className="text-[10px] text-secondary mb-1">Score History (approx)</div>
-      <svg width={width} height={height} className="overflow-visible" viewBox={`0 0 ${width} ${height}`}>
+      {/* Explicit disclaimer: this is fabricated, not historical */}
+      <div
+        className="text-[10px] text-secondary mb-1"
+        title={
+          'Estimated only — the order and shape are reconstructed from payment counts, ' +
+          'not from real on-chain events. Exact history will be available once contract events are indexed.'
+        }
+      >
+        Score History (estimated)
+      </div>
+      <svg
+        width={WIDTH}
+        height={HEIGHT}
+        className="overflow-visible"
+        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        aria-label="Estimated score history chart"
+      >
         <polyline
           fill="none"
           stroke="currentColor"
           strokeWidth="2"
-          className="text-primary opacity-80"
+          className="text-primary opacity-40"
           points={points}
         />
-        {history.length > 0 && (
-          <circle
-            cx={width}
-            cy={height - (history[history.length - 1] / 1000) * height}
-            r="3"
-            className="fill-primary"
-          />
-        )}
+        <circle cx={WIDTH} cy={lastY} r="3" className="fill-primary opacity-60" />
       </svg>
     </div>
   );
