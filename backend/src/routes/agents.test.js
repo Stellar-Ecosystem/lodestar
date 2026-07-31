@@ -3,8 +3,7 @@ import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-const mockFlagAgentOnChain = vi.fn();
-const mockAdminDeactivateAgentOnChain = vi.fn();
+
 const mockGetAgent = vi.fn();
 const mockGetAgentPolicy = vi.fn();
 const mockGetAgentScore = vi.fn();
@@ -20,8 +19,7 @@ const mockBuildUnsignedAgentTx = vi.fn();
 const mockSubmitSignedAgentTx = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
-  flagAgentOnChain: (...args) => mockFlagAgentOnChain(...args),
-  adminDeactivateAgentOnChain: (...args) => mockAdminDeactivateAgentOnChain(...args),
+
   getAgent: (...args) => mockGetAgent(...args),
   getAgentPolicy: (...args) => mockGetAgentPolicy(...args),
   getAgentScore: (...args) => mockGetAgentScore(...args),
@@ -70,17 +68,19 @@ function makeApp() {
 
 let app;
 
-beforeAll(async () => {
+beforeEach(async () => {
+  vi.clearAllMocks();
+  vi.resetModules();
+  resetIdempotencyStore();
+
   const router = (await import('./agents.js')).default;
-  app = makeApp();
-  app.use('/', router);
+
 });
 
 describe('POST /admin/agents/:address/flag', () => {
   const ADDRESS = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+
   });
 
   it('flags an agent with valid admin key', async () => {
@@ -108,6 +108,7 @@ describe('POST /admin/agents/:address/flag', () => {
     expect(res.body.code).toBe('INVALID_BODY');
     expect(mockFlagAgentOnChain).not.toHaveBeenCalled();
   });
+
 
   it('returns 401 when X-Admin-Key is missing', async () => {
     const res = await request(app)
