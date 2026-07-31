@@ -3,8 +3,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Minimal set of required env vars so config.js loads without throwing.
 const REQUIRED = {
   CONTRACT_ID: 'C_TEST',
-  SERVER_STELLAR_ADDRESS: 'G_TEST',
-  SERVER_STELLAR_SECRET: 'S_TEST',
+  SERVER_STELLAR_ADDRESS: 'GB3WSXZUYHWMCVPWGWX3YCB7XKH3MOPBJ4JLEYYGQSNFNXY7E6JKSYOY',
+  SERVER_STELLAR_SECRET: 'SANURNXY5N227EHRVEVTRG2BGZYWRHVCZVHF4VMLD4ABBA4OOXI4NIHA',
   STELLAR_RPC_URL: 'https://rpc.test',
   STELLAR_NETWORK_PASSPHRASE: 'Test',
   FACILITATOR_URL: 'https://facilitator.test',
@@ -147,7 +147,7 @@ describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
       delete process.env[key];
     }
     const config = (await import('./config.js')).default;
-    expect(config.x402.payTo).toBe('G_TEST');
+    expect(config.x402.payTo).toBe('GB3WSXZUYHWMCVPWGWX3YCB7XKH3MOPBJ4JLEYYGQSNFNXY7E6JKSYOY');
   });
 
   it('calls logger.fatal and exits when PAYMENT_ADDRESS has invalid format', async () => {
@@ -167,6 +167,62 @@ describe('config x402.payTo PAYMENT_ADDRESS validation', () => {
     exitSpy.mockRestore();
   });
 });
+
+describe('config SERVER_STELLAR_SECRET validation', () => {
+  let exitSpy;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+    exitSpy.mockRestore();
+  });
+
+  it('calls logger.fatal and exits when secret is malformed', async () => {
+    const log = { fatal: vi.fn(), warn: vi.fn() };
+    vi.resetModules();
+    process.env = { ...ORIGINAL_ENV, ...REQUIRED, SERVER_STELLAR_SECRET: 'INVALID_SECRET_TEXT' };
+    const { validateConfig } = await import('./config.js');
+    validateConfig(log);
+    
+    expect(log.fatal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errors: expect.arrayContaining([expect.stringContaining('malformed or invalid')]),
+      }),
+      expect.any(String),
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    
+    // Ensure secret is never included in the error output
+    const [obj] = log.fatal.mock.calls[0];
+    expect(JSON.stringify(obj)).not.toContain('INVALID_SECRET_TEXT');
+  });
+
+  it('calls logger.fatal and exits when secret does not match address', async () => {
+    const log = { fatal: vi.fn(), warn: vi.fn() };
+    vi.resetModules();
+    // Using a different valid address for the mismatch
+    process.env = { ...ORIGINAL_ENV, ...REQUIRED, SERVER_STELLAR_ADDRESS: 'GCO2GDBE5NPG6H22S7U3B22X4R23OAFG4IHVJ3O64T7E2E4E42B4XN6T' };
+    const { validateConfig } = await import('./config.js');
+    validateConfig(log);
+    
+    expect(log.fatal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errors: expect.arrayContaining([expect.stringContaining('does not match')]),
+      }),
+      expect.any(String),
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    
+    // Ensure secret is never included in the error output
+    const [obj] = log.fatal.mock.calls[0];
+    expect(JSON.stringify(obj)).not.toContain(REQUIRED.SERVER_STELLAR_SECRET);
+  });
+});
+
 
 describe('config trustProxy parsing', () => {
   afterEach(() => {
