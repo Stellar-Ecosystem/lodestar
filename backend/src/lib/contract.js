@@ -26,24 +26,6 @@ import {
   TransactionFailedError,
   TransactionTimeoutError,
 } from './contractErrors.js';
-import {
-  trackPendingTransaction,
-  removePendingTransaction,
-  getPendingTransactionCount,
-  getPendingTransactions,
-  dumpPendingTransactions,
-  resumePendingTransactions,
-  __resetPendingTransactions,
-} from './pendingTx.js';
-
-// Re-export pendingTx functions so contract.js public interface is unchanged
-export {
-  getPendingTransactionCount,
-  getPendingTransactions,
-  dumpPendingTransactions,
-  resumePendingTransactions,
-  __resetPendingTransactions,
-};
 
 
 const TIMEOUT = 30;
@@ -88,10 +70,171 @@ let lastSeqSyncTime = 0;
 const preparedRegistrySubmissions = new Map();
 let assembleTransactionForSubmit = rpc.assembleTransaction;
 
-// Pending transaction tracking is now imported from ./pendingTx.js
-// (trackPendingTransaction, removePendingTransaction, getPendingTransactionCount,
-// getPendingTransactions, dumpPendingTransactions, resumePendingTransactions,
-// __resetPendingTransactions).
+// ── Dead-Letter Queue ────────────────────────────────────────────────────────
+//
+// Submissions that exhaust all internal retries (e.g. txBAD_SEQ × 3) or fail
+// permanently are captured here so operators can inspect and replay them.
+// The queue is bounded to prevent unbounded memory growth.
+
+const DEAD_LETTER_MAX_ENTRIES = 100;
+const deadLetterQueue = [];
+
+function addToDeadLetterQueue(entry) {
+  deadLetterQueue.unshift(entry);
+  if (deadLetterQueue.length > DEAD_LETTER_MAX_ENTRIES) deadLetterQueue.pop();
+  logger.warn(
+    { operation: entry.operation, error: entry.error, code: entry.code },
+    'Submission captured in dead-letter queue',
+  );
+}
+
+export function getDeadLetterQueue() {
+  return [...deadLetterQueue];
+}
+
+export function getDeadLetterCount() {
+  return deadLetterQueue.length;
+}
+
+export function clearDeadLetterQueue() {
+  deadLetterQueue.length = 0;
+}
+
+/** @note Exported for tests — not part of the public API. */
+export function __resetDeadLetterQueue() {
+  deadLetterQueue.length = 0;
+}
+
+// ── Pending Transactions Registry ──────────────────────────────────────────────
+//
+// Tracks every submitted Soroban transaction from sendTransaction until
+// getTransaction confirms it (SUCCESS or FAILED). On graceful shutdown the
+// registry is dumped to pending-transactions.json so operators can manually
+// verify on-chain status. On restart any still-unconfirmed hashes are
+// re-polled before accepting new requests.
+
+const pendingTransactions = new Map();
+const PENDING_TRANSACTIONS_FILE = 'pending-transactions.json';
+
+function getOperationName(operation) {
+  if (typeof operation === 'string') return operation;
+  try {
+    if (operation && typeof operation === 'object') {
+      if (operation.method) return operation.method;
+      if (operation._method) return operation._method;
+      if (operation.func) {
+        try {
+          return operation.func.invokeContract().functionName().toString();
+        } catch {}
+      }
+    }
+  } catch {}
+  return 'unknown';
+}
+
+function trackPendingTransaction(hash, operation) {
+  pendingTransactions.set(hash, {
+    hash,
+    operation: getOperationName(operation),
+    submittedAt: Date.now(),
+  });
+}
+
+function removePendingTransaction(hash) {
+  pendingTransactions.delete(hash);
+}
+
+export function getPendingTransactionCount() {
+  return pendingTransactions.size;
+}
+
+export function getPendingTransactions() {
+  return Array.from(pendingTransactions.values());
+}
+
+/** @note Exported for tests — not part of the public API. */
+export function __resetPendingTransactions() {
+  pendingTransactions.clear();
+}
+
+/**
+ * Dump all currently-pending transaction entries to
+ * pending-transactions.json for operator inspection. Safe to call
+ * multiple times — overwrites the file each time.
+ */
+export function dumpPendingTransactions() {
+  const entries = Array.from(pendingTransactions.values());
+  if (entries.length === 0) return;
+  try {
+    writeFileSync(PENDING_TRANSACTIONS_FILE, JSON.stringify(entries, null, 2), 'utf-8');
+    logger.warn(
+      { count: entries.length, file: PENDING_TRANSACTIONS_FILE },
+      'Dumped pending transactions to file',
+    );
+  } catch (err) {
+    logger.error({ err }, 'Failed to dump pending transactions');
+  }
+}
+
+/**
+ * On startup, check for pending-transactions.json from a previous run and
+ * attempt to re-poll any unconfirmed hashes. Confirmed or failed entries
+ * are logged; still-unconfirmed entries are re-added to the in-memory
+ * registry so the next shutdown will preserve them again.
+ */
+export async function resumePendingTransactions() {
+  let entries;
+  try {
+    if (!existsSync(PENDING_TRANSACTIONS_FILE)) return;
+    const data = readFileSync(PENDING_TRANSACTIONS_FILE, 'utf-8');
+    entries = JSON.parse(data);
+  } catch {
+    return;
+  }
+
+  if (!Array.isArray(entries) || entries.length === 0) return;
+
+  logger.warn(
+    { count: entries.length, file: PENDING_TRANSACTIONS_FILE },
+    'Resuming polling for unconfirmed transactions from previous run',
+  );
+
+  const server = getStellarServer();
+  for (const entry of entries) {
+    try {
+      const getResult = await server.getTransaction(entry.hash);
+      if (getResult.status === 'SUCCESS') {
+        logger.info({ hash: entry.hash, operation: entry.operation }, 'Pending transaction from previous run confirmed SUCCESS');
+      } else if (getResult.status === 'FAILED') {
+        logger.warn({ hash: entry.hash, operation: entry.operation }, 'Pending transaction from previous run FAILED on-chain');
+      } else {
+        trackPendingTransaction(entry.hash, { method: entry.operation });
+        logger.warn({ hash: entry.hash, operation: entry.operation }, 'Pending transaction from previous run still unconfirmed, re-added to registry');
+      }
+    } catch (err) {
+      logger.error({ err, hash: entry.hash, operation: entry.operation }, 'Failed to check pending transaction from previous run');
+      trackPendingTransaction(entry.hash, { method: entry.operation });
+    }
+  }
+
+  // Only delete the file once every entry has been processed and re-tracked.
+  // If the process is killed mid-resume the file remains for the next restart.
+  try {
+    unlinkSync(PENDING_TRANSACTIONS_FILE);
+  } catch {
+    // best-effort — file may already be gone
+  }
+
+  if (pendingTransactions.size > 0) {
+    logger.warn(
+      { count: pendingTransactions.size },
+      'Pending transactions remain after resume — will be re-dumped on next shutdown',
+    );
+  }
+}
+// Pending transaction tracking (trackPendingTransaction, removePendingTransaction,
+// getPendingTransactionCount, getPendingTransactions, dumpPendingTransactions,
+// resumePendingTransactions, __resetPendingTransactions) is defined inline above.
 
 export function __setAssembleTransactionForTest(fn) {
   assembleTransactionForSubmit = fn ?? rpc.assembleTransaction;
@@ -253,7 +396,26 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
 }
 
 export function simulateAndSubmit(operation, signer) {
-  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
+  const opName = getOperationName(operation);
+  return submitQueue.add(() =>
+    _simulateAndSubmit(operation, signer, 0).catch((err) => {
+      // Only capture permanent failures (exhausted retries, on-chain failures,
+      // or irrecoverable timeouts). Transient errors like SimulationError and
+      // ReturnValueParseError are not captured — they typically resolve on retry
+      // or are client-side issues unrelated to the on-chain submission.
+      if (err instanceof TransactionFailedError || err instanceof TransactionTimeoutError) {
+        addToDeadLetterQueue({
+          timestamp: Date.now(),
+          operation: opName,
+          error: err.message,
+          code: err.code ?? 'UNKNOWN',
+          type: err.constructor?.name ?? 'Error',
+          hash: err.hash ?? null,
+        });
+      }
+      throw err; // re-throw so callers still receive the error
+    }),
+  );
 }
 
 function prunePreparedRegistrySubmissions(now = Date.now()) {
@@ -1134,58 +1296,80 @@ export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
 }
 
 async function submitSignedTx(signedXdr) {
-  const server = getStellarServer();
-  const passphrase = getNetworkPassphrase();
-  const keypair = getServerKeypair();
+  try {
+    const server = getStellarServer();
+    const passphrase = getNetworkPassphrase();
+    const keypair = getServerKeypair();
 
-  const tx = new Transaction(signedXdr, passphrase);
-  tx.sign(keypair);
+    const tx = new Transaction(signedXdr, passphrase);
+    tx.sign(keypair);
 
-  const sendStart = Date.now();
-  const sendResult = await server.sendTransaction(tx);
-  logRpcCall('sendTransaction', Date.now() - sendStart);
-  if (sendResult.status === 'ERROR') {
-    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
-  }
-
-  const signedTxHash = sendResult.hash;
-  trackPendingTransaction(signedTxHash, 'signed-transaction');
-
-  logger.debug({ hash: signedTxHash }, 'Submitted signed Soroban transaction');
-
-  let getResult;
-  for (let i = 0; i < 20; i++) {
-    const txStart = Date.now();
-    getResult = await server.getTransaction(sendResult.hash);
-    logRpcCall('getTransaction', Date.now() - txStart);
-    if (getResult.status !== 'NOT_FOUND') break;
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-
-  if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
-  }
-
-  removePendingTransaction(signedTxHash);
-
-  if (getResult.status === 'FAILED') {
-    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
-  }
-
-  let nativeReturnValue;
-  if (getResult.returnValue) {
-    try {
-      nativeReturnValue = scValToNative(getResult.returnValue);
-    } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+    const sendStart = Date.now();
+    const sendResult = await server.sendTransaction(tx);
+    logRpcCall('sendTransaction', Date.now() - sendStart);
+    if (sendResult.status === 'ERROR') {
+      throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
     }
-  }
 
-  return {
-    hash: sendResult.hash,
-    returnValue: getResult.returnValue ?? null,
-    nativeReturnValue,
-  };
+    const signedTxHash = sendResult.hash;
+    trackPendingTransaction(signedTxHash, 'signed-transaction');
+
+    logger.debug({ hash: signedTxHash }, 'Submitted signed Soroban transaction');
+
+    let getResult;
+    for (let i = 0; i < 20; i++) {
+      const txStart = Date.now();
+      getResult = await server.getTransaction(sendResult.hash);
+      logRpcCall('getTransaction', Date.now() - txStart);
+      if (getResult.status !== 'NOT_FOUND') break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    if (!getResult || getResult.status === 'NOT_FOUND') {
+      throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
+    }
+
+    removePendingTransaction(signedTxHash);
+
+    if (getResult.status === 'FAILED') {
+      throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+    }
+
+    let nativeReturnValue;
+    if (getResult.returnValue) {
+      try {
+        nativeReturnValue = scValToNative(getResult.returnValue);
+      } catch (err) {
+        throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+      }
+    }
+
+    return {
+      hash: sendResult.hash,
+      returnValue: getResult.returnValue ?? null,
+      nativeReturnValue,
+    };
+  } catch (err) {
+    // Capture permanently failed wallet-signed transactions so operators can
+    // inspect and replay them just like server-signed submissions.
+    //
+    // NOTE: The operation is always 'signed-transaction' — unlike
+    // simulateAndSubmit, submitSignedTx receives a pre-built XDR and cannot
+    // extract the contract function name without decoding. The failed
+    // transaction hash (when the error carries one) is captured in the entry's
+    // `hash` field so operators can correlate and replay it.
+    if (err instanceof TransactionFailedError || err instanceof TransactionTimeoutError) {
+      addToDeadLetterQueue({
+        timestamp: Date.now(),
+        operation: 'signed-transaction',
+        error: err.message,
+        code: err.code ?? 'UNKNOWN',
+        type: err.constructor?.name ?? 'Error',
+        hash: err.hash ?? null,
+      });
+    }
+    throw err;
+  }
 }
 
 /**

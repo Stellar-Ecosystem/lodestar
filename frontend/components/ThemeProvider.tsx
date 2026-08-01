@@ -43,10 +43,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   };
 
-  if (!mounted) {
-    return <>{children}</>;
-  }
-
+  // Always render the Provider so useTheme() works during SSR/prerender too
+  // (the DOM side effects stay gated behind `mounted` above).
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
       {children}

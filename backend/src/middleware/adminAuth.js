@@ -12,7 +12,9 @@ export function adminAuth(req, res, next) {
     });
   }
 
-  const body = JSON.stringify(req.body);
+  // Bodyless requests (e.g. GET /api/admin/dead-letter) have no parsed body,
+  // so HMAC the canonical empty object to keep the middleware deterministic.
+  const body = JSON.stringify(req.body ?? {});
   const expected = crypto
     .createHmac('sha256', config.server.secret)
     .update(body)

@@ -31,6 +31,21 @@ vi.mock("@x402/stellar/exact/client", () => ({
   ExactStellarScheme: vi.fn(),
 }));
 
+// services.js builds an x402 payment middleware and facilitator client at
+// module load. Bypass both so no facilitator network fetch is attempted (which
+// would otherwise surface as an unhandled ECONNREFUSED rejection in tests).
+vi.mock("@x402/express", () => ({
+  paymentMiddlewareFromConfig: () => (_req, _res, next) => next(),
+}));
+
+vi.mock("@x402/core/server", () => ({
+  HTTPFacilitatorClient: vi.fn(() => ({})),
+}));
+
+vi.mock("@x402/stellar/exact/server", () => ({
+  ExactStellarScheme: vi.fn(() => ({})),
+}));
+
 const app = express();
 app.use(express.json());
 app.use("/api", demoRouter);
@@ -48,15 +63,23 @@ describe("POST /api/demo-run", () => {
 
   it("handles AbortError appropriately", async () => {
     contract.getService.mockResolvedValue({ name: "Test Service", endpoint: "test", price_usdc: "1" });
-    
-    // We mock fetchWithTx to throw an AbortError to simulate client cancelling the request
-    const { x402HTTPClient } = await import("@x402/core/client");
-    x402HTTPClient.mockImplementationOnce(() => ({
-      fetchWithTx: vi.fn().mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" })),
-    }));
 
-    const res = await request(app).post("/api/demo-run").send({ serviceId: 1, category: "weather" });
-    expect(res.status).toBe(499);
-    expect(res.body.code).toBe("CANCELLED");
+    // buildHttpClient() replaces fetchWithTx with a custom implementation that
+    // calls global fetch internally.  Mocking the x402HTTPClient constructor
+    // has no effect — we need to stub global.fetch so that the real
+    // fetchWithTx (called by the route) receives an AbortError, which the
+    // route translates into a 499 CANCELLED response.
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue(
+      Object.assign(new Error("aborted"), { name: "AbortError" }),
+    );
+
+    try {
+      const res = await request(app).post("/api/demo-run").send({ serviceId: 1, category: "weather" });
+      expect(res.status).toBe(499);
+      expect(res.body.code).toBe("CANCELLED");
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });

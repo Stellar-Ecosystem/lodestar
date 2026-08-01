@@ -65,6 +65,30 @@ All of the above run automatically on every PR and push to `main` via GitHub Act
 - Rust: `cargo fmt --all --check` runs in CI under the `contract-build` job
 - JS/TS: follow the existing ESLint and TypeScript configuration in each package (JS lint CI steps are a planned follow-up)
 
+## Dead-letter queue
+
+Permanently failed on-chain submissions (e.g. txBAD_SEQ after exhausting retries) are captured in an in-memory dead-letter queue. Operators can inspect and clear them via admin endpoints.
+
+`X-Admin-Key` is not an arbitrary key — it is the hex HMAC-SHA256 digest of the request body, keyed with `SERVER_STELLAR_SECRET`. Bodyless requests (both endpoints below) are signed over the canonical empty object `{}`:
+
+```bash
+# Compute the header for bodyless requests once:
+ADMIN_KEY=$(printf '{}' | openssl dgst -sha256 -hmac "$SERVER_STELLAR_SECRET" | awk '{print $NF}')
+
+# List all dead-letter entries
+# Note: the port may differ if you set PORT in your .env file; the default is 3001
+curl -H "X-Admin-Key: $ADMIN_KEY" http://localhost:${PORT:-3001}/api/admin/dead-letter
+
+# Clear the dead-letter queue after resolving issues
+curl -X POST -H "X-Admin-Key: $ADMIN_KEY" http://localhost:${PORT:-3001}/api/admin/dead-letter/clear
+```
+
+**Replay path:** Each dead-letter entry contains `operation` (the contract function name), `hash` (the failed transaction hash, or `null` when the error carried none), `error` (the failure message), `code` (the error code), `type` (the error class name), and `timestamp`. To replay:
+1. Inspect the entry to identify the root cause (e.g. `txBAD_SEQ` may indicate a sequence-number desync)
+2. Fix the underlying issue (e.g. restart the server to re-fetch the account sequence)
+3. Re-trigger the operation through its normal API endpoint or seed script
+
+The dead-letter queue is bounded to 100 entries; oldest entries are evicted when the limit is reached.
 ## Branch naming
 
 Use short-lived branches created from `main` with a clear prefix:

@@ -150,11 +150,13 @@ export default function RegisterForm({ walletAddress }: Props) {
   return (
     <form onSubmit={handleSubmit} className="card p-8 space-y-5 fade-in">
       <Field
+        id="name"
         label="Service Name"
         error={errors.name}
         hint="3–50 characters"
       >
         <input
+          id="name"
           type="text"
           value={form.name}
           onChange={(e) => set('name', e.target.value)}
@@ -165,11 +167,13 @@ export default function RegisterForm({ walletAddress }: Props) {
       </Field>
 
       <Field
+        id="description"
         label="Description"
         error={errors.description}
         hint="10–200 characters"
       >
         <textarea
+          id="description"
           rows={3}
           value={form.description}
           onChange={(e) => set('description', e.target.value)}
@@ -180,11 +184,13 @@ export default function RegisterForm({ walletAddress }: Props) {
       </Field>
 
       <Field
+        id="endpoint"
         label="Endpoint URL"
         error={errors.endpoint}
         hint="Must start with https://"
       >
         <input
+          id="endpoint"
           type="url"
           value={form.endpoint}
           onChange={(e) => set('endpoint', e.target.value)}
@@ -195,11 +201,11 @@ export default function RegisterForm({ walletAddress }: Props) {
       </Field>
 
       <div className="grid grid-cols-2 gap-4">
-        <Field label="Price (USDC)" error={errors.price_usdc} hint="Min 0.0001">
+        <Field id="price_usdc" label="Price (USDC)" error={errors.price_usdc} hint="Min 0.0001">
           <input
-            type="number"
-            step="0.0001"
-            min="0.0001"
+            id="price_usdc"
+            type="text"
+            inputMode="decimal"
             value={form.price_usdc}
             onChange={(e) => set('price_usdc', e.target.value)}
             placeholder="0.001"
@@ -208,8 +214,9 @@ export default function RegisterForm({ walletAddress }: Props) {
           />
         </Field>
 
-        <Field label="Category" error={errors.category}>
+        <Field id="category" label="Category" error={errors.category}>
           <select
+            id="category"
             value={form.category}
             onChange={(e) => set('category', e.target.value as Category)}
             disabled={submitting}
@@ -230,7 +237,7 @@ export default function RegisterForm({ walletAddress }: Props) {
 
       <button
         type="submit"
-        disabled={submitting || Object.keys(errors).length > 0}
+        disabled={submitting || Object.keys(errors).length > 0 || Object.keys(validate(form)).length > 0}
         className="btn-primary w-full py-3 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {submitting ? 'Registering…' : 'Register Service'}
@@ -248,11 +255,13 @@ function input(hasError: boolean) {
 }
 
 function Field({
+  id,
   label,
   error,
   hint,
   children,
 }: {
+  id: string;
   label: string;
   error?: string;
   hint?: string;
@@ -261,7 +270,7 @@ function Field({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <label className="text-sm font-medium">{label}</label>
+        <label htmlFor={id} className="text-sm font-medium">{label}</label>
         {hint && !error && <span className="text-xs text-secondary">{hint}</span>}
         {error && <span className="text-xs text-error">{error}</span>}
       </div>
