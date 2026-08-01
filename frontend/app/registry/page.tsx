@@ -11,6 +11,7 @@ import { fetchServices } from '@/lib/contract';
 import { filterServices } from '@/lib/registry';
 import { sortServices } from '@/lib/sort';
 import type { Category, SortOption } from '@/lib/types';
+import { useDebounce } from '@/hooks/useDebounce';
 
 const SORTS: { label: string; value: SortOption }[] = [
   { label: 'Newest', value: 'newest' },
@@ -24,6 +25,7 @@ export default function RegistryPage() {
   const [activeCategory, setActive] = useState<Category | 'all'>('all');
   const [sort, setSort]             = useState<SortOption>('newest');
   const [query, setQuery]           = useState('');
+  const debouncedQuery              = useDebounce(query);
   const [page, setPage]             = useState(1);
 
   // SWR replaces the manual setInterval poll: it dedupes concurrent requests,
@@ -40,13 +42,13 @@ export default function RegistryPage() {
       : 'Failed to load'
     : null;
 
-  // Reset to page 1 whenever the filtered set changes
+  // Reset to page 1 whenever the debounced query, sort, or category changes.
   useEffect(() => {
     setPage(1);
-  }, [query, sort, activeCategory]);
+  }, [debouncedQuery, sort, activeCategory]);
 
   const sorted   = sortServices(services, sort);
-  const filtered = filterServices(sorted, query);
+  const filtered = filterServices(sorted, debouncedQuery);
 
   const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage    = Math.min(page, totalPages);
@@ -142,28 +144,16 @@ export default function RegistryPage() {
           </button>
         </div>
       ) : filtered.length === 0 ? (
-        query.trim() ? (
-          <EmptyState
-            icon={<SearchEmptyIcon />}
-            title="No matching services"
-            message={`No services match "${query.trim()}". Try adjusting your search terms or looking for a different service name.`}
-            action={{ label: 'Clear search', onClick: () => setQuery('') }}
-          />
-        ) : activeCategory !== 'all' ? (
-          <EmptyState
-            icon={<CategoryEmptyIcon />}
-            title="Empty category"
-            message={`There are no services in the "${activeCategory}" category yet. Try selecting a different category or register the first one.`}
-            action={{ label: 'Show all', onClick: () => handleCategoryChange('all') }}
-          />
-        ) : (
-          <EmptyState
-            icon={<EmptyRegistryIcon />}
-            title="The registry is empty"
-            message="No services have been registered yet. Be the first to register a service and make it discoverable."
-            action={{ href: '/registry/register', label: 'Register a Service' }}
-          />
-        )
+        <div className="text-center py-24 text-secondary">
+          <p className="text-base font-medium">No services found</p>
+          <p className="text-sm mt-2">
+            {debouncedQuery.trim()
+              ? `No services match "${debouncedQuery.trim()}". Try a different name or description keyword.`
+              : activeCategory !== 'all'
+                ? `No active services in the "${activeCategory}" category.`
+                : 'The registry is empty. Be the first to register a service.'}
+          </p>
+        </div>
       ) : (
         <>
           <div className="grid sm:grid-cols-2 gap-5">
