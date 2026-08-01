@@ -48,18 +48,7 @@ function normalizePriceUsdc(value) {
   return normalized;
 }
 
-/**
- * Annotate a service entry with a ttl_warning flag.
- * Returns true when the estimated remaining TTL falls below
- * SERVICE_TTL_WARNING_LEDGERS. Omits the field when currentLedger
- * is unavailable so callers treat absence as "no warning data".
- */
-function annotateTtlWarning(service, currentLedger) {
-  if (currentLedger == null) return service;
-  const expiry = service.registered_at + SERVICE_MAX_TTL;
-  const warnOnset = expiry - SERVICE_TTL_WARNING_LEDGERS;
-  return { ...service, ttl_warning: currentLedger >= warnOnset };
-}
+
 
 function parsePositiveSafeInteger(value) {
   if (typeof value === "number") {
