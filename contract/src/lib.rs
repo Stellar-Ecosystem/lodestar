@@ -108,6 +108,17 @@ impl LodestarRegistry {
     ) -> u64 {
         provider.require_auth();
 
+        assert!(name.len() >= 3, "name must be 3-64 characters");
+        assert!(name.len() <= 64, "name must be 3-64 characters");
+        assert!(
+            description.len() >= 10,
+            "description must be 10-256 characters"
+        );
+        assert!(
+            description.len() <= 256,
+            "description must be 10-256 characters"
+        );
+
         assert!(
             !active_service_exists(&env, &provider, &endpoint),
             "Active service with same provider and endpoint already exists"
@@ -860,6 +871,134 @@ mod test {
             .with_mut(|li| li.sequence_number += VOTE_COOLDOWN_LEDGERS as u32 + 1);
         registry.update_reputation(&1u64, &false, &agent);
         assert_eq!(registry.get_service(&1u64).reputation, MIN_REPUTATION);
+    }
+
+    // ── register_service input validation tests ───────────────────────────
+
+    #[test]
+    fn test_register_service_rejects_name_too_short() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+
+        assert!(registry
+            .try_register_service(
+                &provider,
+                &String::from_str(&env, "AB"),
+                &String::from_str(&env, "Valid description long enough"),
+                &String::from_str(&env, "https://example.com"),
+                &String::from_str(&env, "10"),
+                &String::from_str(&env, "G_PAYMENT"),
+                &String::from_str(&env, "compute"),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn test_register_service_rejects_name_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+
+        let long_name = "A".repeat(65);
+        assert!(registry
+            .try_register_service(
+                &provider,
+                &String::from_str(&env, &long_name),
+                &String::from_str(&env, "Valid description long enough"),
+                &String::from_str(&env, "https://example.com"),
+                &String::from_str(&env, "10"),
+                &String::from_str(&env, "G_PAYMENT"),
+                &String::from_str(&env, "compute"),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn test_register_service_rejects_description_too_short() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+
+        assert!(registry
+            .try_register_service(
+                &provider,
+                &String::from_str(&env, "Valid Name"),
+                &String::from_str(&env, "123456789"),
+                &String::from_str(&env, "https://example.com"),
+                &String::from_str(&env, "10"),
+                &String::from_str(&env, "G_PAYMENT"),
+                &String::from_str(&env, "compute"),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn test_register_service_rejects_description_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+
+        let long_desc = "A".repeat(257);
+        assert!(registry
+            .try_register_service(
+                &provider,
+                &String::from_str(&env, "Valid Name"),
+                &String::from_str(&env, &long_desc),
+                &String::from_str(&env, "https://example.com"),
+                &String::from_str(&env, "10"),
+                &String::from_str(&env, "G_PAYMENT"),
+                &String::from_str(&env, "compute"),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn test_register_service_accepts_minimum_boundaries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+
+        // name = 3, description = 10 (minimum boundaries)
+        assert!(registry
+            .try_register_service(
+                &provider,
+                &String::from_str(&env, "ABC"),
+                &String::from_str(&env, "1234567890"),
+                &String::from_str(&env, "https://example.com"),
+                &String::from_str(&env, "10"),
+                &String::from_str(&env, "G_PAYMENT"),
+                &String::from_str(&env, "compute"),
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn test_register_service_accepts_maximum_boundaries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+
+        let long_name = "A".repeat(64);
+        let long_desc = "A".repeat(256);
+        // name = 64, description = 256 (maximum boundaries)
+        assert!(registry
+            .try_register_service(
+                &provider,
+                &String::from_str(&env, &long_name),
+                &String::from_str(&env, &long_desc),
+                &String::from_str(&env, "https://example.com"),
+                &String::from_str(&env, "10"),
+                &String::from_str(&env, "G_PAYMENT"),
+                &String::from_str(&env, "compute"),
+            )
+            .is_ok());
     }
 
     #[test]
