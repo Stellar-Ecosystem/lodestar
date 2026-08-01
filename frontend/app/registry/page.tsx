@@ -146,7 +146,7 @@ export default function RegistryPage() {
           <p className="text-base font-medium">No services found</p>
           <p className="text-sm mt-2">
             {debouncedQuery.trim()
-              ? `No services match "${debouncedQuery.trim()}". Try a different name or description keyword.`
+              ? `No services match "${debouncedQuery.trim()}". Try a different name, description, category, endpoint, or provider keyword.`
               : activeCategory !== 'all'
                 ? `No active services in the "${activeCategory}" category.`
                 : 'The registry is empty. Be the first to register a service.'}
