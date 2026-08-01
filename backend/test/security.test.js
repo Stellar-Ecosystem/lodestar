@@ -1,13 +1,63 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
-import express from "express";
-import helmet from "helmet";
+
+// Bypass x402 payment middleware and facilitator client in tests
+vi.mock("@x402/express", () => ({
+  paymentMiddlewareFromConfig: () => (_req, _res, next) => next(),
+}));
+
+vi.mock("@x402/core/server", () => ({
+  HTTPFacilitatorClient: vi.fn(() => ({})),
+}));
+
+vi.mock("@x402/stellar/exact/server", () => ({
+  ExactStellarScheme: vi.fn(() => ({})),
+}));
+
+// Mock logger to support pino-http structure during tests
+const mockLoggerInstance = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+  child: vi.fn(() => mockLoggerInstance),
+  levels: {
+    values: { fatal: 60, error: 50, warn: 40, info: 30, debug: 20, trace: 10 },
+    labels: { 10: "trace", 20: "debug", 30: "info", 40: "warn", 50: "error", 60: "fatal" },
+  },
+};
+
+vi.mock("../src/lib/logger.js", () => ({
+  default: mockLoggerInstance,
+  requestContext: { getStore: vi.fn() },
+}));
+
+vi.mock("../src/lib/stellar.js", () => ({
+  checkRpcHealth: vi.fn().mockResolvedValue({
+    status: "healthy",
+    rpc: { reachable: true },
+    contract: { reachable: true },
+    timestamp: new Date().toISOString(),
+  }),
+}));
+
+vi.mock("../src/lib/contract.js", () => ({
+  getSubmitQueueDepth: vi.fn().mockReturnValue(0),
+  drainSubmitQueue: vi.fn().mockResolvedValue(undefined),
+  getPendingTransactionCount: vi.fn().mockReturnValue(0),
+  getPendingTransactions: vi.fn().mockReturnValue([]),
+  dumpPendingTransactions: vi.fn(),
+  resumePendingTransactions: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe("Security Headers (Helmet Middleware)", () => {
-  const app = express();
-  app.disable("x-powered-by");
-  app.use(helmet());
-  app.get("/healthz", (_req, res) => res.json({ status: "healthy" }));
+  let app;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const indexModule = await import("../src/index.js");
+    app = indexModule.default || indexModule.app;
+  });
 
   it("omits the X-Powered-By header", async () => {
     const response = await request(app).get("/healthz");

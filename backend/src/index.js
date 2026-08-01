@@ -142,7 +142,25 @@ app.use((err, req, res, _next) => {
 let server;
 let shuttingDown = false;
 
+async function start() {
+  // Resume any pending transactions from a previous run before accepting requests
+  try {
+    await resumePendingTransactions();
+  } catch (err) {
+    logger.error({ err }, "Failed to resume pending transactions — continuing startup");
+  }
 
+  server = app.listen(config.port, () => {
+    logger.info(
+      {
+        port: config.port,
+        network: config.stellar.network,
+        contractId: config.contract.id,
+      },
+      "Lodestar backend running",
+    );
+  });
+}
 
 async function shutdown() {
   if (shuttingDown) return;
@@ -210,4 +228,9 @@ async function doDrainAndDump() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-start();
+if (process.env.NODE_ENV !== "test") {
+  start();
+}
+
+export { app };
+export default app;
