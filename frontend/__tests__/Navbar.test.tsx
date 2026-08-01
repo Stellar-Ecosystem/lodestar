@@ -31,6 +31,13 @@ jest.mock('../components/WalletConnect', () => {
   return MockWalletConnect;
 });
 
+// Navbar consumes useTheme(); stub the provider module so the component can be
+// rendered without a full theme context (and without jsdom's missing matchMedia).
+jest.mock('../components/ThemeProvider', () => ({
+  ThemeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useTheme: () => ({ theme: 'light', toggleTheme: jest.fn() }),
+}));
+
 function setPathname(path: string) {
   mockPathname = path;
 }

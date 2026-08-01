@@ -903,7 +903,7 @@ describe('dead-letter queue', () => {
   });
 
   it('captures a permanently failed submission in the dead-letter queue', async () => {
-    mockSendTransaction.mockResolvedValue({ status: 'ERROR', errorResult: 'txBAD_SEQ' });
+    mockSendTransaction.mockResolvedValue({ status: 'ERROR', errorResult: 'txBAD_SEQ', hash: 'failed-tx-hash' });
 
     await expect(
       contractLib.simulateAndSubmit(contract.call('get_service_count'))
@@ -915,6 +915,7 @@ describe('dead-letter queue', () => {
     expect(deadLetters[0].type).toBe('TransactionFailedError');
     expect(deadLetters[0].error).toBeTruthy();
     expect(deadLetters[0].timestamp).toBeGreaterThan(0);
+    expect(deadLetters[0].hash).toBe('failed-tx-hash');
     expect(contractLib.getDeadLetterCount()).toBe(1);
   });
 
@@ -1020,6 +1021,7 @@ describe('dead-letter queue', () => {
     expect(deadLetters[0].operation).toBe('signed-transaction');
     expect(deadLetters[0].code).toBe('TRANSACTION_FAILED');
     expect(deadLetters[0].type).toBe('TransactionFailedError');
+    expect(deadLetters[0].hash).toBe('signed-fail-hash');
   });
 
   it('does not capture successful wallet-signed transactions in the dead-letter queue', async () => {

@@ -410,6 +410,7 @@ export function simulateAndSubmit(operation, signer) {
           error: err.message,
           code: err.code ?? 'UNKNOWN',
           type: err.constructor?.name ?? 'Error',
+          hash: err.hash ?? null,
         });
       }
       throw err; // re-throw so callers still receive the error
@@ -1354,8 +1355,9 @@ async function submitSignedTx(signedXdr) {
     //
     // NOTE: The operation is always 'signed-transaction' — unlike
     // simulateAndSubmit, submitSignedTx receives a pre-built XDR and cannot
-    // extract the contract function name without decoding. Operators can
-    // identify the specific operation from the transaction hash in err.message.
+    // extract the contract function name without decoding. The failed
+    // transaction hash (when the error carries one) is captured in the entry's
+    // `hash` field so operators can correlate and replay it.
     if (err instanceof TransactionFailedError || err instanceof TransactionTimeoutError) {
       addToDeadLetterQueue({
         timestamp: Date.now(),
@@ -1363,6 +1365,7 @@ async function submitSignedTx(signedXdr) {
         error: err.message,
         code: err.code ?? 'UNKNOWN',
         type: err.constructor?.name ?? 'Error',
+        hash: err.hash ?? null,
       });
     }
     throw err;

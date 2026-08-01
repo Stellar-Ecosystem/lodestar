@@ -31,6 +31,21 @@ vi.mock("@x402/stellar/exact/client", () => ({
   ExactStellarScheme: vi.fn(),
 }));
 
+// services.js builds an x402 payment middleware and facilitator client at
+// module load. Bypass both so no facilitator network fetch is attempted (which
+// would otherwise surface as an unhandled ECONNREFUSED rejection in tests).
+vi.mock("@x402/express", () => ({
+  paymentMiddlewareFromConfig: () => (_req, _res, next) => next(),
+}));
+
+vi.mock("@x402/core/server", () => ({
+  HTTPFacilitatorClient: vi.fn(() => ({})),
+}));
+
+vi.mock("@x402/stellar/exact/server", () => ({
+  ExactStellarScheme: vi.fn(() => ({})),
+}));
+
 const app = express();
 app.use(express.json());
 app.use("/api", demoRouter);
