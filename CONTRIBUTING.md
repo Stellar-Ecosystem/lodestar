@@ -102,6 +102,28 @@ Before starting work on an issue:
 3. If the issue is not already assigned, ask a maintainer to assign it to you before opening a PR.
 4. If something is unclear, ask for clarification in the issue thread rather than guessing.
 
+## Seed scripts
+
+The backend includes scripts for seeding on-chain data. All scripts support `--dry-run` (preview without writing) and require `--yes` for live execution. The target network and contract ID are printed before any operation.
+
+```bash
+# Seed demo services onto the registry contract
+node backend/scripts/seed.js --dry-run      # preview
+node backend/scripts/seed.js --yes           # execute
+
+# Seed demo agents onto the agents contract
+node backend/scripts/seed-agents.js --dry-run
+node backend/scripts/seed-agents.js --yes
+
+# Boost agent credit scores to target values
+node backend/scripts/demo/boost-scores.js --dry-run
+node backend/scripts/demo/boost-scores.js --yes
+
+# Update localhost endpoints to the deployed BACKEND_URL
+BACKEND_URL=https://example.com node backend/scripts/update-endpoints.js --dry-run
+BACKEND_URL=https://example.com node backend/scripts/update-endpoints.js --yes
+```
+
 ## Submitting a pull request
 
 1. Fork the repo and create a branch that follows the naming conventions above.

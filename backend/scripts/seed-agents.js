@@ -1,13 +1,18 @@
 import 'dotenv/config';
+import { fileURLToPath } from 'url';
 import pkg from '@stellar/stellar-sdk';
 const { Keypair } = pkg;
 import { getAgentCount, getAgent, registerAgentOnChain, recordPaymentOnChain } from '../src/lib/contract.js';
 import config from '../src/config.js';
 import logger from '../src/lib/logger.js';
 
-if (!process.env.AGENTS_CONTRACT_ID) {
-  logger.error('AGENTS_CONTRACT_ID not set — deploy the agents contract first');
-  process.exit(1);
+function printTargetInfo() {
+  logger.info({
+    network: config.stellar.network,
+    contractId: config.contract.id,
+    agentsContractId: process.env.AGENTS_CONTRACT_ID,
+    serverAddress: config.server.address,
+  }, 'Target network and contract');
 }
 
 // Register the server key as an agent so it can cast reputation votes for the
@@ -66,10 +71,24 @@ const AGENTS = [
   },
 ];
 
-async function seed() {
+export async function seed({ dryRun = false } = {}) {
   try {
+    if (!process.env.AGENTS_CONTRACT_ID) {
+      logger.error('AGENTS_CONTRACT_ID not set — deploy the agents contract first');
+      process.exit(1);
+    }
+
     // Always ensure the demo voter exists, even if the demo agents are seeded.
-    await ensureServerVoterRegistered();
+    if (dryRun) {
+      const existing = await getAgent(config.server.address);
+      if (existing) {
+        logger.info({ address: config.server.address }, '[DRY RUN] Server voter agent already registered — would skip');
+      } else {
+        logger.info({ address: config.server.address }, '[DRY RUN] Would register server key as reputation voter agent');
+      }
+    } else {
+      await ensureServerVoterRegistered();
+    }
 
     const count = await getAgentCount();
     logger.info({ count }, 'Current agent count');
@@ -79,12 +98,22 @@ async function seed() {
     const expectedCount = AGENTS.length + 1;
     if (count >= expectedCount) {
       logger.info('Agents already seeded — skipping');
-      process.exit(0);
+      return;
     }
 
     for (const agent of AGENTS) {
       const address = agent.keypair.publicKey();
       try {
+        if (dryRun) {
+          logger.info({
+            name: agent.name,
+            address,
+            successPayments: agent.successPayments,
+            failPayments: agent.failPayments,
+          }, '[DRY RUN] Would register agent and record payments');
+          continue;
+        }
+
         logger.info({ name: agent.name, address }, 'Registering agent…');
         await registerAgentOnChain(address, agent.name, agent.description);
         logger.info({ name: agent.name }, 'Registered — building payment history…');
@@ -111,12 +140,29 @@ async function seed() {
       }
     }
 
-    logger.info('Agent seed complete');
-    process.exit(0);
+    logger.info({ dryRun }, 'Agent seed complete');
+    if (dryRun) {
+      logger.info('DRY RUN — no transactions were submitted. Re-run with --yes to execute.');
+    }
   } catch (err) {
     logger.error({ err }, 'Seed-agents script failed');
     process.exit(1);
   }
 }
 
-seed();
+// CLI entry point — only when run directly (not imported)
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  const args = process.argv.slice(2);
+  const isDryRun = args.includes('--dry-run');
+  const isYes = args.includes('--yes');
+
+  printTargetInfo();
+
+  if (!isDryRun && !isYes) {
+    logger.error('Live run requires --yes confirmation. Use --dry-run to preview what will happen first.');
+    process.exit(1);
+  }
+
+  seed({ dryRun: isDryRun }).then(() => process.exit(0));
+}

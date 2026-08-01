@@ -1,9 +1,18 @@
 import 'dotenv/config';
 import { fileURLToPath } from 'url';
+import config from '../src/config.js';
 import { listServices, registerServiceOnChain } from '../src/lib/contract.js';
 import logger from '../src/lib/logger.js';
 
 process.env.SEEDING_MODE ??= 'true';
+
+function printTargetInfo() {
+  logger.info({
+    network: config.stellar.network,
+    contractId: config.contract.id,
+    backendUrl: process.env.BACKEND_URL,
+  }, 'Target network and contract');
+}
 
 const BACKEND_URL = process.env.BACKEND_URL;
 
@@ -12,7 +21,7 @@ if (!BACKEND_URL) {
   process.exit(1);
 }
 
-export async function update() {
+export async function update({ dryRun = false } = {}) {
   try {
     const weather = await listServices({ category: 'weather' });
     const search = await listServices({ category: 'search' });
@@ -26,8 +35,17 @@ export async function update() {
       return;
     }
 
+    let updated = 0;
+
     for (const svc of needsUpdate) {
       const newEndpoint = svc.endpoint.replace(/https?:\/\/localhost:\d+/, BACKEND_URL);
+
+      if (dryRun) {
+        logger.info({ name: svc.name, oldEndpoint: svc.endpoint, newEndpoint }, '[DRY RUN] Would re-register with deployed URL');
+        updated++;
+        continue;
+      }
+
       logger.info({ name: svc.name, newEndpoint }, 'Re-registering with deployed URL…');
 
       const newId = await registerServiceOnChain(
@@ -38,9 +56,13 @@ export async function update() {
         svc.category
       );
       logger.info({ name: svc.name, newId }, 'Done');
+      updated++;
     }
 
-    logger.info('All endpoints updated. New services registered with deployed URLs.');
+    logger.info({ updated, dryRun }, 'All endpoints updated. New services registered with deployed URLs.');
+    if (dryRun) {
+      logger.info('DRY RUN — no transactions were submitted. Re-run with --yes to execute.');
+    }
     process.exit(0);
     return;
   } catch (err) {
@@ -50,5 +72,19 @@ export async function update() {
   }
 }
 
+// CLI entry point — only when run directly (not imported)
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMain) update();
+if (isMain) {
+  const args = process.argv.slice(2);
+  const isDryRun = args.includes('--dry-run');
+  const isYes = args.includes('--yes');
+
+  printTargetInfo();
+
+  if (!isDryRun && !isYes) {
+    logger.error('Live run requires --yes confirmation. Use --dry-run to preview what will happen first.');
+    process.exit(1);
+  }
+
+  update({ dryRun: isDryRun });
+}

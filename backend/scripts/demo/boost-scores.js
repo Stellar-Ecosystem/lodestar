@@ -19,6 +19,7 @@
  */
 
 import 'dotenv/config';
+import config from '../../src/config.js';
 import { listAgents, recordPaymentOnChain } from '../../src/lib/contract.js';
 import logger from '../../src/lib/logger.js';
 
@@ -33,6 +34,13 @@ if (!passphrase || passphrase === MAINNET_PASSPHRASE) {
     + '("Test SDF Network ; September 2015") to proceed.',
   );
   process.exit(1);
+}
+
+function printTargetInfo() {
+  logger.info({
+    network: config.stellar.network,
+    agentsContractId: process.env.AGENTS_CONTRACT_ID,
+  }, 'Target network and contract');
 }
 
 // Target scores: first agent ~110, second ~600, third ~1000
@@ -95,6 +103,16 @@ const isDirectRun = process.argv[1] && (
 );
 
 if (isDirectRun) {
-  const isDryRun = process.argv.includes('--dry-run');
+  const args = process.argv.slice(2);
+  const isDryRun = args.includes('--dry-run');
+  const isYes = args.includes('--yes');
+
+  printTargetInfo();
+
+  if (!isDryRun && !isYes) {
+    logger.error('Live run requires --yes confirmation. Use --dry-run to preview what will happen first.');
+    process.exit(1);
+  }
+
   boost({ dryRun: isDryRun });
 }
