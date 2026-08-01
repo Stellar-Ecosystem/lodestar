@@ -2,9 +2,6 @@
 node_modules/
 
 # Environment
-.env
-.env.local
-.env.production
 
 # Build outputs
 target/
@@ -22,7 +19,6 @@ logs/
 Thumbs.db
 
 # IDE
-.vscode/
 .idea/
 
 # Soroban
@@ -31,3 +27,4 @@ frontend/next-env.d.ts
 
 # Data
 data/
+config.bat
