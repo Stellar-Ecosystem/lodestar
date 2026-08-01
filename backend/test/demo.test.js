@@ -67,5 +67,4 @@ describe("POST /api/demo-run", () => {
       global.fetch = originalFetch;
     }
   });
-  });
 });

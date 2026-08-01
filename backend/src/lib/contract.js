@@ -26,24 +26,6 @@ import {
   TransactionFailedError,
   TransactionTimeoutError,
 } from './contractErrors.js';
-import {
-  trackPendingTransaction,
-  removePendingTransaction,
-  getPendingTransactionCount,
-  getPendingTransactions,
-  dumpPendingTransactions,
-  resumePendingTransactions,
-  __resetPendingTransactions,
-} from './pendingTx.js';
-
-// Re-export pendingTx functions so contract.js public interface is unchanged
-export {
-  getPendingTransactionCount,
-  getPendingTransactions,
-  dumpPendingTransactions,
-  resumePendingTransactions,
-  __resetPendingTransactions,
-};
 
 
 const TIMEOUT = 30;
@@ -250,10 +232,9 @@ export async function resumePendingTransactions() {
     );
   }
 }
-// Pending transaction tracking is now imported from ./pendingTx.js
-// (trackPendingTransaction, removePendingTransaction, getPendingTransactionCount,
-// getPendingTransactions, dumpPendingTransactions, resumePendingTransactions,
-// __resetPendingTransactions).
+// Pending transaction tracking (trackPendingTransaction, removePendingTransaction,
+// getPendingTransactionCount, getPendingTransactions, dumpPendingTransactions,
+// resumePendingTransactions, __resetPendingTransactions) is defined inline above.
 
 export function __setAssembleTransactionForTest(fn) {
   assembleTransactionForSubmit = fn ?? rpc.assembleTransaction;
