@@ -29,5 +29,8 @@ Thumbs.db
 *.wasm
 frontend/next-env.d.ts
 
+# Pending transaction registry dump (written by backend on shutdown)
+pending-transactions.json
+
 # Data
 data/
