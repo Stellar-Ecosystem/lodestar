@@ -12,6 +12,13 @@ vi.mock("../src/routes/demoValidate.js", () => ({
   validateDemoEndpoint: vi.fn().mockReturnValue("http://localhost:9999/demo"),
 }));
 
+// demo.js imports services.js, which constructs a real x402 HTTP resource
+// server at module load; stub it so no network/server initialization runs.
+vi.mock("../src/routes/services.js", () => ({
+  recordActivity: vi.fn(),
+  getActivityFeed: vi.fn(() => []),
+}));
+
 vi.mock("@x402/core/client", () => {
   return {
     x402Client: vi.fn().mockImplementation(() => ({
@@ -37,6 +44,7 @@ app.use("/api", demoRouter);
 
 describe("POST /api/demo-run", () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
 
@@ -49,14 +57,15 @@ describe("POST /api/demo-run", () => {
   it("handles AbortError appropriately", async () => {
     contract.getService.mockResolvedValue({ name: "Test Service", endpoint: "test", price_usdc: "1" });
     
-    // We mock fetchWithTx to throw an AbortError to simulate client cancelling the request
-    const { x402HTTPClient } = await import("@x402/core/client");
-    x402HTTPClient.mockImplementationOnce(() => ({
-      fetchWithTx: vi.fn().mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" })),
-    }));
+    // demo.js's fetchWithTx implementation uses the global fetch, so stub it
+    // to reject with an AbortError to simulate the client cancelling the request.
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(
+      Object.assign(new Error("aborted"), { name: "AbortError" })
+    ));
 
     const res = await request(app).post("/api/demo-run").send({ serviceId: 1, category: "weather" });
     expect(res.status).toBe(499);
     expect(res.body.code).toBe("CANCELLED");
+    vi.unstubAllGlobals();
   });
 });
