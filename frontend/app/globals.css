@@ -7,7 +7,7 @@
 :root {
   --background: #FAFAF7;
   --primary: #1A1A1A;
-  --accent: #E85D3A;
+  --accent: #C2410C;
   --secondary: #6B6B6B;
   --border: #E5E5E5;
 }
@@ -66,7 +66,7 @@ body {
   }
 
   .input {
-    @apply bg-background border border-border rounded-lg px-4 py-2.5 text-sm text-primary placeholder:text-secondary focus:outline-none focus:ring-1 focus:ring-primary/30 transition-shadow;
+    @apply bg-background border border-border rounded-lg px-4 py-2.5 text-sm text-primary placeholder:text-secondary focus:outline-none focus:ring-1 focus:ring-primary transition-shadow;
   }
 }
 

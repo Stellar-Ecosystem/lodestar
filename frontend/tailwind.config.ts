@@ -15,8 +15,9 @@ const config: Config = {
         accent: 'var(--accent)',
         secondary: 'var(--secondary)',
         border: 'var(--border)',
-        success: '#22C55E',
-        error: '#EF4444',
+        // WCAG AA contrast fixes (issue #382) — must stay ≥ 4.5:1 on light bg
+        success: '#15803D',
+        error: '#DC2626',
       },
       fontFamily: {
         sans: ['Inter', 'sans-serif'],
