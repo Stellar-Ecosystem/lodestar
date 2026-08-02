@@ -18,61 +18,12 @@ import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
-import { isValidStellarAddress } from "../middleware/addressValidator.js";
+import { validate } from "../middleware/validate.js";
+import * as schemas from "../schemas/registry.js";
 
 const router = Router();
 
 const PAGE_SIZE = 20;
-const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
-const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
-
-function normalizePriceUsdc(value) {
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) return null;
-    const normalized = String(value);
-    if (!PRICE_USDC_REGEX.test(normalized)) return null;
-    return value >= 0.0001 ? normalized : null;
-  }
-
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized !== value || !PRICE_USDC_REGEX.test(normalized)) {
-    return null;
-  }
-
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed) || parsed < 0.0001) {
-    return null;
-  }
-
-  return normalized;
-}
-
-/**
- * Annotate a service entry with a ttl_warning flag.
- * Returns true when the estimated remaining TTL falls below
- * SERVICE_TTL_WARNING_LEDGERS. Omits the field when currentLedger
- * is unavailable so callers treat absence as "no warning data".
- */
-function annotateTtlWarning(service, currentLedger) {
-  if (currentLedger == null) return service;
-  const expiry = service.registered_at + SERVICE_MAX_TTL;
-  const warnOnset = expiry - SERVICE_TTL_WARNING_LEDGERS;
-  return { ...service, ttl_warning: currentLedger >= warnOnset };
-}
-
-function parsePositiveSafeInteger(value) {
-  if (typeof value === "number") {
-    return Number.isSafeInteger(value) && value > 0 ? value : null;
-  }
-
-  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
-    return null;
-  }
-
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : null;
-}
 
 // Appends ttl_warning:true when the entry's estimated remaining TTL falls
 // below SERVICE_TTL_WARNING_LEDGERS. Omits the field entirely when currentLedger
@@ -107,11 +58,9 @@ function annotateTtlWarning(service, currentLedger) {
   };
 }
 
-router.get("/services", async (req, res) => {
+router.get("/services", validate(schemas.listServices), async (req, res) => {
   try {
-    const { category, q, offset: offsetStr, limit: limitStr } = req.query;
-    const offset = Math.max(0, parseInt(offsetStr, 10) || 0);
-    const limit = Math.min(50, Math.max(1, parseInt(limitStr, 10) || PAGE_SIZE));
+    const { category, q, offset, limit } = req.valid.query;
 
     const [servicesResult, ledgerResult] = await Promise.allSettled([
       listServices({ category: category || undefined, offset, limit }),
@@ -134,7 +83,7 @@ router.get("/services", async (req, res) => {
       annotateTtlWarning(s, currentLedger),
     );
 
-    if (q && typeof q === "string" && q.trim()) {
+    if (q && q.trim()) {
       const query = q.trim().toLowerCase();
       services = services.filter(
         (s) =>
@@ -158,14 +107,9 @@ router.get("/services", async (req, res) => {
   }
 });
 
-router.get("/services/:id", async (req, res) => {
+router.get("/services/:id", validate(schemas.getService), async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-      return res
-        .status(400)
-        .json({ error: "Invalid service ID", code: "INVALID_ID" });
-    }
+    const { id } = req.valid.params;
 
     const [serviceResult, ledgerResult] = await Promise.allSettled([
       getService(id),
@@ -208,22 +152,11 @@ router.get("/services/:id", async (req, res) => {
  * Body: { providerAddress: string }
  * Returns: { xdr, submitToken } — unsigned tx ready for wallet signing
  */
-router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => {
-  const parsedId = parsePositiveSafeInteger(req.params.id);
-  if (parsedId == null) {
-    return res
-      .status(400)
-      .json({ error: "Invalid service ID", code: "INVALID_ID" });
-  }
+router.post("/services/:id/deactivate", writeRateLimiter(), validate(schemas.deactivateService), async (req, res) => {
+  const { id: parsedId } = req.valid.params;
 
   try {
-    const { providerAddress } = req.body ?? {};
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({
-        error: "`providerAddress` must be a valid Stellar address",
-        code: "INVALID_BODY",
-      });
-    }
+    const { providerAddress } = req.valid.body;
 
     const prepared = await deactivateServiceOnChain(parsedId, providerAddress);
     logger.info({ id: parsedId, providerAddress }, "Built unsigned deactivation tx");
@@ -255,15 +188,9 @@ router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => 
   }
 });
 
-router.get("/services/:id/history", async (req, res) => {
-  let id;
+router.get("/services/:id/history", validate(schemas.getServiceHistory), async (req, res) => {
+  const { id } = req.valid.params;
   try {
-    id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-      return res
-        .status(400)
-        .json({ error: "Invalid service ID", code: "INVALID_ID" });
-    }
     const service = await getService(id);
     if (!service) {
       return res
@@ -302,15 +229,9 @@ router.get("/stats", async (req, res) => {
   }
 });
 
-router.get("/registry/by-provider/:address", async (req, res) => {
+router.get("/registry/by-provider/:address", validate(schemas.listByProvider), async (req, res) => {
   try {
-    const { address } = req.params;
-    if (!isValidStellarAddress(address)) {
-      return res.status(400).json({
-        error: "Invalid Stellar address format",
-        code: "INVALID_ADDRESS",
-      });
-    }
+    const { address } = req.valid.params;
 
     const [servicesResult, ledgerResult] = await Promise.allSettled([
       listServicesByProvider(address),
@@ -348,49 +269,19 @@ router.get("/registry/by-provider/:address", async (req, res) => {
   }
 });
 
-router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) => {
+router.post("/registry/prepare-register", writeRateLimiter(), validate(schemas.prepareRegister), async (req, res) => {
   try {
-    const {
+    // Already trimmed, normalised, and range-checked by the schema.
+    const { name, description, endpoint, priceUsdc, category, providerAddress, payTo } =
+      req.valid.body;
+
+    const prepared = await buildUnsignedRegistryTx("register", providerAddress, {
       name,
       description,
       endpoint,
       priceUsdc,
       category,
-      providerAddress,
       payTo,
-    } = req.body ?? {};
-
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
-    if (typeof name !== "string" || name.trim().length < 3 || name.trim().length > 64) {
-      return res.status(400).json({ error: "`name` must be 3-64 characters", code: "INVALID_BODY" });
-    }
-    if (typeof description !== "string" || description.trim().length < 10 || description.trim().length > 256) {
-      return res.status(400).json({ error: "`description` must be 10-256 characters", code: "INVALID_BODY" });
-    }
-    if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
-      return res.status(400).json({ error: "`endpoint` must start with https://", code: "INVALID_BODY" });
-    }
-    if (!SERVICE_CATEGORIES.has(category)) {
-      return res.status(400).json({ error: "`category` is invalid", code: "INVALID_BODY" });
-    }
-
-    const normalizedPriceUsdc = normalizePriceUsdc(priceUsdc);
-    if (!normalizedPriceUsdc) {
-      return res.status(400).json({ error: "`priceUsdc` must be at least 0.0001", code: "INVALID_BODY" });
-    }
-    if (payTo !== undefined && (typeof payTo !== "string" || payTo.trim().length === 0)) {
-      return res.status(400).json({ error: "`payTo` must be a non-empty string when provided", code: "INVALID_BODY" });
-    }
-
-    const prepared = await buildUnsignedRegistryTx("register", providerAddress, {
-      name: name.trim(),
-      description: description.trim(),
-      endpoint: endpoint.trim(),
-      priceUsdc: normalizedPriceUsdc,
-      category,
-      payTo: payTo?.trim(),
     });
     logger.info({ providerAddress, endpoint, category }, "Built unsigned registry registration tx");
     res.json(prepared);
@@ -404,17 +295,9 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
   }
 });
 
-router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res) => {
+router.post("/registry/prepare-deactivate", writeRateLimiter(), validate(schemas.prepareDeactivate), async (req, res) => {
   try {
-    const { providerAddress, id } = req.body ?? {};
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
-
-    const parsedId = parsePositiveSafeInteger(id);
-    if (parsedId == null) {
-      return res.status(400).json({ error: "`id` must be a positive integer", code: "INVALID_BODY" });
-    }
+    const { providerAddress, id: parsedId } = req.valid.body;
 
     const prepared = await buildUnsignedRegistryTx("deactivate", providerAddress, { id: parsedId });
     logger.info({ providerAddress, id: parsedId }, "Built unsigned registry deactivation tx");
@@ -429,15 +312,9 @@ router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res)
   }
 });
 
-router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) => {
+router.post("/registry/submit-signed-tx", writeRateLimiter(), validate(schemas.submitSignedTx), async (req, res) => {
   try {
-    const { signedXdr, submitToken } = req.body ?? {};
-    if (!signedXdr || typeof signedXdr !== "string") {
-      return res.status(400).json({ error: "`signedXdr` is required", code: "INVALID_BODY" });
-    }
-    if (!submitToken || typeof submitToken !== "string") {
-      return res.status(400).json({ error: "`submitToken` is required", code: "INVALID_BODY" });
-    }
+    const { signedXdr, submitToken } = req.valid.body;
     validatePreparedRegistrySubmission(submitToken, signedXdr);
 
     const result = await submitSignedRegistryTx(signedXdr);
@@ -457,30 +334,11 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
 // `agent` must be a registered agent the backend is allowed to sign for. The
 // on-chain contract enforces require_auth + agent registration + a per-agent
 // cooldown, so reputation can no longer be moved by anonymous callers.
-router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
-  let id;
+router.post("/reputation/:id", writeRateLimiter(), validate(schemas.updateReputation), async (req, res) => {
+  const { id } = req.valid.params;
   try {
-    id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-      return res
-        .status(400)
-        .json({ error: "Invalid service ID", code: "INVALID_ID" });
-    }
+    const { positive, agent } = req.valid.body;
 
-    // Default to {} so a missing/non-JSON body yields a 400 INVALID_BODY rather
-    // than a TypeError surfacing as a generic 500.
-    const { positive, agent } = req.body ?? {};
-    if (typeof positive !== "boolean") {
-      return res
-        .status(400)
-        .json({ error: "`positive` must be a boolean", code: "INVALID_BODY" });
-    }
-    if (!isValidStellarAddress(agent)) {
-      return res.status(400).json({
-        error: "`agent` must be a valid Stellar address",
-        code: "INVALID_BODY",
-      });
-    }
     if (!isAllowedReputationAgent(agent)) {
       return res.status(403).json({
         error:

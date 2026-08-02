@@ -3,9 +3,6 @@ import { describe, it, expect } from 'vitest';
 import {
   recordActivity,
   getActivityFeed,
-  parseActivityPagination,
-  ACTIVITY_DEFAULT_LIMIT,
-  ACTIVITY_MAX_LIMIT,
   ACTIVITY_MAX_ENTRIES,
 } from '../src/lib/activityFeed.js';
 
@@ -17,41 +14,8 @@ function seedFeed(count) {
   }
 }
 
-describe('parseActivityPagination', () => {
-  it('applies sane defaults when params are absent', () => {
-    const { limit, offset, errors } = parseActivityPagination({});
-    expect(limit).toBe(ACTIVITY_DEFAULT_LIMIT);
-    expect(offset).toBe(0);
-    expect(errors).toEqual([]);
-  });
-
-  it('parses valid limit and offset', () => {
-    const { limit, offset, errors } = parseActivityPagination({ limit: '10', offset: '5' });
-    expect(limit).toBe(10);
-    expect(offset).toBe(5);
-    expect(errors).toEqual([]);
-  });
-
-  it('clamps limit to the maximum', () => {
-    const { limit, errors } = parseActivityPagination({ limit: String(ACTIVITY_MAX_LIMIT + 100) });
-    expect(limit).toBe(ACTIVITY_MAX_LIMIT);
-    expect(errors).toEqual([]);
-  });
-
-  it('rejects non-positive or non-integer limit', () => {
-    for (const bad of ['0', '-1', '1.5', 'abc', '']) {
-      const { errors } = parseActivityPagination({ limit: bad });
-      expect(errors.length, `expected error for limit=${JSON.stringify(bad)}`).toBeGreaterThan(0);
-    }
-  });
-
-  it('rejects negative or non-integer offset', () => {
-    for (const bad of ['-1', '2.5', 'xyz']) {
-      const { errors } = parseActivityPagination({ offset: bad });
-      expect(errors.length, `expected error for offset=${JSON.stringify(bad)}`).toBeGreaterThan(0);
-    }
-  });
-});
+// `limit`/`offset` parsing now lives in the activity route's request schema;
+// its equivalent of these cases is in src/schemas/common.test.js.
 
 describe('activity feed store', () => {
   it('getActivityFeed always returns an array', () => {

@@ -105,6 +105,7 @@ Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. 
 
 - **Smart Contract**: Rust + soroban-sdk on Stellar Testnet
 - **Backend**: Node.js v22 + Express (ES modules)
+- **Request validation**: zod schemas per route, one middleware, generated OpenAPI
 - **Frontend**: Next.js 14 App Router + TypeScript + Tailwind CSS
 - **Payments**: x402 protocol (`@x402/express`, `@x402/fetch`, `@x402/stellar`)
 - **Stellar SDK**: `@stellar/stellar-sdk`
@@ -312,6 +313,60 @@ npm test
 ```
 
 The test suite (`__tests__/AgentsPage.test.tsx`) mocks `fetchAgents` to behave like the real server-side implementation — returning only the requested page from a virtual list of N agents — and verifies first-page limits, Prev/Next state, sort-reset behavior, and "Showing X–Y of Z" accuracy across pages.
+
+---
+
+## API Request Validation
+
+Every backend route declares what it accepts as a zod schema in
+`backend/src/schemas/`. A single middleware (`backend/src/middleware/validate.js`)
+enforces those schemas before a handler runs, so handlers do no checking of
+their own — they read already-coerced values from `req.valid`.
+
+Adding or changing a route means editing one file. To see everything the API
+accepts, read `backend/src/schemas/`.
+
+### Error shape
+
+Every validation failure returns HTTP 400 with the same body:
+
+```json
+{
+  "error": "`name` must be 3–50 characters",
+  "code": "INVALID_BODY",
+  "details": [
+    { "path": "name", "message": "`name` must be 3–50 characters", "rule": "too_small" }
+  ]
+}
+```
+
+`error` is the first problem in prose and `code` is machine-readable — both
+unchanged from before. `details` lists *every* problem found, so a client can
+fix a whole form in one round trip instead of one field per request.
+
+### OpenAPI
+
+The OpenAPI 3.1 document is generated from those same schemas, so it cannot
+drift from what the server enforces:
+
+```sh
+cd backend
+npm run openapi                    # to stdout
+npm run openapi -- --out api.json  # to a file
+```
+
+It is also served live at `GET /api/openapi.json`.
+
+### Tests
+
+```sh
+cd backend
+npm test
+```
+
+`src/schemas/routes.test.js` walks the Express routers and fails if a route is
+registered without a declared schema, if a declared schema has no route, or if
+a route that accepts input is missing the validation middleware.
 
 ---
 

@@ -6,7 +6,9 @@ import config from '../config.js';
 import logger from '../lib/logger.js';
 import { recordPaymentOnChain, getAgent } from '../lib/contract.js';
 import { usdcToStroops } from '../lib/stroops.js';
-import { isValidStellarAddress } from '../middleware/addressValidator.js';
+import { validate } from '../middleware/validate.js';
+import * as schemas from '../schemas/services.js';
+import { isValidStellarAddress } from '../schemas/common.js';
 
 const router = Router();
 
@@ -53,17 +55,12 @@ async function creditPayment(agentAddress, txHash, serviceId, priceStroops, serv
 export {
   recordActivity,
   getActivityFeed,
-  parseActivityPagination,
   ACTIVITY_MAX_ENTRIES,
   ACTIVITY_DEFAULT_LIMIT,
   ACTIVITY_MAX_LIMIT,
 } from '../lib/activityFeed.js';
 
-import {
-  recordActivity,
-  getActivityFeed,
-  parseActivityPagination,
-} from '../lib/activityFeed.js';
+import { recordActivity, getActivityFeed } from '../lib/activityFeed.js';
 
 const facilitator = new HTTPFacilitatorClient({ url: config.x402.facilitatorUrl });
 const stellarScheme = new ExactStellarScheme();
@@ -95,15 +92,9 @@ router.use(
   ])
 );
 
-router.get('/weather', async (req, res) => {
+router.get('/weather', validate(schemas.getWeather), async (req, res) => {
   try {
-    const lat = parseFloat(req.query.lat) || 40.7128;
-    const lon = parseFloat(req.query.lon) || -74.006;
-
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-      logger.warn({ lat, lon }, 'Invalid coordinates supplied to GET /demo/weather');
-      return res.status(400).json({ error: 'Coordinates out of range', code: 'INVALID_COORDINATES' });
-    }
+    const { lat, lon, demoRunId } = req.valid.query;
 
     const url =
       `https://api.open-meteo.com/v1/forecast` +
@@ -137,7 +128,7 @@ router.get('/weather', async (req, res) => {
       service: 'Lodestar Weather Service',
       amount: config.x402.weatherPrice,
       txHash,
-      ...(req.query.demoRunId && { demoRunId: String(req.query.demoRunId) }),
+      ...(demoRunId && { demoRunId }),
     });
 
     if (agentAddress && config.contract.agentsId) {
@@ -156,21 +147,18 @@ router.get('/weather', async (req, res) => {
   }
 });
 
-router.get('/search', async (req, res) => {
+router.get('/search', validate(schemas.getSearch), async (req, res) => {
   try {
-    const rawQuery = req.query.q;
-    if (!rawQuery) {
-      return res.status(400).json({ error: 'Query parameter `q` is required', code: 'MISSING_QUERY' });
-    }
+    const { q, demoRunId } = req.valid.query;
 
-    const sanitizedQ = String(rawQuery)
+    const sanitizedQ = String(q)
       .trim()
       .replace(/[\u0000-\u001F\u007F]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
 
     if (sanitizedQ.length === 0 || sanitizedQ.length > 256) {
-      logger.warn({ rawQuery }, 'Invalid search query supplied to GET /demo/search');
+      logger.warn({ rawQuery: q }, 'Invalid search query supplied to GET /demo/search');
       return res.status(400).json({ error: 'Search query is invalid or too long', code: 'INVALID_QUERY' });
     }
 
@@ -206,7 +194,7 @@ router.get('/search', async (req, res) => {
       service: 'Lodestar Search Service',
       amount: config.x402.searchPrice,
       txHash: searchTxHash,
-      ...(req.query.demoRunId && { demoRunId: String(req.query.demoRunId) }),
+      ...(demoRunId && { demoRunId }),
     });
 
     if (searchAgentAddress && config.contract.agentsId) {
@@ -225,12 +213,8 @@ router.get('/search', async (req, res) => {
   }
 });
 
-router.get('/activity', (req, res) => {
-  const { limit, offset, errors } = parseActivityPagination(req.query);
-  if (errors.length > 0) {
-    logger.warn({ query: req.query, errors }, 'Invalid activity pagination params');
-    return res.status(400).json({ error: errors.join('; '), code: 'INVALID_PAGINATION' });
-  }
+router.get('/activity', validate(schemas.getActivity), (req, res) => {
+  const { limit, offset } = req.valid.query;
 
   const feed = getActivityFeed();
   const total = feed.length;

@@ -43,7 +43,13 @@ describe("POST /api/demo-run", () => {
   it("returns 400 if serviceId or category is missing", async () => {
     const res = await request(app).post("/api/demo-run").send({});
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("serviceId and category are required");
+    expect(res.body.code).toBe("INVALID_BODY");
+    expect(res.body.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "serviceId" }),
+        expect.objectContaining({ path: "category" }),
+      ]),
+    );
   });
 
   it("handles AbortError appropriately", async () => {

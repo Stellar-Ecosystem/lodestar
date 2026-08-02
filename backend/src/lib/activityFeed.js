@@ -58,34 +58,6 @@ export function getActivityFeed() {
   }
 }
 
-/**
- * Validate and normalise `limit`/`offset` query params for the activity feed.
- * Missing params fall back to sane defaults; `limit` is clamped to ACTIVITY_MAX_LIMIT.
- * @param {Record<string, unknown>} [query]
- * @returns {{ limit: number, offset: number, errors: string[] }}
- */
-export function parseActivityPagination(query = {}) {
-  const errors = [];
-  let limit = ACTIVITY_DEFAULT_LIMIT;
-  let offset = 0;
-
-  if (query.limit !== undefined) {
-    const n = Number(query.limit);
-    if (!Number.isInteger(n) || n < 1) {
-      errors.push('`limit` must be a positive integer');
-    } else {
-      limit = Math.min(n, ACTIVITY_MAX_LIMIT);
-    }
-  }
-
-  if (query.offset !== undefined) {
-    const n = Number(query.offset);
-    if (!Number.isInteger(n) || n < 0) {
-      errors.push('`offset` must be a non-negative integer');
-    } else {
-      offset = n;
-    }
-  }
-
-  return { limit, offset, errors };
-}
+// Pagination bounds are consumed by the request schemas in `src/schemas/`,
+// which is where `limit`/`offset` are now validated and clamped. This module
+// owns the feed's storage; it no longer parses query params.

@@ -20,6 +20,7 @@ import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
 import agentsRouter from "./routes/agents.js";
+import openapiRouter from "./routes/openapi.js";
 
 if (process.argv.includes("--print-config")) {
   console.log(
@@ -101,6 +102,7 @@ app.get("/healthz", async (req, res) => {
   }
 });
 
+app.use("/api", openapiRouter);
 app.use("/api", registryRouter);
 app.use("/api", agentsRouter);
 
