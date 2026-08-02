@@ -28,5 +28,6 @@ Thumbs.db
 # Soroban
 *.wasm
 frontend/next-env.d.ts
-data/
+
+# Data
 data/

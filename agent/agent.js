@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import fs from 'node:fs';
 import pino from 'pino';
 import pkg from '@stellar/stellar-sdk';
 const { Keypair } = pkg;
@@ -10,12 +11,51 @@ import { ExactStellarScheme } from '@x402/stellar/exact/client';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const required = ['AGENT_STELLAR_SECRET', 'STELLAR_RPC_URL', 'LODESTAR_API_URL'];
+function loadSecret() {
+  const envSecret = process.env.AGENT_STELLAR_SECRET;
+  const filePath  = process.env.AGENT_STELLAR_SECRET_FILE;
+
+  if (envSecret && filePath) {
+    throw new Error('Set only one of AGENT_STELLAR_SECRET or AGENT_STELLAR_SECRET_FILE, not both');
+  }
+
+  if (filePath) {
+    let secret;
+    try {
+      secret = fs.readFileSync(filePath, 'utf8').trim();
+    } catch (err) {
+      throw new Error(`Failed to read AGENT_STELLAR_SECRET_FILE: ${err.message}`);
+    }
+
+    if (process.platform !== 'win32') {
+      const mode = fs.statSync(filePath).mode;
+      const groupRead = !!(mode & 0o040);
+      const otherRead = !!(mode & 0o004);
+      if (groupRead || otherRead) {
+        throw new Error(
+          `AGENT_STELLAR_SECRET_FILE at ${filePath} is group/world readable. ` +
+          `Run: chmod 600 ${filePath}`
+        );
+      }
+    }
+
+    return secret;
+  }
+
+  if (envSecret) {
+    return envSecret;
+  }
+
+  throw new Error('Missing AGENT_STELLAR_SECRET or AGENT_STELLAR_SECRET_FILE');
+}
+
+let AGENT_SECRET = loadSecret();
+
+const required = ['STELLAR_RPC_URL', 'LODESTAR_API_URL'];
 for (const key of required) {
   if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
 }
 
-const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
@@ -36,10 +76,30 @@ try {
 }
 const AGENT_ADDRESS = agentKeypair.publicKey();
 
+// Zero the in-memory secret reference after key derivation.
+// JS strings are immutable, so this does not scrub the original bytes
+// from the heap, but removes the long-lived reference from this scope.
+AGENT_SECRET = undefined;
+
 const logger = pino({
   level: process.env.LOG_LEVEL ?? 'info',
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
+
+const FETCH_TIMEOUT_MS = Number.isFinite(Number(process.env.AGENT_FETCH_TIMEOUT_MS))
+  ? Math.max(1, Number(process.env.AGENT_FETCH_TIMEOUT_MS))
+  : 5000;
+
+async function fetchWithTimeout(resource, init = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    return await fetch(resource, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 // ── Canonical event names ─────────────────────────────────────────────────────
 
@@ -62,7 +122,7 @@ let currentScore = null;
 
 export async function ensureRegistered() {
   try {
-    const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
+    const res = await fetchWithTimeout(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}`);
     if (res.status === 503) {
       logger.info(
         { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, scoringEnabled: false },
@@ -89,7 +149,7 @@ export async function ensureRegistered() {
         { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS },
         'Not registered — registering now…'
       );
-      const regRes = await fetch(`${LODESTAR_API_URL}/api/agents/register`, {
+      const regRes = await fetchWithTimeout(`${LODESTAR_API_URL}/api/agents/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -127,7 +187,7 @@ export async function ensureRegistered() {
 
 async function checkSpend(amountUsdc, category) {
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/can-spend` +
       `?amount=${encodeURIComponent(amountUsdc)}&category=${encodeURIComponent(category)}`
     );
@@ -148,7 +208,7 @@ async function recordOutcome(amountUsdc, success, serviceId) {
         .update(body)
         .digest('hex');
     }
-    const res = await fetch(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/payment`, {
+    const res = await fetchWithTimeout(`${LODESTAR_API_URL}/api/agents/${AGENT_ADDRESS}/payment`, {
       method: 'POST',
       headers,
       body,
@@ -186,14 +246,17 @@ function usdcStrToStroops(usdcStr) {
 }
 
 function buildHttpClient() {
-  const signer = createEd25519Signer(AGENT_SECRET, 'stellar:testnet');
+  // Re-read the secret for the x402 signer since the module-level reference
+  // has already been zeroed. loadSecret() re-reads from the env var or file.
+  const secretForSigner = loadSecret();
+  const signer = createEd25519Signer(secretForSigner, 'stellar:testnet');
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
 
   // Implement fetch manually — x402HTTPClient.fetch() was removed in this version
   httpClient.fetch = async (url, init = {}) => {
-    const probe = await fetch(url, init);
+    const probe = await fetchWithTimeout(url, init);
     if (probe.status !== 402) return probe;
 
     const paymentRequired = httpClient.getPaymentRequiredResponse(
@@ -203,7 +266,7 @@ function buildHttpClient() {
 
     const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
     const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
-    return fetch(url, {
+    return fetchWithTimeout(url, {
       ...init,
       headers: { ...(init.headers ?? {}), ...paymentHeaders },
     });
@@ -215,7 +278,7 @@ function buildHttpClient() {
 // ── Registry helpers ──────────────────────────────────────────────────────────
 
 async function fetchServices(category) {
-  const res = await fetch(`${LODESTAR_API_URL}/api/services?category=${category}`);
+  const res = await fetchWithTimeout(`${LODESTAR_API_URL}/api/services?category=${category}`);
   if (!res.ok) throw new Error(`Registry fetch failed: ${res.status}`);
   const body = await res.json();
   return body.services ?? [];
@@ -223,7 +286,7 @@ async function fetchServices(category) {
 
 async function submitReputation(id, positive) {
   try {
-    const res = await fetch(`${LODESTAR_API_URL}/api/reputation/${id}`, {
+    const res = await fetchWithTimeout(`${LODESTAR_API_URL}/api/reputation/${id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ positive, agent: AGENT_ADDRESS }),
@@ -336,7 +399,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     const paymentHeaders = client.encodePaymentSignatureHeader(paymentPayload);
     let response;
     try {
-      response = await fetch(endpointUrl, { headers: paymentHeaders, keepalive: true });
+      response = await fetchWithTimeout(endpointUrl, { headers: paymentHeaders, keepalive: true });
     } catch (err) {
       logger.error(
         {
@@ -406,6 +469,50 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
   return { success: false, priceUsdc: null };
 }
 
+// ── Shutdown state ─────────────────────────────────────────────────────────────
+
+let shuttingDown = false;
+const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.AGENT_SHUTDOWN_TIMEOUT_MS ?? '30000', 10);
+let shutdownTimer = null;
+
+export async function initiateShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  logger.info(
+    { event: 'shutdown_initiated', signal },
+    `Graceful shutdown initiated (${signal}) — no new work will be started`
+  );
+
+  shutdownTimer = setTimeout(() => {
+    const pendingCount = getPendingTransactionCount ? getPendingTransactionCount() : 0;
+    logger.warn(
+      { event: 'shutdown_timeout', pendingTransactions: pendingCount },
+      `Shutdown timeout reached after ${SHUTDOWN_TIMEOUT_MS}ms — exiting`
+    );
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  shutdownTimer.unref();
+}
+
+async function completeShutdown(success, unresolved) {
+  if (shutdownTimer) clearTimeout(shutdownTimer);
+
+  const finalScore = currentScore;
+  logger.info(
+    {
+      event: 'shutdown_complete',
+      success,
+      unresolvedPayments: unresolved,
+      finalScore,
+    },
+    'Agent shutdown complete'
+  );
+
+  dispose();
+  process.exit(success ? 0 : 1);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function main() {
@@ -426,14 +533,24 @@ export async function main() {
   let successCount = 0;
   let failCount = 0;
   let totalUsdcSpent = 0;
+  const unresolvedPayments = [];
 
   for (const { category, buildUrl } of tasks) {
+    if (shuttingDown) {
+      logger.warn({ event: 'shutdown_skip_task', category }, 'Skipping task due to shutdown');
+      failCount++;
+      continue;
+    }
+
     const result = await runTask(category, buildUrl, scoringEnabled, httpClient);
     if (result.success) {
       successCount++;
       totalUsdcSpent += parseFloat(result.priceUsdc ?? '0');
     } else {
       failCount++;
+      if (result._unresolved) {
+        unresolvedPayments.push({ category, serviceId: result._unresolved.serviceId, priceUsdc: result.priceUsdc });
+      }
     }
   }
 
@@ -443,6 +560,8 @@ export async function main() {
     finalScore !== null && scoreAfterRegistration !== null
       ? finalScore - scoreAfterRegistration
       : null;
+
+  const shutdownSuccess = failCount === 0 && !shuttingDown;
 
   logger.info(
     {
@@ -455,16 +574,25 @@ export async function main() {
       finalScore,
       scoreDelta,
       runDurationMs,
+      shutdownInitiated: shuttingDown,
     },
     'Agent run complete'
   );
+
+  if (shuttingDown) {
+    await completeShutdown(shutdownSuccess, unresolvedPayments);
+  }
 }
 
 // ── Entry point guard ─────────────────────────────────────────────────────────
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.on('SIGTERM', () => { dispose(); process.exit(0); });
-  process.on('SIGINT',  () => { dispose(); process.exit(0); });
+  process.on('SIGTERM', async () => {
+    await initiateShutdown('SIGTERM');
+  });
+  process.on('SIGINT', async () => {
+    await initiateShutdown('SIGINT');
+  });
   main().catch((err) => {
     logger.error({ err }, 'Agent crashed');
     process.exit(1);

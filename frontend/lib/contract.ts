@@ -13,6 +13,7 @@ import type {
   AgentSortOption,
   ScoreTier,
 } from './types';
+import { PAGE_SIZE } from './pagination';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -131,9 +132,8 @@ export const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ?? 
 
 export async function fetchAgents(
   page = 0,
-  pageSize = 12,
-  sort: AgentSortOption = 'score',
-  tier: ScoreTier | 'all' = 'all'
+  pageSize = PAGE_SIZE,
+  sort: AgentSortOption = 'score'
 ): Promise<AgentsResponse> {
   const tierQuery = tier === 'all' ? '' : `&tier=${tier}`;
   return apiFetch<AgentsResponse>(
