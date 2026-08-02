@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useWallet } from './WalletContext';
 import { WALLET_OPTIONS, WalletErrorType } from '@/lib/wallet';
 
@@ -8,11 +9,67 @@ interface Props {
   onClose: () => void;
 }
 
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
+
 export default function WalletPickerModal({ onClose }: Props) {
   const { connect } = useWallet();
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [errorType, setErrorType] = useState<WalletErrorType | null>(null);
+
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // On open: move focus into the dialog and mark background content inert.
+  // On close: remove inert and restore focus to the element that opened it.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const background: Element[] = [];
+
+    Array.from(document.body.children).forEach((child) => {
+      if (child !== overlayRef.current) {
+        child.setAttribute('inert', '');
+        background.push(child);
+      }
+    });
+
+    dialogRef.current?.focus();
+
+    return () => {
+      background.forEach((el) => el.removeAttribute('inert'));
+      previouslyFocused?.focus();
+    };
+  }, []);
+
+  function handleKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
+    if (e.key === 'Escape') {
+      onClose();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+    if (focusable.length === 0) {
+      e.preventDefault();
+      dialog.focus();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || document.activeElement === dialog)) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
 
   async function handleSelect(walletId: string) {
     setLoading(walletId);
@@ -34,17 +91,21 @@ export default function WalletPickerModal({ onClose }: Props) {
     }
   }
 
-  return (
+  const modal = (
     <div
+      ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6"
+        ref={dialogRef}
+        className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-6 outline-none"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={handleKeyDown}
         role="dialog"
         aria-modal="true"
         aria-label="Connect Wallet"
+        tabIndex={-1}
       >
         <div className="flex items-center justify-between mb-5">
           <h2 className="font-semibold text-base">Connect Wallet</h2>
@@ -113,4 +174,6 @@ export default function WalletPickerModal({ onClose }: Props) {
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 }
