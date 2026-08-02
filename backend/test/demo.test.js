@@ -31,6 +31,20 @@ vi.mock("@x402/stellar/exact/client", () => ({
   ExactStellarScheme: vi.fn(),
 }));
 
+// demo.js pulls recordActivity/getActivityFeed from services.js, which
+// instantiates the real x402 server client and payment middleware at module
+// load. Mock them the same way services.test.js does so no facilitator is
+// contacted and the payment middleware is bypassed in tests.
+vi.mock("@x402/express", () => ({
+  paymentMiddlewareFromConfig: () => (_req, _res, next) => next(),
+}));
+vi.mock("@x402/core/server", () => ({
+  HTTPFacilitatorClient: vi.fn(() => ({})),
+}));
+vi.mock("@x402/stellar/exact/server", () => ({
+  ExactStellarScheme: vi.fn(() => ({})),
+}));
+
 const app = express();
 app.use(express.json());
 app.use("/api", demoRouter);
@@ -48,15 +62,19 @@ describe("POST /api/demo-run", () => {
 
   it("handles AbortError appropriately", async () => {
     contract.getService.mockResolvedValue({ name: "Test Service", endpoint: "test", price_usdc: "1" });
-    
-    // We mock fetchWithTx to throw an AbortError to simulate client cancelling the request
-    const { x402HTTPClient } = await import("@x402/core/client");
-    x402HTTPClient.mockImplementationOnce(() => ({
-      fetchWithTx: vi.fn().mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" })),
-    }));
+
+    // buildHttpClient() always overwrites fetchWithTx with an implementation
+    // that calls the global fetch(), so simulate the client cancelling by
+    // making that underlying fetch reject with an AbortError.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" })),
+    );
 
     const res = await request(app).post("/api/demo-run").send({ serviceId: 1, category: "weather" });
     expect(res.status).toBe(499);
     expect(res.body.code).toBe("CANCELLED");
+
+    vi.unstubAllGlobals();
   });
 });

@@ -24,6 +24,7 @@ export default function WalletConnect() {
           <button
             onClick={disconnect}
             className="text-secondary hover:text-error text-xs ml-1 transition-colors"
+            aria-label="Disconnect wallet"
           >
             ×
           </button>

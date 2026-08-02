@@ -96,6 +96,7 @@ export default function RegistryPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as SortOption)}
+            aria-label="Sort services"
             className="border border-border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary"
           >
             {SORTS.map((s) => (

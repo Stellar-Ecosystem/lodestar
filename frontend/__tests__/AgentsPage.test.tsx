@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { axe } from 'jest-axe';
 import { SWRConfig } from 'swr';
 import AgentsPage from '../app/agents/page';
 import { PAGE_SIZE } from '../lib/pagination';
@@ -79,5 +80,24 @@ describe('AgentsPage retry state', () => {
     });
     expect(fetchAgents).toHaveBeenCalledTimes(2);
     expect(screen.queryByText('Network disconnected')).not.toBeInTheDocument();
+  });
+
+  it('has no accessibility violations', async () => {
+    (fetchAgents as jest.Mock).mockResolvedValue({
+      agents: [mockAgent],
+      total: 1,
+      page: 0,
+      pageSize: PAGE_SIZE,
+    });
+    (fetchAgentStats as jest.Mock).mockResolvedValue(mockStats);
+
+    const { container } = renderPage();
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Demo Agent').length).toBeGreaterThan(0);
+    });
+
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
   });
 });

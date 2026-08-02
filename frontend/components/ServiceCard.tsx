@@ -69,7 +69,7 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
     <div className="card p-6 flex flex-col gap-4 fade-in">
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
-        <h3 className="font-semibold text-base leading-snug">{service.name}</h3>
+        <h2 className="font-semibold text-base leading-snug">{service.name}</h2>
         <span className={`badge shrink-0 gap-1 ${category.badgeClass}`}>
           {category.icon}
           {category.label}
@@ -104,7 +104,9 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
           <button
             onClick={() => vote(false)}
             disabled={voting}
+            aria-label="Downvote service"
             className="text-secondary hover:text-error transition-colors text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+
           >
             −
           </button>
@@ -114,6 +116,7 @@ export default function ServiceCard({ service, onReputationChange }: Props) {
           <button
             onClick={() => vote(true)}
             disabled={voting}
+            aria-label="Upvote service"
             className="text-secondary hover:text-success transition-colors text-sm disabled:opacity-40 disabled:cursor-not-allowed"
           >
             +
