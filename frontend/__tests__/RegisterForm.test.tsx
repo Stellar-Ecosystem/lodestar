@@ -217,7 +217,7 @@ describe('RegisterForm validation', () => {
   });
 
   it('trims whitespace when validating name', async () => {
-    render(<RegisterForm walletAddress="GTESTADDRESS1234567890ABCDEFGHIJ" });
+    render(<RegisterForm walletAddress="GTESTADDRESS1234567890ABCDEFGHIJ" />);
     
     const nameInput = screen.getByLabelText(/service name/i);
     fireEvent.change(nameInput, { target: { value: '  ab  ' } });
@@ -239,7 +239,7 @@ describe('RegisterForm validation', () => {
   });
 
   it('trims whitespace when validating endpoint', async () => {
-    render(<RegisterForm walletAddress="GTESTADDRESS1234567890ABCDEFGHIJ" });
+    render(<RegisterForm walletAddress="GTESTADDRESS1234567890ABCDEFGHIJ" />);
     
     const endpointInput = screen.getByLabelText(/endpoint url/i);
     fireEvent.change(endpointInput, { target: { value: '  http://example.com  ' } });

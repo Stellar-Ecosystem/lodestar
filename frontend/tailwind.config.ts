@@ -10,20 +10,14 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        background: '#FAFAF7',
-        primary: '#1A1A1A',
-        accent: '#C2410C',
-        secondary: '#6B6B6B',
-        border: '#E5E5E5',
-        success: '#15803D',
-        error: '#DC2626',
         background: 'var(--background)',
         primary: 'var(--primary)',
         accent: 'var(--accent)',
         secondary: 'var(--secondary)',
         border: 'var(--border)',
-        success: '#22C55E',
-        error: '#EF4444',
+        // WCAG AA contrast fixes (issue #382) — must stay ≥ 4.5:1 on light bg
+        success: '#15803D',
+        error: '#DC2626',
       },
       fontFamily: {
         sans: ['Inter', 'sans-serif'],
