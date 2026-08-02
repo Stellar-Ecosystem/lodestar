@@ -53,20 +53,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="bg-background text-primary">
-        <WalletProvider>
-          <a href="#main" className="skip-link">
-            Skip to content
-          </a>
-          <Navbar />
-          <main id="main" tabIndex={-1}>{children}</main>
-          <footer className="border-t border-border mt-24 py-8 text-center text-sm text-secondary">
-            Built on Stellar · Powered by x402 · Lodestar 2026
-          </footer>
-        </WalletProvider>
         <ThemeProvider>
           <WalletProvider>
+            <a href="#main" className="skip-link">
+              Skip to content
+            </a>
             <Navbar />
-            <main>{children}</main>
+            <main id="main" tabIndex={-1}>{children}</main>
             <footer className="border-t border-border mt-24 py-8 text-center text-sm text-secondary">
               Built on Stellar · Powered by x402 · Lodestar 2026
             </footer>
