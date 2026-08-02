@@ -31,6 +31,10 @@ jest.mock('../components/WalletConnect', () => {
   return MockWalletConnect;
 });
 
+jest.mock('../components/ThemeProvider', () => ({
+  useTheme: () => ({ theme: 'light', toggleTheme: jest.fn() }),
+}));
+
 function setPathname(path: string) {
   mockPathname = path;
 }

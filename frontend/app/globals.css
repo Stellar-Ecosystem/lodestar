@@ -66,7 +66,7 @@ body {
   }
 
   .input {
-    @apply bg-background border border-border rounded-lg px-4 py-2.5 text-sm text-primary placeholder:text-secondary focus:outline-none focus:ring-1 focus:ring-primary/30 transition-shadow;
+    @apply bg-background border border-border rounded-lg px-4 py-2.5 text-sm text-primary placeholder:text-secondary focus:outline-none focus:ring-1 focus:ring-primary transition-shadow;
   }
 }
 
@@ -81,4 +81,26 @@ body {
 
 .spinner {
   animation: spin 0.8s linear infinite;
+}
+
+/* ── Skip-to-content link (WCAG 2.4.1) ─────────────────────────────────── */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 16px;
+  z-index: 9999;
+  padding: 12px 20px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+
+.skip-link:focus {
+  top: 16px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
