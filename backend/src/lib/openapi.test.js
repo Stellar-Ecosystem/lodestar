@@ -52,7 +52,7 @@ describe('generated from the same schemas the server enforces', () => {
         'application/json'
       ].schema;
 
-    expect(schema.properties.name).toMatchObject({ minLength: 3, maxLength: 50 });
+    expect(schema.properties.name).toMatchObject({ minLength: 3, maxLength: 64 });
     expect(schema.properties.category.enum).toEqual([
       'search',
       'weather',

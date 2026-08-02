@@ -2,6 +2,10 @@ import express from "express";
 import cors from "cors";
 import config, { validateConfig } from "./config.js";
 import logger from "./lib/logger.js";
+import {
+  requestLogger,
+  requestContextMiddleware,
+} from "./middleware/requestContext.js";
 import { checkRpcHealth } from "./lib/stellar.js";
 import {
   getSubmitQueueDepth,
@@ -11,6 +15,7 @@ import {
   dumpPendingTransactions,
   resumePendingTransactions,
 } from "./lib/contract.js";
+import requestIdMiddleware from "./lib/requestId.js";
 import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
@@ -47,6 +52,8 @@ if (process.argv.includes("--print-config")) {
 
 validateConfig(logger);
 
+logger.info({ corsOrigin: config.corsOrigin }, "Resolved CORS origin allowlist");
+
 const app = express();
 
 // Trust the configured number of proxy hops so req.ip reflects the real client
@@ -54,10 +61,14 @@ const app = express();
 // rate limiting. Defaults to false (no proxy) to avoid X-Forwarded-For spoofing.
 app.set("trust proxy", config.trustProxy);
 
+app.use(requestLogger);
+app.use(requestContextMiddleware);
+
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
+app.use(requestIdMiddleware);
 app.use(express.json({ limit: config.jsonBodyLimit }));
 
-app.get("/healthz", async (_req, res) => {
+app.get("/healthz", async (req, res) => {
   try {
     const health = await checkRpcHealth();
     const queueDepth = getSubmitQueueDepth();
@@ -82,7 +93,7 @@ app.get("/healthz", async (_req, res) => {
       ...(health.error && { error: health.error }),
     });
   } catch (err) {
-    logger.error({ err }, "Health check failed");
+    req.log.error({ err }, "Health check failed");
     res.status(503).json({
       status: "unhealthy",
       error: "Health check failed",
@@ -94,22 +105,36 @@ app.get("/healthz", async (_req, res) => {
 app.use("/api", openapiRouter);
 app.use("/api", registryRouter);
 app.use("/api", agentsRouter);
-app.use("/api", demoRouter);
-app.use("/demo", servicesRouter);
 
-app.use((err, _req, res, _next) => {
+// Demo routes are backed by server-custodied keys and should not be reachable
+// in production deployments. Gate them behind ENABLE_DEMO_ROUTES, defaulting to
+// enabled only when NODE_ENV is not "production".
+const enableDemoRoutes =
+  process.env.ENABLE_DEMO_ROUTES === 'true' ||
+  (process.env.ENABLE_DEMO_ROUTES === undefined && config.nodeEnv !== 'production');
+
+if (enableDemoRoutes) {
+  logger.info({ nodeEnv: config.nodeEnv }, 'Demo routes enabled');
+  app.use("/api", demoRouter);
+  app.use("/demo", servicesRouter);
+} else {
+  logger.info({ nodeEnv: config.nodeEnv }, 'Demo routes disabled (set ENABLE_DEMO_ROUTES=true to enable)');
+}
+
+app.use((err, req, res, _next) => {
   if (err.type === "entity.too.large") {
-    logger.warn({ expected: config.jsonBodyLimit }, "Request body too large");
+    req.log.warn({ expected: config.jsonBodyLimit }, "Request body too large");
     return res.status(413).json({
       error: `Request body too large. Maximum size is ${config.jsonBodyLimit}.`,
       code: "PAYLOAD_TOO_LARGE",
     });
   }
 
-  logger.error({ err }, "Unhandled error");
+
   res.status(500).json({
     error: "Internal server error",
     code: "INTERNAL_ERROR",
+    requestId: _req.requestId,
   });
 });
 let server;

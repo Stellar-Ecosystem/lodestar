@@ -47,9 +47,15 @@ export const listServices = {
         .string()
         .optional()
         .describe("Case-insensitive substring matched against name and description"),
-      page: intQueryParam({ field: "page", defaultValue: 0 }).describe(
-        "Zero-based page index",
+      offset: intQueryParam({ field: "offset", defaultValue: 0 }).describe(
+        "Services to skip",
       ),
+      limit: intQueryParam({
+        field: "limit",
+        min: 1,
+        max: 50,
+        defaultValue: 20,
+      }).describe("Services per page; clamped to 50"),
     }),
   },
 };
@@ -109,12 +115,12 @@ export const prepareRegister = {
       ),
       name: requiredString("name", {
         min: 3,
-        max: 50,
+        max: 64,
         description: "Human-readable service name",
       }),
       description: requiredString("description", {
         min: 10,
-        max: 200,
+        max: 256,
         description: "What the service does",
       }),
       endpoint: z
