@@ -20,45 +20,17 @@ cleanup() {
     if [ -n "$BACKEND_PID" ]; then
         kill $BACKEND_PID 2>/dev/null || true
     fi
-    if [ -n "$QUICKSTART_CONTAINER" ]; then
-        docker stop $QUICKSTART_CONTAINER 2>/dev/null || true
-        docker rm $QUICKSTART_CONTAINER 2>/dev/null || true
-    fi
     echo "Cleanup complete"
 }
 
 trap cleanup EXIT
 
 # Check required tools
-command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker is required but not installed${NC}"; exit 1; }
 command -v stellar >/dev/null 2>&1 || { echo -e "${RED}stellar-cli is required but not installed${NC}"; exit 1; }
 
-# Start Stellar quickstart container
-echo "Starting Stellar quickstart container..."
-QUICKSTART_CONTAINER="lodestar-e2e-quickstart"
-docker run -d \
-    --name $QUICKSTART_CONTAINER \
-    -p 8000:8000 \
-    -p 8001:8001 \
-    stellar/quickstart:latest \
-    --testnet \
-    --enable-rpc \
-    --enable-http \
-    --protocol-version 22
-
-# Wait for quickstart to be ready
-echo "Waiting for Stellar quickstart to be ready..."
-for i in {1..60}; do
-    if curl -s http://localhost:8000/health >/dev/null 2>&1; then
-        echo -e "${GREEN}Stellar quickstart is ready${NC}"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        echo -e "${RED}Timeout waiting for Stellar quickstart${NC}"
-        exit 1
-    fi
-    sleep 2
-done
+# Use public testnet RPC for CI (more reliable than local container)
+STELLAR_RPC_URL="https://soroban-testnet.stellar.org"
+STELLAR_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
 
 # Generate test accounts
 echo "Generating test accounts..."
@@ -97,8 +69,8 @@ REGISTRY_WASM=$(ls contract/target/wasm32v1-none/release/*.wasm | head -1)
 REGISTRY_ID=$(stellar contract deploy \
     --wasm $REGISTRY_WASM \
     --source $SERVER_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015")
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE")
 
 echo "Registry contract ID: $REGISTRY_ID"
 
@@ -108,8 +80,8 @@ AGENTS_WASM=$(ls contract/agents/target/wasm32v1-none/release/*.wasm | head -1)
 AGENTS_ID=$(stellar contract deploy \
     --wasm $AGENTS_WASM \
     --source $SERVER_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015")
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE")
 
 echo "Agents contract ID: $AGENTS_ID"
 
@@ -118,8 +90,8 @@ echo "Initializing agents contract..."
 stellar contract invoke \
     --id $AGENTS_ID \
     --source $SERVER_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015" \
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
     -- \
     init \
     --registry $REGISTRY_ID
@@ -129,8 +101,8 @@ echo "Initializing registry contract with agents contract address..."
 stellar contract invoke \
     --id $REGISTRY_ID \
     --source $SERVER_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015" \
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
     -- \
     __constructor \
     --agents_contract $AGENTS_ID
@@ -141,8 +113,8 @@ echo "Testing cross-contract call: registry -> agents (is_registered)..."
 stellar contract invoke \
     --id $AGENTS_ID \
     --source $SERVER_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015" \
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
     -- \
     register_agent \
     --agent_address $AGENT_ADDRESS \
@@ -155,8 +127,8 @@ stellar contract invoke \
 SERVICE_ID=$(stellar contract invoke \
     --id $REGISTRY_ID \
     --source $PROVIDER_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015" \
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
     -- \
     register_service \
     --provider $PROVIDER_ADDRESS \
@@ -174,8 +146,8 @@ echo "Testing reputation voting (triggers registry -> agents cross-contract call
 if stellar contract invoke \
     --id $REGISTRY_ID \
     --source $AGENT_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015" \
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
     -- \
     update_reputation \
     --id $SERVICE_ID \
@@ -193,8 +165,8 @@ echo "Testing cross-contract call: agents -> registry (get_service)..."
 if stellar contract invoke \
     --id $AGENTS_ID \
     --source $PROVIDER_SECRET \
-    --rpc-url http://localhost:8000/soroban/rpc \
-    --network-passphrase "Test SDF Network ; September 2015" \
+    --rpc-url $STELLAR_RPC_URL \
+    --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
     -- \
     record_payment \
     --agent_address $AGENT_ADDRESS \
@@ -215,9 +187,9 @@ CONTRACT_ID=$REGISTRY_ID
 AGENTS_CONTRACT_ID=$AGENTS_ID
 SERVER_STELLAR_ADDRESS=$SERVER_ADDRESS
 SERVER_STELLAR_SECRET=$SERVER_SECRET
-STELLAR_RPC_URL=http://localhost:8000/soroban/rpc
-STELLAR_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
-FACILITATOR_URL=http://localhost:8000
+STELLAR_RPC_URL=$STELLAR_RPC_URL
+STELLAR_NETWORK_PASSPHRASE=$STELLAR_NETWORK_PASSPHRASE
+FACILITATOR_URL=https://stellar.org
 USDC_CONTRACT_ID=CDLZFC3SYJYDZT7S71PSEEZKJQKJDZ4QDFAK3ZHZQWL47V2ZAHWVKX
 NODE_ENV=test
 PORT=3001
