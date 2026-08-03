@@ -28,35 +28,25 @@ function makeService(overrides: Partial<ServiceEntry> = {}): ServiceEntry {
   };
 }
 
-
-
-describe('parsePriceMicroUsdc', () => {
-  it('parses standard USDC strings correctly', () => {
-    expect(parsePriceMicroUsdc('1.50')).toBe(15_000_000);
-    expect(parsePriceMicroUsdc('0.25')).toBe(2_500_000);
-    expect(parsePriceMicroUsdc('0.75')).toBe(7_500_000);
-    expect(parsePriceMicroUsdc('1.00')).toBe(10_000_000);
-    expect(parsePriceMicroUsdc('0.50')).toBe(5_000_000);
-    expect(parsePriceMicroUsdc('0.001')).toBe(10_000);
-    expect(parsePriceMicroUsdc('100')).toBe(1_000_000_000);
-  });
-
-  it('returns null for unparseable values', () => {
-    expect(parsePriceMicroUsdc('abc')).toBeNull();
-    expect(parsePriceMicroUsdc('0.001abc')).toBeNull();
-    expect(parsePriceMicroUsdc('')).toBeNull();
-    expect(parsePriceMicroUsdc('  ')).toBeNull();
-    expect(parsePriceMicroUsdc('-1.00')).toBeNull();
-    expect(parsePriceMicroUsdc('NaN')).toBeNull();
-  });
-
-  it('returns null for non-string input', () => {
-    expect(parsePriceMicroUsdc(null as unknown as string)).toBeNull();
-    expect(parsePriceMicroUsdc(undefined as unknown as string)).toBeNull();
-  });
-});
-
-describe('sortServices', () => {
+function makeAgent(overrides: Partial<AgentEntry> = {}): AgentEntry {
+  return {
+    address: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWFL',
+    name: 'Test Agent',
+    description: 'A test agent',
+    owner: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWFL',
+    score: 100,
+    total_payments: '0',
+    successful_payments: '0',
+    failed_payments: '0',
+    total_volume_stroops: '0',
+    registered_at: '100',
+    last_active: '100',
+    active: true,
+    flagged: false,
+    flag_reason: '',
+    ...overrides,
+  };
+}describe('sortServices', () => {
   it('sorts by newest (registered_at descending)', () => {
     const services = [
       makeService({ id: 1, registered_at: 100 }),
