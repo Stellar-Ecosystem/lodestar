@@ -7,7 +7,7 @@
  * @param {{ maxWaitMs: number, initialDelayMs: number, maxDelayMs: number }} options
  * @param {(entry: { txHash?: string }) => boolean} [matchesEntry]
  * @param {(ms: number) => Promise<void>} [sleep]
- * @param {AbortSignal} [signal]
+ * @param {AbortSignal} [signal] — when aborted, the loop breaks and returns ''.
  * @returns {Promise<string>}
  */
 export async function waitForActivityTxHash(
@@ -22,6 +22,7 @@ export async function waitForActivityTxHash(
   let currentDelay = initialDelayMs;
 
   while (true) {
+    // Early exit when the client disconnected mid-request (see demo.js).
     if (signal?.aborted) break;
     const feed = getFeed();
     const addedCount = Math.max(feed.length - activityCountBefore, 0);

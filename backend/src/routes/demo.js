@@ -46,6 +46,11 @@ function buildHttpClient() {
 }
 
 router.post('/demo-run', async (req, res) => {
+  // NOTE: use res.on('close'), not req.on('close'). In Node >=22, req 'close'
+  // fires once the request body is fully consumed — not on client disconnect —
+  // so keeping it registered would abort every normal request (HTTP 499).
+  // res 'close' + !writableEnded distinguishes a real mid-request disconnect
+  // from normal completion. Verified on Node 22.23.1 (CI) and 24.15.0.
   const abortController = new AbortController();
   const onClose = () => {
     if (!res.writableEnded) abortController.abort();
