@@ -133,7 +133,8 @@ export const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ?? 
 export async function fetchAgents(
   page = 0,
   pageSize = PAGE_SIZE,
-  sort: AgentSortOption = 'score'
+  sort: AgentSortOption = 'score',
+  tier: ScoreTier | 'all' = 'all'
 ): Promise<AgentsResponse> {
   const tierQuery = tier === 'all' ? '' : `&tier=${tier}`;
   return apiFetch<AgentsResponse>(
