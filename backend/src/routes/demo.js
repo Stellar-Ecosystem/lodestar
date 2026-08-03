@@ -140,7 +140,9 @@ router.post('/demo-run', async (req, res) => {
       });
 
       logger.info({ serviceId, category, txHash, dataValid }, 'Demo run complete');
-      res.json({ data, txHash, dataValid });
+      if (!abortController.signal.aborted && !res.writableEnded) {
+        res.json({ data, txHash, dataValid });
+      }
     } finally {
       res.removeListener('close', onClose);
     }

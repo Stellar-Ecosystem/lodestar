@@ -97,6 +97,25 @@ describe('waitForActivityTxHash', () => {
     expect(delays.length).toBeGreaterThan(0);
   });
 
+  it('aborts an in-flight default sleep and cleans up its timer', async () => {
+    const controller = new AbortController();
+    const getFeed = vi.fn(() => []);
+    const resultPromise = waitForActivityTxHash(
+      getFeed,
+      0,
+      { maxWaitMs: 1000, initialDelayMs: 100, maxDelayMs: 100 },
+      undefined,
+      undefined,
+      controller.signal,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+
+    await expect(resultPromise).resolves.toBe('');
+    expect(getFeed).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores unrelated new entries when a matcher is provided', async () => {
     const { sleep, delays } = makeSleepRecorder();
     const myId = 'request-a';

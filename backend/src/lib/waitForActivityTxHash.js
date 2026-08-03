@@ -10,12 +10,37 @@
  * @param {AbortSignal} [signal] — when aborted, the loop breaks and returns ''.
  * @returns {Promise<string>}
  */
+function sleepWithAbort(ms, signal) {
+  return new Promise((resolve) => {
+    let timer;
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+  });
+}
+
 export async function waitForActivityTxHash(
   getFeed,
   activityCountBefore,
   { maxWaitMs, initialDelayMs, maxDelayMs },
   matchesEntry,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep = (ms, signal) => sleepWithAbort(ms, signal),
   signal,
 ) {
   let elapsedMs = 0;
@@ -43,7 +68,8 @@ export async function waitForActivityTxHash(
       break;
     }
 
-    await sleep(delay);
+    await sleep(delay, signal);
+    if (signal?.aborted) break;
     elapsedMs += delay;
     currentDelay = Math.min(currentDelay * 2, maxDelayMs);
   }
