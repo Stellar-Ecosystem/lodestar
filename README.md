@@ -1,7 +1,7 @@
 # Lodestar
 ### Navigate the agent economy — discover, pay, and build trust.
 
-AI agents on Stellar can already pay for services via the x402 protocol — but they can't find those services on their own. Every URL is still hardcoded by a human. Lodestar fixes that.
+AI agents on Stellar can already pay for services via the x402 protocol — but they can't find those services on their own. Every URL is still hardcoded by a human. Lodestar fixes that..
 
 - **Service Registry** — A permanent, permissionless Soroban contract. Providers register an x402 endpoint once; agents query it by category and get back a live, reputation-ranked list. No hardcoded URLs, no gatekeepers.
 - **Agent Credit Scoring** — A second Soroban contract that gives each agent a verifiable on-chain score (0–1000). Scores rise with successful payments and fall with failures. Providers can require a minimum score; spending limits are enforced at contract level and cannot be bypassed.
