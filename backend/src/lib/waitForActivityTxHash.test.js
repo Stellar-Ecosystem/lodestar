@@ -97,6 +97,34 @@ describe('waitForActivityTxHash', () => {
     expect(delays.length).toBeGreaterThan(0);
   });
 
+  it('aborts an in-flight default sleep and cleans up its timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const getFeed = vi.fn(() => []);
+      const resultPromise = waitForActivityTxHash(
+        getFeed,
+        0,
+        { maxWaitMs: 1000, initialDelayMs: 100, maxDelayMs: 100 },
+        undefined,
+        undefined,
+        controller.signal,
+      );
+
+      // The poll sleep is scheduled: exactly one timer is active.
+      expect(vi.getTimerCount()).toBe(1);
+
+      controller.abort();
+
+      // The abort wakes the sleep: the promise resolves and the timer is gone.
+      await expect(resultPromise).resolves.toBe('');
+      expect(vi.getTimerCount()).toBe(0);
+      expect(getFeed).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('ignores unrelated new entries when a matcher is provided', async () => {
     const { sleep, delays } = makeSleepRecorder();
     const myId = 'request-a';

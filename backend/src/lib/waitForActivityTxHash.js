@@ -7,19 +7,48 @@
  * @param {{ maxWaitMs: number, initialDelayMs: number, maxDelayMs: number }} options
  * @param {(entry: { txHash?: string }) => boolean} [matchesEntry]
  * @param {(ms: number) => Promise<void>} [sleep]
+ * @param {AbortSignal} [signal] — when aborted, the loop breaks and returns ''.
  * @returns {Promise<string>}
  */
+function sleepWithAbort(ms, signal) {
+  return new Promise((resolve) => {
+    let timer;
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+  });
+}
+
 export async function waitForActivityTxHash(
   getFeed,
   activityCountBefore,
   { maxWaitMs, initialDelayMs, maxDelayMs },
   matchesEntry,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep = (ms, signal) => sleepWithAbort(ms, signal),
+  signal,
 ) {
   let elapsedMs = 0;
   let currentDelay = initialDelayMs;
 
   while (true) {
+    // Early exit when the client disconnected mid-request (see demo.js).
+    if (signal?.aborted) break;
     const feed = getFeed();
     const addedCount = Math.max(feed.length - activityCountBefore, 0);
     if (addedCount > 0) {
@@ -39,7 +68,8 @@ export async function waitForActivityTxHash(
       break;
     }
 
-    await sleep(delay);
+    await sleep(delay, signal);
+    if (signal?.aborted) break;
     elapsedMs += delay;
     currentDelay = Math.min(currentDelay * 2, maxDelayMs);
   }
