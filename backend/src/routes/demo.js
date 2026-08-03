@@ -46,6 +46,12 @@ function buildHttpClient() {
 }
 
 router.post('/demo-run', async (req, res) => {
+  const abortController = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) abortController.abort();
+  };
+  res.on('close', onClose);
+
   try {
     const { serviceId, category } = req.body;
 
@@ -83,55 +89,56 @@ router.post('/demo-run', async (req, res) => {
     const httpClient = buildHttpClient();
     const activityCountBefore = getActivityFeed().length;
 
-    const abortController = new AbortController();
-    const onClose = () => abortController.abort();
-    req.on('close', onClose);
+    try {
+      const { response, txHash: fetchedTxHash } = await httpClient.fetchWithTx(finalEndpointUrl, { signal: abortController.signal });
 
-    const { response, txHash: fetchedTxHash } = await httpClient.fetchWithTx(finalEndpointUrl, { signal: abortController.signal });
-    req.removeListener('close', onClose);
+      if (!response.ok) {
+        throw new Error(`Service responded with ${response.status}`);
+      }
 
-    if (!response.ok) {
-      throw new Error(`Service responded with ${response.status}`);
+      const data = await response.json();
+
+      // Evaluate data quality: the response must be a non-null object (or a
+      // non-empty array) and must not carry a top-level `error` field.
+      const dataValid =
+        data !== null &&
+        typeof data === 'object' &&
+        !('error' in data) &&
+        (Array.isArray(data) ? data.length > 0 : Object.keys(data).length > 0);
+
+      if (!dataValid) {
+        logger.warn({ serviceId, category }, 'Demo run returned empty or error payload — marking data invalid');
+      }
+
+      const txHash = fetchedTxHash || (await waitForActivityTxHash(
+        getActivityFeed,
+        activityCountBefore,
+        {
+          maxWaitMs: config.demoRun.pollMaxWaitMs,
+          initialDelayMs: config.demoRun.pollInitialDelayMs,
+          maxDelayMs: config.demoRun.pollMaxDelayMs,
+        },
+        (entry) => entry.demoRunId === demoRunId,
+        undefined,
+        abortController.signal,
+      ));
+      if (!txHash) {
+        logger.warn({ serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs }, 'Activity txHash not found before poll timeout');
+      }
+
+      recordActivity({
+        timestamp: new Date().toISOString(),
+        agent: config.server.address,
+        service: service.name,
+        amount: service.price_usdc,
+        txHash,
+      });
+
+      logger.info({ serviceId, category, txHash, dataValid }, 'Demo run complete');
+      res.json({ data, txHash, dataValid });
+    } finally {
+      res.removeListener('close', onClose);
     }
-
-    const data = await response.json();
-
-    // Evaluate data quality: the response must be a non-null object (or a
-    // non-empty array) and must not carry a top-level `error` field.
-    const dataValid =
-      data !== null &&
-      typeof data === 'object' &&
-      !('error' in data) &&
-      (Array.isArray(data) ? data.length > 0 : Object.keys(data).length > 0);
-
-    if (!dataValid) {
-      logger.warn({ serviceId, category }, 'Demo run returned empty or error payload — marking data invalid');
-    }
-
-    const txHash = fetchedTxHash || (await waitForActivityTxHash(
-      getActivityFeed,
-      activityCountBefore,
-      {
-        maxWaitMs: config.demoRun.pollMaxWaitMs,
-        initialDelayMs: config.demoRun.pollInitialDelayMs,
-        maxDelayMs: config.demoRun.pollMaxDelayMs,
-      },
-      (entry) => entry.demoRunId === demoRunId,
-    ));
-    if (!txHash) {
-      logger.warn({ serviceId, category, maxWaitMs: config.demoRun.pollMaxWaitMs }, 'Activity txHash not found before poll timeout');
-    }
-
-    recordActivity({
-      timestamp: new Date().toISOString(),
-      agent: config.server.address,
-      service: service.name,
-      amount: service.price_usdc,
-      txHash,
-    });
-
-    logger.info({ serviceId, category, txHash, dataValid }, 'Demo run complete');
-    res.json({ data, txHash, dataValid });
   } catch (err) {
     if (err.name === 'AbortError') {
       logger.info({ serviceId: req.body?.serviceId, category: req.body?.category }, 'Demo run aborted by client');

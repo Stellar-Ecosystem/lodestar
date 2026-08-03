@@ -7,6 +7,7 @@
  * @param {{ maxWaitMs: number, initialDelayMs: number, maxDelayMs: number }} options
  * @param {(entry: { txHash?: string }) => boolean} [matchesEntry]
  * @param {(ms: number) => Promise<void>} [sleep]
+ * @param {AbortSignal} [signal]
  * @returns {Promise<string>}
  */
 export async function waitForActivityTxHash(
@@ -15,11 +16,13 @@ export async function waitForActivityTxHash(
   { maxWaitMs, initialDelayMs, maxDelayMs },
   matchesEntry,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  signal,
 ) {
   let elapsedMs = 0;
   let currentDelay = initialDelayMs;
 
   while (true) {
+    if (signal?.aborted) break;
     const feed = getFeed();
     const addedCount = Math.max(feed.length - activityCountBefore, 0);
     if (addedCount > 0) {
