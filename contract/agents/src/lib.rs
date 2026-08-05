@@ -445,6 +445,28 @@ impl LodestarAgents {
             .extend_ttl(&key, MAX_TTL, MAX_TTL);
     }
 
+    // Reactivate agent (owner only)
+    pub fn reactivate_agent(env: Env, agent_address: Address, caller: Address) {
+        caller.require_auth();
+
+        let key = DataKey::Agent(agent_address);
+        let mut agent: AgentEntry = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("agent not found");
+
+        if agent.owner != caller {
+            panic!("unauthorized");
+        }
+
+        agent.active = true;
+        env.storage().persistent().set(&key, &agent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, MAX_TTL, MAX_TTL);
+    }
+
     // Admin deactivate agent (can deactivate any agent regardless of ownership)
     pub fn admin_deactivate_agent(env: Env, agent_address: Address, caller: Address) {
         caller.require_auth();
@@ -467,6 +489,34 @@ impl LodestarAgents {
             .expect("agent not found");
 
         agent.active = false;
+        env.storage().persistent().set(&key, &agent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, MAX_TTL, MAX_TTL);
+    }
+
+    // Admin reactivate agent (can reactivate any agent regardless of ownership)
+    pub fn admin_reactivate_agent(env: Env, agent_address: Address, caller: Address) {
+        caller.require_auth();
+
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("admin not set — call initialize() first");
+
+        if caller != admin {
+            panic!("unauthorized");
+        }
+
+        let key = DataKey::Agent(agent_address);
+        let mut agent: AgentEntry = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("agent not found");
+
+        agent.active = true;
         env.storage().persistent().set(&key, &agent);
         env.storage()
             .persistent()
@@ -777,6 +827,91 @@ mod test {
         let non_admin = Address::generate(&env);
         assert!(client
             .try_admin_deactivate_agent(&agent_addr, &non_admin)
+            .is_err());
+    }
+
+    #[test]
+    fn test_reactivate_agent_succeeds_for_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        client.deactivate_agent(&agent_addr, &owner);
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert!(!agent.active);
+
+        client.reactivate_agent(&agent_addr, &owner);
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert!(agent.active);
+    }
+
+    #[test]
+    fn test_reactivate_agent_rejects_non_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        client.deactivate_agent(&agent_addr, &owner);
+
+        let non_owner = Address::generate(&env);
+        assert!(client
+            .try_reactivate_agent(&agent_addr, &non_owner)
+            .is_err());
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert!(!agent.active);
+    }
+
+    #[test]
+    fn test_admin_reactivate_agent_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        client.admin_deactivate_agent(&agent_addr, &admin);
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert!(!agent.active);
+
+        client.admin_reactivate_agent(&agent_addr, &admin);
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert!(agent.active);
+    }
+
+    #[test]
+    fn test_admin_reactivate_agent_requires_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let non_admin = Address::generate(&env);
+        assert!(client
+            .try_admin_reactivate_agent(&agent_addr, &non_admin)
             .is_err());
     }
 
