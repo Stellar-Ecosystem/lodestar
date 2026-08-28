@@ -2,11 +2,11 @@
   "name": "lodestar-agent",
   "version": "1.0.0",
   "license": "Apache-2.0",
-  "description": "Lodestar demo agent — discovers and pays for x402 services autonomously",
+  "description": "Lodestar demo agent \u2014 discovers and pays for x402 services autonomously",
   "type": "module",
   "main": "agent.js",
   "scripts": {
-    "start": "node agent.js",
+    "start": "node init && node agent.js",
     "test": "vitest run"
   },
   "dependencies": {
