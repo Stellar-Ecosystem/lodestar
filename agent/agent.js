@@ -86,9 +86,30 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
-const FETCH_TIMEOUT_MS = Number.isFinite(Number(process.env.AGENT_FETCH_TIMEOUT_MS))
-  ? Math.max(1, Number(process.env.AGENT_FETCH_TIMEOUT_MS))
-  : 5000;
+/**
+ * Parse an integer env var with fail-fast on unparseable values.
+ * @param {string} name
+ * @param {number} defaultValue
+ * @param {{ min?: number, max?: number }} [bounds]
+ * @returns {number}
+ */
+export function intFromEnv(name, defaultValue, bounds = {}) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultValue;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) {
+    throw new Error(`${name} must be an integer (got ${JSON.stringify(raw)})`);
+  }
+  if (bounds.min !== undefined && n < bounds.min) {
+    throw new Error(`${name} must be >= ${bounds.min} (got ${n})`);
+  }
+  if (bounds.max !== undefined && n > bounds.max) {
+    throw new Error(`${name} must be <= ${bounds.max} (got ${n})`);
+  }
+  return n;
+}
+
+const FETCH_TIMEOUT_MS = intFromEnv('AGENT_FETCH_TIMEOUT_MS', 5000, { min: 1 });
 
 async function fetchWithTimeout(resource, init = {}) {
   const controller = new AbortController();
@@ -312,8 +333,8 @@ function selectWeighted(services) {
 // ── Agent task ────────────────────────────────────────────────────────────────
 
 export async function runTask(category, buildUrl, scoringEnabled, client = httpClient) {
-  const minReputation = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
-  const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
+  const minReputation = intFromEnv('AGENT_MIN_SERVICE_REPUTATION', 0, { min: 0 });
+  const maxRetries    = intFromEnv('AGENT_MAX_SERVICE_RETRIES', 3, { min: 0 });
 
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
@@ -501,7 +522,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
 // ── Shutdown state ─────────────────────────────────────────────────────────────
 
 let shuttingDown = false;
-const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.AGENT_SHUTDOWN_TIMEOUT_MS ?? '30000', 10);
+const SHUTDOWN_TIMEOUT_MS = intFromEnv('AGENT_SHUTDOWN_TIMEOUT_MS', 30000, { min: 1 });
 let shutdownTimer = null;
 
 export async function initiateShutdown(signal) {
