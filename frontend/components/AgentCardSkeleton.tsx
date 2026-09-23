@@ -26,7 +26,7 @@ export default function AgentCardSkeleton() {
         ))}
       </div>
 
-      {/* Footer */}
+     
       <div className="border-t border-border pt-3 mt-1 flex items-center justify-between">
         <div className="h-3 w-24 bg-border/50 rounded" />
         <div className="h-3 w-20 bg-border/50 rounded" />
