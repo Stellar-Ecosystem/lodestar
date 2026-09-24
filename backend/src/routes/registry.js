@@ -48,6 +48,25 @@ function normalizePriceUsdc(value) {
   return normalized;
 }
 
+/**
+ * Annotate a service entry with ttl_warning based on whether its estimated
+ * remaining TTL falls below SERVICE_TTL_WARNING_LEDGERS.
+ *
+ * Omits the field entirely when currentLedger is null (graceful degradation
+ * when the ledger fetch fails).
+ */
+function annotateTtlWarning(service, currentLedger) {
+  if (currentLedger == null) return service;
+
+  const expiryLedger = service.registered_at + SERVICE_MAX_TTL;
+  const warningOnset = expiryLedger - SERVICE_TTL_WARNING_LEDGERS;
+
+  return {
+    ...service,
+    ttl_warning: currentLedger >= warningOnset,
+  };
+}
+
 function parsePositiveSafeInteger(value) {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) && value > 0 ? value : null;
