@@ -62,7 +62,7 @@ export default function AgentDemo() {
     setResult(null);
     setError('');
 
-    // Hoisted so the catch block can reference it for negative reputation votes.
+    
     let best: { id: number; name: string; endpoint: string; price_usdc: string; reputation: number } | undefined;
 
     try {

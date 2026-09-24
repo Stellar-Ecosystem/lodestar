@@ -70,7 +70,7 @@ export default function RegisterForm({ walletAddress }: Props) {
 
   function set(field: keyof FormState, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
-    // Validate on change
+    
     const updatedForm = { ...form, [field]: value };
     const errs = validate(updatedForm);
     setErrors(errs);
@@ -89,7 +89,7 @@ export default function RegisterForm({ walletAddress }: Props) {
     try {
       const res = await registerService(form as RegisterFormData, walletAddress);
       setPendingTx({ txHash: res.txHash });
-      // Wait a moment to show the pending state before showing success
+     
       await new Promise(resolve => setTimeout(resolve, 2000));
       setResult(res);
       setForm(EMPTY);

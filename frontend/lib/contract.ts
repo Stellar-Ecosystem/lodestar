@@ -13,6 +13,7 @@ import type {
   AgentSortOption,
 } from './types';
 import { PAGE_SIZE } from './pagination';
+import { CATEGORIES, normalizeCategory } from './categories';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -38,6 +39,12 @@ export async function fetchServices(category?: Category): Promise<ServiceEntry[]
 
 export async function fetchStats(): Promise<StatsResponse> {
   return apiFetch<StatsResponse>('/api/stats');
+}
+
+// Returns the valid set of service categories from the on-chain registry.
+export async function listCategories(): Promise<Category[]> {
+  const data = await apiFetch<{ categories: Category[] }>('/api/categories');
+  return data.categories;
 }
 
 export async function fetchServiceById(id: number): Promise<ServiceEntry> {
@@ -95,6 +102,12 @@ export async function registerService(
   formData: RegisterFormData,
   walletAddress: string
 ): Promise<{ txHash: string; id: number }> {
+  const category = normalizeCategory(formData.category);
+  if (!category) {
+    throw new Error(
+      `Invalid category: ${formData.category}. Valid categories: ${CATEGORIES.join(', ')}`
+    );
+  }
   const { kitSignTransaction: signTx } = await import('./wallet');
   const prepared = await apiFetch<PreparedRegistryTxResponse>('/api/registry/prepare-register', {
     method: 'POST',
@@ -103,7 +116,7 @@ export async function registerService(
       description: formData.description,
       endpoint: formData.endpoint,
       priceUsdc: formData.price_usdc,
-      category: formData.category,
+      category,
       providerAddress: walletAddress,
     }),
   });
@@ -119,6 +132,32 @@ export async function registerService(
   }
 
   return { txHash: result.hash, id: result.id };
+}
+
+export async function reactivateService(
+  id: number,
+  walletAddress: string
+): Promise<{ txHash: string }> {
+  const { kitSignTransaction: signTx } = await import('./wallet');
+  const prepared = await apiFetch<PreparedRegistryTxResponse>('/api/registry/prepare-reactivate', {
+    method: 'POST',
+    body: JSON.stringify({
+      id,
+      providerAddress: walletAddress,
+    }),
+  });
+
+  const signedXdr = await signTx(prepared.xdr);
+  const result = await apiFetch<SubmittedRegistryTxResponse>('/api/registry/submit-signed-tx', {
+    method: 'POST',
+    body: JSON.stringify({ signedXdr, submitToken: prepared.submitToken }),
+  });
+
+  if (!result.success) {
+    throw new Error('Reactivation transaction was not accepted');
+  }
+
+  return { txHash: result.hash };
 }
 
 // ── Agent Credit Scoring ──────────────────────────────────────────────────────
