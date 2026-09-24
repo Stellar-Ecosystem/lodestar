@@ -37,6 +37,12 @@ This document covers the component responsibilities, data flow, trust boundaries
 - **Frontend sync:** `frontend/lib/categoryMeta.tsx` is generated from or verified against the on-chain set to prevent drift between the UI and the registry.
 - **Migration path:** Existing mixed-case entries (e.g., `Weather`, `weather `) are normalized to lowercase canonical values in a one-time migration. Providers and agents should use `list_categories()` after this change to discover the valid set and avoid registering/querying with stale or non-canonical strings.
 
+> **ADR:** The two-contract split between LodestarRegistry and LodestarAgents is
+> a significant architectural decision with consequences for cross-contract call
+> cost, deployment ordering, and independent upgradeability. The full trade-off
+> analysis, alternatives considered, and conditions for merging are documented in
+> **[ADR-0001: Two-Contract Split](./adr/0001-two-contract-split.md)**.
+
 ## Contract Storage
 
 Both contracts key their state with `#[contracttype]` `DataKey` enums. Every key,
