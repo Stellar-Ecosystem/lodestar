@@ -1,10 +1,6 @@
 import React from 'react';
 
-/**
- * A single point in a real score history, sourced from indexed contract events.
- * Once the Lodestar agents contract emits events, the backend will index them and
- * pass them here as `scoreHistory`.
- */
+
 export interface ScoreEvent {
   /** Unix timestamp (seconds) of the on-chain event */
   timestamp: number;
@@ -17,12 +13,7 @@ interface Props {
   totalPayments: number;
   successfulPayments: number;
   failedPayments: number;
-  /**
-   * Real, indexed score history sourced from contract events.
-   * Pass `null` (or omit) while events are not yet available — the chart will
-   * fall back to a synthesised approximation and label it as such.
-   * Pass an empty array to show the "no history yet" empty state without any line.
-   */
+  
   scoreHistory?: ScoreEvent[] | null;
 }
 
