@@ -121,7 +121,7 @@ export default function CreditScoreDemo() {
         </div>
       </div>
 
-      {/* Agent cards */}
+      
       {loading ? (
         <div className="grid md:grid-cols-3 gap-5 mb-10">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -197,7 +197,7 @@ export default function CreditScoreDemo() {
         </div>
       )}
 
-      {/* Spending policy simulation */}
+     
       {agents.length >= 2 && (
         <div className="card p-6">
           <h3 className="font-semibold text-base mb-1">Spending Policy Simulation</h3>
