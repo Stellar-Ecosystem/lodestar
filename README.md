@@ -106,7 +106,7 @@ Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, 
 - **Smart Contract**: Rust + soroban-sdk on Stellar Testnet
 - **Backend**: Node.js v22 + Express (ES modules)
 - **Frontend**: Next.js 14 App Router + TypeScript + Tailwind CSS
-- **Payments**: x402 protocol (`@x402/express`, `@x402/fetch`, `@x402/stellar`)
+- **Payments**: x402 protocol (`@x402/core`, `@x402/express`, `@x402/stellar`)
 - **Stellar SDK**: `@stellar/stellar-sdk`
 - **Wallet**: Freighter (`@stellar/freighter-api`)
 
@@ -126,7 +126,7 @@ Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, 
 ### 1. Clone
 
 ```sh
-git clone git@github.com:aadviksinghdebug/lodestar.git
+git clone git@github.com:anoncon/lodestar.git
 cd lodestar
 ```
 
@@ -298,7 +298,7 @@ The fix spans three layers:
 
 ### UI Features
 
-- **Page size selector**: choose 6, 12, or 24 agents per page directly from the header
+- **Page size selector**: choose 6, 12, or 20 agents per page directly from the header
 - **Prev / Next controls** with "Showing X–Y of Z" counter
 - **Sort by** Highest Score, Most Active, or Newest — resets to page 1 automatically on change
 - **Skeleton loading** on first load; opacity transition on page/sort changes
