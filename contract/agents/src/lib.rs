@@ -493,19 +493,29 @@ impl LodestarAgents {
             panic!("unauthorized");
         }
 
+        let owner = agent.owner.clone();
+        let score = agent.score;
+        let name = agent.name.clone();
+
         agent.active = false;
         env.storage().persistent().set(&key, &agent);
         env.storage()
             .persistent()
             .extend_ttl(&key, MAX_TTL, MAX_TTL);
 
+        // Topic:   ("agents", "deactivated", agent_address)
+        // Payload: (caller, owner, score, name)
+        //   caller — address that triggered the deactivation (always == owner here)
+        //   owner  — registered owner of the agent
+        //   score  — credit score at time of deactivation (avoids follow-up read)
+        //   name   — human-readable agent name (avoids follow-up read)
         env.events().publish(
             (
                 Symbol::new(&env, "agents"),
                 Symbol::new(&env, "deactivated"),
                 agent_address,
             ),
-            (caller,),
+            (caller, owner, score, name),
         );
     }
 
@@ -530,19 +540,29 @@ impl LodestarAgents {
             .get(&key)
             .expect("agent not found");
 
+        let owner = agent.owner.clone();
+        let score = agent.score;
+        let name = agent.name.clone();
+
         agent.active = false;
         env.storage().persistent().set(&key, &agent);
         env.storage()
             .persistent()
             .extend_ttl(&key, MAX_TTL, MAX_TTL);
 
+        // Topic:   ("agents", "deactivated", agent_address)
+        // Payload: (caller, owner, score, name)
+        //   caller — admin address that triggered the forced deactivation
+        //   owner  — registered owner of the agent
+        //   score  — credit score at time of deactivation (avoids follow-up read)
+        //   name   — human-readable agent name (avoids follow-up read)
         env.events().publish(
             (
                 Symbol::new(&env, "agents"),
                 Symbol::new(&env, "deactivated"),
                 agent_address,
             ),
-            (caller,),
+            (caller, owner, score, name),
         );
     }
 
@@ -550,7 +570,7 @@ impl LodestarAgents {
     pub fn reactivate_agent(env: Env, agent_address: Address, caller: Address) {
         caller.require_auth();
 
-        let key = DataKey::Agent(agent_address);
+        let key = DataKey::Agent(agent_address.clone());
         let mut agent: AgentEntry = env
             .storage()
             .persistent()
@@ -561,11 +581,30 @@ impl LodestarAgents {
             panic!("unauthorized");
         }
 
+        let owner = agent.owner.clone();
+        let score = agent.score;
+        let name = agent.name.clone();
+
         agent.active = true;
         env.storage().persistent().set(&key, &agent);
         env.storage()
             .persistent()
             .extend_ttl(&key, MAX_TTL, MAX_TTL);
+
+        // Topic:   ("agents", "reactivated", agent_address)
+        // Payload: (caller, owner, score, name)
+        //   caller — address that triggered the reactivation (always == owner here)
+        //   owner  — registered owner of the agent
+        //   score  — credit score at time of reactivation (avoids follow-up read)
+        //   name   — human-readable agent name (avoids follow-up read)
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "reactivated"),
+                agent_address,
+            ),
+            (caller, owner, score, name),
+        );
     }
 
     // Admin reactivate agent (can reactivate any agent regardless of ownership)
@@ -582,18 +621,37 @@ impl LodestarAgents {
             panic!("unauthorized");
         }
 
-        let key = DataKey::Agent(agent_address);
+        let key = DataKey::Agent(agent_address.clone());
         let mut agent: AgentEntry = env
             .storage()
             .persistent()
             .get(&key)
             .expect("agent not found");
 
+        let owner = agent.owner.clone();
+        let score = agent.score;
+        let name = agent.name.clone();
+
         agent.active = true;
         env.storage().persistent().set(&key, &agent);
         env.storage()
             .persistent()
             .extend_ttl(&key, MAX_TTL, MAX_TTL);
+
+        // Topic:   ("agents", "reactivated", agent_address)
+        // Payload: (caller, owner, score, name)
+        //   caller — admin address that triggered the forced reactivation
+        //   owner  — registered owner of the agent
+        //   score  — credit score at time of reactivation (avoids follow-up read)
+        //   name   — human-readable agent name (avoids follow-up read)
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "reactivated"),
+                agent_address,
+            ),
+            (caller, owner, score, name),
+        );
     }
 
     // Get the current admin address
@@ -1834,13 +1892,20 @@ mod test {
 
         let agent_addr = Address::generate(&env);
         let owner = Address::generate(&env);
-        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        let name = String::from_str(&env, "Test Agent");
+        client.register_agent(
+            &agent_addr,
+            &name,
+            &String::from_str(&env, "A test agent description"),
+            &owner,
+        );
 
         client.deactivate_agent(&agent_addr, &owner);
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
         let event = events.get(0).unwrap();
+        // Topic: ("agents", "deactivated", agent_address)
         assert_eq!(
             event.1,
             (
@@ -1850,7 +1915,11 @@ mod test {
             )
                 .into_val(&env)
         );
-        assert_eq!(<(Address,)>::from_val(&env, &event.2), (owner,));
+        // Payload: (caller, owner, score, name)
+        assert_eq!(
+            <(Address, Address, i32, String)>::from_val(&env, &event.2),
+            (owner.clone(), owner, INITIAL_SCORE, name)
+        );
     }
 
     #[test]
@@ -1863,13 +1932,20 @@ mod test {
 
         let agent_addr = Address::generate(&env);
         let owner = Address::generate(&env);
-        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        let name = String::from_str(&env, "Test Agent");
+        client.register_agent(
+            &agent_addr,
+            &name,
+            &String::from_str(&env, "A test agent description"),
+            &owner,
+        );
 
         client.admin_deactivate_agent(&agent_addr, &admin);
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
         let event = events.get(0).unwrap();
+        // Topic: ("agents", "deactivated", agent_address)
         assert_eq!(
             event.1,
             (
@@ -1879,7 +1955,103 @@ mod test {
             )
                 .into_val(&env)
         );
-        assert_eq!(<(Address,)>::from_val(&env, &event.2), (admin,));
+        // Payload: (caller, owner, score, name)
+        // caller is admin (forced deactivation), owner is the registered owner
+        assert_eq!(
+            <(Address, Address, i32, String)>::from_val(&env, &event.2),
+            (admin, owner, INITIAL_SCORE, name)
+        );
+    }
+
+    #[test]
+    fn test_reactivate_agent_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Test Agent");
+        client.register_agent(
+            &agent_addr,
+            &name,
+            &String::from_str(&env, "A test agent description"),
+            &owner,
+        );
+
+        // Deactivate first so there is a real state transition to reactivate
+        client.deactivate_agent(&agent_addr, &owner);
+        // Clear event list from prior calls
+        let _ = env.events().all();
+
+        client.reactivate_agent(&agent_addr, &owner);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        // Topic: ("agents", "reactivated", agent_address)
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "reactivated"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        // Payload: (caller, owner, score, name)
+        assert_eq!(
+            <(Address, Address, i32, String)>::from_val(&env, &event.2),
+            (owner.clone(), owner, INITIAL_SCORE, name)
+        );
+    }
+
+    #[test]
+    fn test_admin_reactivate_agent_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Test Agent");
+        client.register_agent(
+            &agent_addr,
+            &name,
+            &String::from_str(&env, "A test agent description"),
+            &owner,
+        );
+
+        // Deactivate first so there is a real state transition to reactivate
+        client.admin_deactivate_agent(&agent_addr, &admin);
+        // Clear event list from prior calls
+        let _ = env.events().all();
+
+        client.admin_reactivate_agent(&agent_addr, &admin);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        // Topic: ("agents", "reactivated", agent_address)
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "reactivated"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        // Payload: (caller, owner, score, name)
+        // caller is admin (forced reactivation), owner is the registered owner
+        assert_eq!(
+            <(Address, Address, i32, String)>::from_val(&env, &event.2),
+            (admin, owner, INITIAL_SCORE, name)
+        );
     }
 
     #[test]

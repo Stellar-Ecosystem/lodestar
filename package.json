@@ -31,7 +31,7 @@
       "eslint --fix"
     ],
     "*.rs": [
-      "cargo fmt --"
+      "cargo fmt --manifest-path contract/agents/Cargo.toml --"
     ]
   }
 }
