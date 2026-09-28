@@ -44,7 +44,7 @@ AI agents can already pay for services via the x402 protocol on Stellar. But the
 
 ## The Solution
 
-Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. Service providers call `register_service` once. AI agents call `list_services`, pick the best result by reputation, hit the endpoint, and pay via x402 — all without a single hardcoded URL. The registry is permanent and permissionless: no owner, no gatekeeping, no downtime.
+Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, on-chain registry. Service providers call `register_service` once. AI agents call `list_services`, pick the best result by reputation, hit the endpoint, and pay via x402 — all without a single hardcoded URL. The registry is permanent and permissionless: no owner, no gatekeeping, no downtime.
 
 ---
 
@@ -126,7 +126,7 @@ Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. 
 ### 1. Clone
 
 ```sh
-git clone git@github.com:ritik4ever/lodestar.git
+git clone git@github.com:aadviksinghdebug/lodestar.git
 cd lodestar
 ```
 
