@@ -973,6 +973,155 @@ mod test {
         });
     }
 
+    // ── list_services authorization posture (#732) ────────────────────────────
+    //
+    // `list_services` takes no `Address` argument and calls no `require_auth`, so
+    // it is a permissionless read. The tests below pin that posture from both
+    // sides: the read must keep working for a caller who signs nothing, and it
+    // must keep working for a caller whose signature comes from an address with
+    // no relationship to the registry. A future refactor that adds a hidden auth
+    // requirement (or drops a state write into a read path) fails here.
+
+    #[test]
+    fn test_list_services_succeeds_with_no_auths() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let id = register_a_service(&env, &registry);
+
+        // Drop every auth mock, so nothing is left to authorise the read with.
+        env.set_auths(&[]);
+
+        let services = registry.list_services(&0, &20, &None);
+        assert_eq!(services.len(), 1);
+        assert_eq!(services.get(0).unwrap().id, id);
+        assert_eq!(
+            services.get(0).unwrap().category,
+            String::from_str(&env, "compute")
+        );
+
+        // A read that demands no authorization must not consume any either.
+        assert!(
+            env.auths().is_empty(),
+            "list_services must not require or record an authorization",
+        );
+    }
+
+    #[test]
+    fn test_list_services_succeeds_for_any_signer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry_id, registry, _agents) = deploy_registry_with_id(&env);
+        let provider = Address::generate(&env);
+        let first = register_service_with_provider_and_endpoint(
+            &env,
+            &registry,
+            &provider,
+            &String::from_str(&env, "https://one.test"),
+        );
+        let second = register_service_with_provider_and_endpoint(
+            &env,
+            &registry,
+            &provider,
+            &String::from_str(&env, "https://two.test"),
+        );
+
+        // The anonymous read, with no auths available at all.
+        env.set_auths(&[]);
+        let anonymous = registry.list_services(&0, &20, &None);
+        assert_eq!(anonymous.len(), 2);
+
+        // The same read signed by an address that is neither the provider nor
+        // anything the registry knows about.
+        let stranger = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &registry_id,
+                fn_name: "list_services",
+                args: (0u32, 20u32, None::<String>).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let signed_by_stranger = registry.list_services(&0, &20, &None);
+
+        // The signer's identity neither gates the call nor changes the result.
+        for (i, expected) in [first, second].iter().enumerate() {
+            assert_eq!(anonymous.get(i as u32).unwrap().id, *expected);
+            assert_eq!(signed_by_stranger.get(i as u32).unwrap().id, *expected);
+        }
+        assert_eq!(signed_by_stranger.get(0).unwrap().provider, provider);
+    }
+
+    #[test]
+    fn test_list_services_does_not_mutate_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry_id, registry, _agents) = deploy_registry_with_id(&env);
+        let provider = Address::generate(&env);
+        let first = register_service_with_provider_and_endpoint(
+            &env,
+            &registry,
+            &provider,
+            &String::from_str(&env, "https://one.test"),
+        );
+        let second = register_service_with_provider_and_endpoint(
+            &env,
+            &registry,
+            &provider,
+            &String::from_str(&env, "https://two.test"),
+        );
+        let events_before = env.events().all().len();
+        let sequence_before = env.ledger().sequence();
+
+        // No auths: if a read path ever grows a require_auth, this panics.
+        env.set_auths(&[]);
+        let listed = registry.list_services(&0, &20, &None);
+        let by_category = registry.list_services(&0, &20, &Some(String::from_str(&env, "compute")));
+        let empty_page = registry.list_services(&99, &20, &None);
+        assert_eq!(listed.len(), 2);
+        assert_eq!(by_category.len(), 2);
+        assert_eq!(empty_page.len(), 0);
+
+        // Storage and the ledger are untouched by the reads above.
+        assert_eq!(registry.get_service_count(), 2);
+        let ids: Vec<u64> = env.clone().as_contract(&registry_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::ServiceIds)
+                .unwrap_or_else(|| vec![&env])
+        });
+        assert_eq!(ids, vec![&env, first, second]);
+        let category_ids: Vec<u64> = env.clone().as_contract(&registry_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::ServiceIdsByCategory(String::from_str(
+                    &env, "compute",
+                )))
+                .unwrap_or_else(|| vec![&env])
+        });
+        assert_eq!(category_ids, vec![&env, first, second]);
+        env.clone().as_contract(&registry_id, || {
+            assert!(active_service_exists(
+                &env,
+                &provider,
+                &String::from_str(&env, "https://one.test")
+            ));
+        });
+        // The reads above emitted no events of their own, and did not advance the
+        // ledger. (Registering emitted one event each; a read must add none.)
+        assert_eq!(events_before, 1);
+        assert!(env.events().all().is_empty());
+        assert_eq!(env.ledger().sequence(), sequence_before);
+
+        // Reading twice is idempotent: nothing accumulates, nothing is consumed.
+        let repeated = registry.list_services(&0, &20, &None);
+        for (i, expected) in [first, second].iter().enumerate() {
+            assert_eq!(repeated.get(i as u32).unwrap().id, *expected);
+        }
+        assert_eq!(registry.get_service_count(), 2);
+    }
+
     // ── update_reputation authorization tests ─────────────────────────────────
 
     #[test]
