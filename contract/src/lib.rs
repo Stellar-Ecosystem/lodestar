@@ -465,6 +465,11 @@ impl LodestarRegistry {
     pub fn deactivate_service(env: Env, provider: Address, id: u64) -> Result<(), RegistryError> {
         provider.require_auth();
 
+        // Storage keys touched by this function:
+        // 1. DataKey::Service(id) - Read, updated, and TTL extended.
+        // 2. DataKey::ProviderEndpoint(provider, endpoint) - Removed (no TTL extension needed).
+        // 3. DataKey::ServiceIdsByCategory(category) - Read, updated, and TTL extended.
+
         let mut entry: ServiceEntry = env
             .storage()
             .persistent()
@@ -1225,6 +1230,38 @@ mod test {
                 .into_val(&env)
         );
         assert_eq!(<(Address,)>::from_val(&env, &event.2), (provider,));
+    }
+
+    #[test]
+    fn test_deactivate_service_preserves_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+        let id = registry.register_service(
+            &provider,
+            &String::from_str(&env, "Test Service"),
+            &String::from_str(&env, "Test Description"),
+            &String::from_str(&env, "https://test.com"),
+            &String::from_str(&env, "10"),
+            &String::from_str(&env, "G_TEST_PAYMENT"),
+            &String::from_str(&env, "compute"),
+        );
+
+        // Advance ledger by somewhat less than MAX_TTL
+        env.ledger().with_mut(|li| li.sequence_number += 3110400 - 100);
+        
+        // This should bump the TTL again
+        registry.deactivate_service(&provider, &id);
+
+        // Advance ledger past the original threshold.
+        // If TTL was not bumped during deactivate_service, this would archive it
+        // and retrieving the service entry would fail or return an archived state.
+        env.ledger().with_mut(|li| li.sequence_number += 150);
+
+        // Assert readability
+        let entry = registry.get_service(&id);
+        assert_eq!(entry.active, false);
     }
 
     #[test]
