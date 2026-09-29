@@ -4,10 +4,10 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, vec, Address, Env, IntoVal, String, Symbol, Vec,
 };
 
-// ── Constants ────────────────────────────────────────────────────────────────
-const MAX_TTL: u32 = 100_000_000; // extended for tests/CI stability
+
+const MAX_TTL: u32 = 100_000_000; 
 #[cfg(not(test))]
-const DAY_LEDGERS: u64 = 17_280; // 86400 / 5
+const DAY_LEDGERS: u64 = 17_280; 
 #[cfg(test)]
 const DAY_LEDGERS: u64 = 5;
 #[cfg(test)]
@@ -18,7 +18,7 @@ const SCORE_SUCCESS: i32 = 10;
 const SCORE_FAILURE: i32 = -25;
 const FLAG_PENALTY: i32 = -200;
 
-// ── Storage keys ─────────────────────────────────────────────────────────────
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -30,7 +30,7 @@ pub enum DataKey {
     Admin,
 }
 
-// ServiceEntry shape (mirrors the registry contract) for cross-contract calls
+
 #[contracttype]
 #[derive(Clone)]
 pub struct ServiceEntry {
@@ -46,7 +46,7 @@ pub struct ServiceEntry {
     pub registered_at: u64,
 }
 
-// ── Data types ───────────────────────────────────────────────────────────────
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AgentEntry {
@@ -58,8 +58,7 @@ pub struct AgentEntry {
     pub total_payments: u64,
     pub successful_payments: u64,
     pub failed_payments: u64,
-    /// Cumulative value (in stroops) of successful payments only. Failed
-    /// payments do not count toward volume since no value actually moved.
+    
     pub total_volume_stroops: i128,
     pub registered_at: u64,
     pub last_active: u64,
@@ -75,10 +74,7 @@ pub struct SpendingPolicy {
     pub max_per_tx_stroops: i128,
     pub max_per_day_stroops: i128,
     pub allowed_categories: Vec<String>,
-    /// Minimum agent score required to earn score increments from successful
-    /// payments. Agents below this threshold still have payment stats recorded
-    /// (total_payments, successful_payments) but their score will not increase
-    /// until they reach this score. Set to 0 to allow all agents to earn score.
+    
     pub min_score_to_earn: i32,
     pub daily_spent_stroops: i128,
     pub last_reset_ledger: u64,
