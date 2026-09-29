@@ -274,6 +274,13 @@ impl LodestarRegistry {
         limit: u32,
         category: Option<String>,
     ) -> Vec<ServiceEntry> {
+        // Storage keys touched by this function:
+        // 1. DataKey::ServiceIdsByCategory(cat) — read when `category` is Some;
+        //    TTL extended unconditionally to prevent archival of the index.
+        // 2. DataKey::ServiceIds — read when `category` is None;
+        //    TTL extended unconditionally to prevent archival of the master list.
+        // 3. DataKey::Service(id) — read for every id in the selected slice;
+        //    TTL extended on every successful read so hot entries stay live.
         let limit = limit.min(50u32).max(1u32);
         let start: u32 = offset;
 
@@ -281,15 +288,35 @@ impl LodestarRegistry {
             let Some(cat) = canonicalize_category(&env, category) else {
                 return vec![&env];
             };
-            env.storage()
+            let key = DataKey::ServiceIdsByCategory(cat);
+            let result: Vec<u64> = env
+                .storage()
                 .persistent()
-                .get(&DataKey::ServiceIdsByCategory(cat))
-                .unwrap_or_else(|| vec![&env])
+                .get(&key)
+                .unwrap_or_else(|| vec![&env]);
+            // Bump TTL so a popular category index is never archived while being
+            // actively queried.
+            if !result.is_empty() {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, MAX_TTL, MAX_TTL);
+            }
+            result
         } else {
-            env.storage()
+            let key = DataKey::ServiceIds;
+            let result: Vec<u64> = env
+                .storage()
                 .persistent()
-                .get(&DataKey::ServiceIds)
-                .unwrap_or_else(|| vec![&env])
+                .get(&key)
+                .unwrap_or_else(|| vec![&env]);
+            // Bump TTL on the master list so it is never archived while being
+            // actively queried.
+            if !result.is_empty() {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, MAX_TTL, MAX_TTL);
+            }
+            result
         };
 
         let total = ids.len();
@@ -298,11 +325,16 @@ impl LodestarRegistry {
         let mut services: Vec<ServiceEntry> = vec![&env];
         let mut i = start;
         while i < end {
+            let service_key = DataKey::Service(ids.get(i).unwrap());
             if let Some(entry) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap()))
+                .get::<DataKey, ServiceEntry>(&service_key)
             {
+                // Extend TTL on every read so queried service entries stay live.
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&service_key, MAX_TTL, MAX_TTL);
                 if entry.active {
                     services.push_back(entry);
                 }
@@ -353,13 +385,26 @@ impl LodestarRegistry {
     /// the mutations that can change the page. The schema is documented in
     /// `contract/DEPLOY.md` and locked by tests in this module.
     pub fn list_services_page(env: Env, page: u32, page_size: u32) -> Vec<ServiceEntry> {
+        // Storage keys touched by this function:
+        // 1. DataKey::ServiceIds — read once to obtain the full ordered id list;
+        //    TTL extended so the master index is never archived while being paged.
+        // 2. DataKey::Service(id) — read for every id examined during the walk;
+        //    TTL extended on each successful read so queried entries stay live.
         let page_size = page_size.min(20u32).max(1u32);
 
+        let ids_key = DataKey::ServiceIds;
         let ids: Vec<u64> = env
             .storage()
             .persistent()
-            .get(&DataKey::ServiceIds)
+            .get(&ids_key)
             .unwrap_or_else(|| vec![&env]);
+
+        // Bump the master list so it survives periods of high page traffic.
+        if !ids.is_empty() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&ids_key, MAX_TTL, MAX_TTL);
+        }
 
         let mut result: Vec<ServiceEntry> = vec![&env];
         let total_ids = ids.len() as usize;
@@ -369,11 +414,16 @@ impl LodestarRegistry {
 
         // Walk through all services, counting active ones until we reach our page
         for i in 0..total_ids {
+            let service_key = DataKey::Service(ids.get(i as u32).unwrap());
             if let Some(entry) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i as u32).unwrap()))
+                .get::<DataKey, ServiceEntry>(&service_key)
             {
+                // Extend TTL on every read so queried service entries stay live.
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&service_key, MAX_TTL, MAX_TTL);
                 if entry.active {
                     if active_count >= target_skip {
                         // We're in the target page range
@@ -2226,5 +2276,154 @@ mod test {
         let (min, max) = registry.get_reputation_bounds();
         assert_eq!(min, MIN_REPUTATION);
         assert_eq!(max, MAX_REPUTATION);
+    }
+
+    // ── TTL extension tests for list_services / list_services_page (#733) ────
+    //
+    // Every persistent storage key read by a listing function must have its TTL
+    // bumped during that read, or the entry can be archived between writes and
+    // a caller sees data-loss-like behaviour (a successful get returns nothing).
+    //
+    // The tests below advance the ledger past MAX_TTL after registration (which
+    // sets TTL to MAX_TTL), then call the listing functions which must bump the
+    // TTL again, and finally advance the ledger a second time past a new
+    // threshold.  If any extend_ttl call is missing, Soroban's test environment
+    // will return None for the archived key and the assertions below will fail.
+
+    /// Registers a service, advances the ledger by MAX_TTL ledgers (the point at
+    /// which all keys written during registration would expire), then calls
+    /// `list_services` (no category filter).  The call must extend every key it
+    /// reads.  We then advance by a further MAX_TTL ledgers and assert the
+    /// service is still readable — proving the TTL was renewed.
+    #[test]
+    fn test_list_services_extends_ttl_on_all_touched_keys() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+
+        let provider = Address::generate(&env);
+        let id = registry.register_service(
+            &provider,
+            &String::from_str(&env, "TTL Service"),
+            &String::from_str(&env, "Testing TTL extension"),
+            &String::from_str(&env, "https://ttl-test.example.com"),
+            &String::from_str(&env, "5"),
+            &String::from_str(&env, "G_TTL_PAYMENT"),
+            &String::from_str(&env, "compute"),
+        );
+
+        // Advance to just before the original TTL would expire so the entries
+        // are still live when list_services reads and bumps them.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MAX_TTL - 1);
+
+        // This read must bump DataKey::ServiceIds and DataKey::Service(id).
+        let page1 = registry.list_services(&0, &20, &None);
+        assert_eq!(page1.len(), 1, "service must be visible before TTL lapses");
+        assert_eq!(page1.get(0).unwrap().id, id);
+
+        // Advance past the original registration TTL; without the extend_ttl
+        // calls added by #733 the entries would now be archived and the next
+        // read would return nothing.
+        env.ledger().with_mut(|li| li.sequence_number += 2);
+
+        // DataKey::ServiceIds and DataKey::Service(id) were bumped by the
+        // list_services call above, so they must still be readable.
+        let page2 = registry.list_services(&0, &20, &None);
+        assert_eq!(
+            page2.len(),
+            1,
+            "service must still be readable after original TTL window: \
+             extend_ttl was not called on all keys touched by list_services"
+        );
+        assert_eq!(page2.get(0).unwrap().id, id);
+    }
+
+    /// Same as above but exercises the `category` filter branch, which reads
+    /// `DataKey::ServiceIdsByCategory(cat)` instead of `DataKey::ServiceIds`.
+    #[test]
+    fn test_list_services_extends_ttl_for_category_index() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+
+        let provider = Address::generate(&env);
+        let id = registry.register_service(
+            &provider,
+            &String::from_str(&env, "TTL Service"),
+            &String::from_str(&env, "Testing TTL extension"),
+            &String::from_str(&env, "https://ttl-cat.example.com"),
+            &String::from_str(&env, "5"),
+            &String::from_str(&env, "G_TTL_PAYMENT"),
+            &String::from_str(&env, "weather"),
+        );
+
+        // Advance to just before the original TTL would expire.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MAX_TTL - 1);
+
+        // This read must bump DataKey::ServiceIdsByCategory("weather") and
+        // DataKey::Service(id).
+        let page1 =
+            registry.list_services(&0, &20, &Some(String::from_str(&env, "weather")));
+        assert_eq!(page1.len(), 1, "service must be visible before TTL lapses");
+        assert_eq!(page1.get(0).unwrap().id, id);
+
+        // Advance past the original registration TTL.
+        env.ledger().with_mut(|li| li.sequence_number += 2);
+
+        // Both keys were bumped — the service must still be listed.
+        let page2 =
+            registry.list_services(&0, &20, &Some(String::from_str(&env, "weather")));
+        assert_eq!(
+            page2.len(),
+            1,
+            "service must still be readable after original TTL window: \
+             extend_ttl was not called on DataKey::ServiceIdsByCategory or \
+             DataKey::Service(id) inside list_services"
+        );
+        assert_eq!(page2.get(0).unwrap().id, id);
+    }
+
+    /// Exercises `list_services_page`, which has its own storage walk and must
+    /// bump `DataKey::ServiceIds` and each `DataKey::Service(id)` it reads.
+    #[test]
+    fn test_list_services_page_extends_ttl_on_all_touched_keys() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+
+        let provider = Address::generate(&env);
+        let id = registry.register_service(
+            &provider,
+            &String::from_str(&env, "TTL Page Service"),
+            &String::from_str(&env, "Testing page TTL extension"),
+            &String::from_str(&env, "https://ttl-page.example.com"),
+            &String::from_str(&env, "5"),
+            &String::from_str(&env, "G_TTL_PAGE"),
+            &String::from_str(&env, "compute"),
+        );
+
+        // Advance to just before the original TTL would expire.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MAX_TTL - 1);
+
+        // This paged read must bump DataKey::ServiceIds and DataKey::Service(id).
+        let page1 = registry.list_services_page(&0, &20);
+        assert_eq!(page1.len(), 1, "service must be visible before TTL lapses");
+        assert_eq!(page1.get(0).unwrap().id, id);
+
+        // Advance past the original registration TTL.
+        env.ledger().with_mut(|li| li.sequence_number += 2);
+
+        // Both keys were bumped — the service must still appear on the page.
+        let page2 = registry.list_services_page(&0, &20);
+        assert_eq!(
+            page2.len(),
+            1,
+            "service must still be readable after original TTL window: \
+             extend_ttl was not called on all keys touched by list_services_page"
+        );
+        assert_eq!(page2.get(0).unwrap().id, id);
     }
 }
