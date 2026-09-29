@@ -66,6 +66,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
         const bal = await getBalance(restored);
         if (!cancelled) setBalance(bal);
+      } catch {
+        if (!cancelled) setStatus('not-connected');
       } finally {
         if (!cancelled) setRestoring(false);
       }
