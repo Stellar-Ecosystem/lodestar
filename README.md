@@ -30,7 +30,7 @@ Lodestar is currently an early-stage, demo-ready project for the Stellar ecosyst
 - Some UX and onboarding flows are intentionally lightweight and may evolve as contributors shape the roadmap.
 
 ### Roadmap
-The short-term direction is to harden the core experience, improve documentation, and expand the set of supported payment and discovery flows. Follow the GitHub milestones for ongoing priorities: https://github.com/archanavdev/lodestar/milestones
+The short-term direction is to harden the core experience, improve documentation, and expand the set of supported payment and discovery flows. Follow the GitHub milestones for ongoing priorities: https://github.com/harshita4ever/lodestar/milestones
 
 ---
 
@@ -126,7 +126,7 @@ Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, 
 ### 1. Clone
 
 ```sh
-git clone git@github.com:archanavdev/lodestar.git
+git clone git@github.com:harshita4ever/lodestar.git
 cd lodestar
 ```
 
@@ -139,7 +139,7 @@ Follow [contract/DEPLOY.md](contract/DEPLOY.md) for full instructions.
 curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
 
 # Add wasm target
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32v1-none
 
 # Fund a deployer key
 stellar keys generate deployer --network testnet --fund
@@ -148,7 +148,7 @@ stellar keys generate deployer --network testnet --fund
 cd contract
 stellar contract build
 stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/lodestar_registry.wasm \
+  --wasm target/wasm32v1-none/release/lodestar_registry.wasm \
   --source deployer \
   --network testnet
 ```
@@ -160,7 +160,7 @@ Copy the printed contract ID — you will need it in the next steps.
 ```sh
 cd backend
 cp .env.example .env
-# Fill in CONTRACT_ID, SERVER_STELLAR_ADDRESS, SERVER_STELLAR_SECRET, BRAVE_API_KEY
+# Fill in CONTRACT_ID, AGENTS_CONTRACT_ID, FACILITATOR_URL, USDC_CONTRACT_ID
 npm install
 ```
 
