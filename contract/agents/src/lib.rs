@@ -149,6 +149,8 @@ impl LodestarAgents {
 
     /// Deploy-time setup: store the admin address for privileged operations.
     pub fn __constructor(env: Env, admin: Address) {
+        // Persistent keys touched here:
+        // - DataKey::Admin
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
@@ -950,6 +952,24 @@ mod test {
     }
 
     #[test]
+    fn test_constructor_admin_remains_readable_after_ttl_boundary() {
+        let env = Env::default();
+        env.ledger().with_mut(|li| {
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number += TEST_MAX_TTL + 1);
+
+        assert_eq!(client.get_admin(), admin);
+    }
+
+    #[test]
     fn test_flag_agent_owner_cannot_flag() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1682,6 +1702,62 @@ mod test {
         (client, agent_addr, provider)
     }
 
+    fn setup_record_payment_boundary_agent(
+        env: &Env,
+    ) -> (Address, LodestarAgentsClient<'_>, Address, Address) {
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(env);
+        let client = LodestarAgentsClient::new(env, &contract_id);
+        let agent_addr = Address::generate(env);
+        let owner = Address::generate(env);
+        setup_agent(env, &contract_id, &agent_addr, &owner);
+        let provider = Address::generate(env);
+        let registry_id = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::RegistryContract)
+                .expect("registry contract not set")
+        });
+        MockRegistryClient::new(env, &registry_id).set_provider(&provider);
+        (contract_id, client, agent_addr, provider)
+    }
+
+    fn seed_record_payment_state(
+        env: &Env,
+        contract_id: &Address,
+        agent_addr: &Address,
+        score: i32,
+        total_volume_stroops: i128,
+        min_score_to_earn: i32,
+    ) {
+        let agent_key = DataKey::Agent(agent_addr.clone());
+        let policy_key = DataKey::Policy(agent_addr.clone());
+        env.as_contract(contract_id, || {
+            let mut agent: AgentEntry = env
+                .storage()
+                .persistent()
+                .get(&agent_key)
+                .expect("agent must exist before seeding record_payment state");
+            agent.score = score;
+            agent.total_volume_stroops = total_volume_stroops;
+            env.storage().persistent().set(&agent_key, &agent);
+            env.storage()
+                .persistent()
+                .extend_ttl(&agent_key, TEST_MAX_TTL, TEST_MAX_TTL);
+
+            let mut policy: SpendingPolicy = env
+                .storage()
+                .persistent()
+                .get(&policy_key)
+                .expect("policy must exist before seeding record_payment state");
+            policy.min_score_to_earn = min_score_to_earn;
+            env.storage().persistent().set(&policy_key, &policy);
+            env.storage()
+                .persistent()
+                .extend_ttl(&policy_key, TEST_MAX_TTL, TEST_MAX_TTL);
+        });
+    }
+
     #[test]
     fn test_record_payment_rejects_non_positive_amount() {
         let env = Env::default();
@@ -1702,6 +1778,58 @@ mod test {
     }
 
     #[test]
+    fn test_record_payment_amount_boundary() {
+        let env = Env::default();
+
+        struct Case {
+            amount: i128,
+            expected_error: Option<AgentError>,
+            expected_score: i32,
+            expected_total_payments: u64,
+            expected_total_volume: i128,
+        }
+
+        let cases = [
+            Case {
+                amount: 0,
+                expected_error: Some(AgentError::InvalidAmount),
+                expected_score: INITIAL_SCORE,
+                expected_total_payments: 0,
+                expected_total_volume: 0,
+            },
+            Case {
+                amount: 1,
+                expected_error: None,
+                expected_score: INITIAL_SCORE + SCORE_SUCCESS,
+                expected_total_payments: 1,
+                expected_total_volume: 1,
+            },
+        ];
+
+        for case in cases {
+            let (_contract_id, client, agent_addr, provider) =
+                setup_record_payment_boundary_agent(&env);
+            let result = client.try_record_payment(
+                &agent_addr,
+                &1u64,
+                &case.amount,
+                &true,
+                &provider,
+            );
+
+            match case.expected_error {
+                Some(error) => assert_eq!(result, Err(Ok(error))),
+                None => assert_eq!(result, Ok(Ok(()))),
+            }
+
+            let agent = client.get_agent(&agent_addr).unwrap();
+            assert_eq!(agent.score, case.expected_score);
+            assert_eq!(agent.total_payments, case.expected_total_payments);
+            assert_eq!(agent.total_volume_stroops, case.expected_total_volume);
+        }
+    }
+
+    #[test]
     fn test_record_payment_overflow_returns_error() {
         let env = Env::default();
         let (client, agent_addr, provider) = setup_payment_agent(&env);
@@ -1711,6 +1839,115 @@ mod test {
         let agent = client.get_agent(&agent_addr).unwrap();
         assert_eq!(agent.total_volume_stroops, i128::MAX);
         assert_eq!(agent.total_payments, 1);
+    }
+
+    #[test]
+    fn test_record_payment_volume_overflow_boundary() {
+        let env = Env::default();
+
+        struct Case {
+            amount: i128,
+            expected_error: Option<AgentError>,
+            expected_total_volume: i128,
+            expected_total_payments: u64,
+        }
+
+        let cases = [
+            Case {
+                amount: 1,
+                expected_error: None,
+                expected_total_volume: i128::MAX,
+                expected_total_payments: 1,
+            },
+            Case {
+                amount: 2,
+                expected_error: Some(AgentError::ArithmeticOverflow),
+                expected_total_volume: i128::MAX - 1,
+                expected_total_payments: 0,
+            },
+        ];
+
+        for case in cases {
+            let (contract_id, client, agent_addr, provider) =
+                setup_record_payment_boundary_agent(&env);
+            seed_record_payment_state(
+                &env,
+                &contract_id,
+                &agent_addr,
+                INITIAL_SCORE,
+                i128::MAX - 1,
+                0,
+            );
+
+            let result = client.try_record_payment(
+                &agent_addr,
+                &1u64,
+                &case.amount,
+                &true,
+                &provider,
+            );
+
+            match case.expected_error {
+                Some(error) => assert_eq!(result, Err(Ok(error))),
+                None => assert_eq!(result, Ok(Ok(()))),
+            }
+
+            let agent = client.get_agent(&agent_addr).unwrap();
+            assert_eq!(agent.total_volume_stroops, case.expected_total_volume);
+            assert_eq!(agent.total_payments, case.expected_total_payments);
+        }
+    }
+
+    #[test]
+    fn test_record_payment_min_score_to_earn_boundary() {
+        let env = Env::default();
+
+        struct Case {
+            initial_score: i32,
+            min_score_to_earn: i32,
+            expected_score: i32,
+        }
+
+        let cases = [
+            Case {
+                initial_score: 499,
+                min_score_to_earn: 500,
+                expected_score: 499,
+            },
+            Case {
+                initial_score: 500,
+                min_score_to_earn: 500,
+                expected_score: 510,
+            },
+        ];
+
+        for case in cases {
+            let (contract_id, client, agent_addr, provider) =
+                setup_record_payment_boundary_agent(&env);
+            seed_record_payment_state(
+                &env,
+                &contract_id,
+                &agent_addr,
+                case.initial_score,
+                0,
+                case.min_score_to_earn,
+            );
+
+            let result = client.try_record_payment(
+                &agent_addr,
+                &1u64,
+                &1i128,
+                &true,
+                &provider,
+            );
+
+            assert_eq!(result, Ok(Ok(())));
+
+            let agent = client.get_agent(&agent_addr).unwrap();
+            assert_eq!(agent.score, case.expected_score);
+            assert_eq!(agent.total_payments, 1);
+            assert_eq!(agent.total_volume_stroops, 1);
+        }
     }
 
     #[test]
