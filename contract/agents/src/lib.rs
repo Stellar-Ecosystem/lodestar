@@ -89,14 +89,13 @@ pub struct ScoringConfig {
     pub flag_penalty: i32,
 }
 
-// ── Contract ─────────────────────────────────────────────────────────────────
+
 #[contract]
 pub struct LodestarAgents;
 
-// ── Private helpers ────────────────────────────────────────────────────────────
+
 impl LodestarAgents {
-    /// Get the current daily spent amount and reset it if a new day has started.
-    /// Returns (daily_spent_stroops, last_reset_ledger) for the current day.
+    
     fn get_daily_spend_with_reset(env: &Env, policy: &SpendingPolicy) -> (i128, u64) {
         let now = env.ledger().sequence() as u64;
         if now >= policy.last_reset_ledger + DAY_LEDGERS {
