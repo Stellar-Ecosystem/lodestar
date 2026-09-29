@@ -284,7 +284,40 @@ impl LodestarAgents {
             .unwrap_or(-1)
     }
 
-    // Check if agent is registered
+    /// Returns whether an agent record exists for `agent_address`.
+    ///
+    /// # Parameters
+    /// - `agent_address`: the address the agent was registered under via
+    ///   `register_agent`.
+    ///
+    /// # Returns
+    /// `true` if a `DataKey::Agent(agent_address)` entry exists in persistent
+    /// storage, `false` otherwise.
+    ///
+    /// This is a pure existence check. It does not inspect the entry, so it
+    /// still returns `true` for agents that are deactivated (`active == false`)
+    /// or flagged (`flagged == true`), since neither operation removes the
+    /// record — no function in this contract deletes an agent entry, so once
+    /// `true` it stays `true`. Use `is_eligible` to check whether an agent is
+    /// active, unflagged and above a minimum score.
+    ///
+    /// # Authorisation
+    /// None. Any caller may query any address; no `require_auth` is invoked.
+    ///
+    /// # Panics
+    /// This function never panics and returns no `AgentError` variant. An
+    /// unknown address yields `false`, not an error. It does not depend on
+    /// `init` or the constructor having run.
+    ///
+    /// # Storage
+    /// - Reads (existence only): `DataKey::Agent(agent_address)` in
+    ///   persistent storage.
+    /// - Writes: none. The entry's TTL is not extended.
+    ///
+    /// # Cost
+    /// A single persistent-storage `has` lookup. The entry's value is not
+    /// deserialised, so cost is constant regardless of the size of the
+    /// stored `AgentEntry` or the number of registered agents.
     pub fn is_registered(env: Env, agent_address: Address) -> bool {
         env.storage()
             .persistent()
