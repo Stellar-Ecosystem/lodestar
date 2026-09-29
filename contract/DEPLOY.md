@@ -135,17 +135,52 @@ address. To let other pre-funded demo agents vote, add their secrets to
 
 ## Registry Events
 
-The registry emits one event after each successful public service mutation. The
-first two topic values are symbols; the third topic value is the service ID.
+The registry emits one event after each successful public service **mutation**.
+The first two topic values are symbols; the third topic value is the service ID.
 
 | Action | Topics | Data |
 | --- | --- | --- |
 | Register | `("registry", "registered", service_id)` | `(provider, name, description, endpoint, category, price_usdc, pay_to)` |
 | Reputation update | `("registry", "reputation", service_id)` | `(caller, positive, reputation)` |
-| Deactivate | `("registry", "deactivated", service_id)` | `(provider)` |
+| Deactivate | `("registry", "deactivated", service_id)` | `(provider, name, category, reputation)` |
+| Reactivate | `("registry", "reactivated", service_id)` | `(provider, name, category, reputation)` |
 
 Indexers can use the action symbol in the second topic to distinguish events
 and should treat the data tuple as the action-specific schema shown above.
+
+### Why the payload is self-sufficient
+
+A consumer that wants to know which services are listed would otherwise have to
+poll `get_service` / `list_services_page` after every change. The lifecycle
+payloads carry the fields that decide *where* a service appears, so a local
+replica can be maintained from events alone:
+
+- `provider` and `name` — identity and display, without a follow-up read.
+- `category` — which category index the service belongs to. Registration adds the
+  id to `ServiceIdsByCategory(category)`, deactivation removes it, and
+  reactivation re-adds it, so a category-filtered listing cannot be tracked
+  without this field.
+- `reputation` — the only field besides `active` that can change after
+  registration, so each lifecycle event carries the current value.
+
+`description`, `endpoint`, `price_usdc`, and `pay_to` are immutable after
+registration (there is no `update_service`), so they only appear in `registered`.
+`active` is implied by the action symbol: `registered` and `reactivated` mean
+`true`, `deactivated` means `false`.
+
+> **Schema change:** `deactivated` and `reactivated` previously carried a bare
+> `(provider)` tuple. Indexers built against the old shape must read the payload
+> as the 4-tuple above.
+
+### Read-only entrypoints emit no events
+
+`get_service`, `list_services`, `list_services_page`, `list_categories`,
+`get_service_count`, `get_reputation_bounds`, and `get_agents_contract` are
+read-only and intentionally publish nothing. Soroban executes read-only calls
+through `simulateTransaction`: the events from a simulation are returned to the
+calling client but never written to a ledger, so no indexer can observe them and
+emitting would only add cost for every caller. Consumers observe changes to the
+listing through the four mutation events above.
 
 ## 9. Run seed script
 
