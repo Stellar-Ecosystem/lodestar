@@ -83,7 +83,7 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 | Register agent | `("agents", "registered", agent_address)` | `(owner, name, description, initial_score)` |
 | Record payment | `("agents", "payment", agent_address)` | `(service_id, amount_stroops, success, old_score, new_score, caller)` |
 | Flag agent | `("agents", "flagged", agent_address)` | `(caller, reason, old_score, new_score)` |
-| Deactivate agent | `("agents", "deactivated", agent_address)` | `(caller)` |
+| Deactivate agent | `("agents", "deactivated", agent_address)` | `(caller, owner, score, name)` |
 | Update policy | `("agents", "policy_updated", agent_address)` | `(caller, max_per_tx_stroops, max_per_day_stroops, allowed_categories, min_score_to_earn)` |
 | Transfer admin | `("agents", "admin_transferred", new_admin)` | `(caller, new_admin)` |
 | Initialize | `("agents", "initialized", registry_contract)` | `(registry_contract)` |
