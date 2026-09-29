@@ -672,6 +672,34 @@ impl LodestarRegistry {
             .unwrap_or(0u64)
     }
 
+    /// Return the inclusive range a service's `reputation` is clamped to.
+    ///
+    /// # Parameters
+    /// - `_env`: the contract environment. Unused; the bounds are compile-time
+    ///   constants.
+    ///
+    /// # Returns
+    /// `(min, max)` = `(MIN_REPUTATION, MAX_REPUTATION)`, currently
+    /// `(-10_000, 10_000)`. Every `ServiceEntry::reputation` written by
+    /// `update_reputation` satisfies
+    /// `min <= reputation <= max`: a positive vote at `max` and a negative vote
+    /// at `min` leave the score unchanged instead of failing. New services
+    /// start at `0`.
+    ///
+    /// The values are fixed in the deployed Wasm and change only through a
+    /// contract upgrade, so integrators may cache them per contract version
+    /// instead of calling this on every read.
+    ///
+    /// # Authorisation
+    /// None. Any caller, signed or not, may invoke it.
+    ///
+    /// # Errors and panics
+    /// None. The function has no failure path and returns no `RegistryError`
+    /// variant.
+    ///
+    /// # Storage
+    /// Touches no storage keys: it reads no `DataKey` and extends no TTL. It
+    /// emits no events. The cost is the fixed invocation overhead only.
     pub fn get_reputation_bounds(_env: Env) -> (i32, i32) {
         (MIN_REPUTATION, MAX_REPUTATION)
     }
