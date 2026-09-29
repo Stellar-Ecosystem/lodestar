@@ -30,7 +30,7 @@ Lodestar is currently an early-stage, demo-ready project for the Stellar ecosyst
 - Some UX and onboarding flows are intentionally lightweight and may evolve as contributors shape the roadmap.
 
 ### Roadmap
-The short-term direction is to harden the core experience, improve documentation, and expand the set of supported payment and discovery flows. Follow the GitHub milestones for ongoing priorities: https://github.com/Stellar-Ecosystem/lodestar/milestones
+The short-term direction is to harden the core experience, improve documentation, and expand the set of supported payment and discovery flows. Follow the GitHub milestones for ongoing priorities: https://github.com/archanavdev/lodestar/milestones
 
 ---
 
@@ -126,7 +126,7 @@ Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, 
 ### 1. Clone
 
 ```sh
-git clone git@github.com:anoncon/lodestar.git
+git clone git@github.com:archanavdev/lodestar.git
 cd lodestar
 ```
 
