@@ -108,9 +108,9 @@ export default function RegisterAgentPage() {
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Form */}
+        
         <form onSubmit={handleSubmit} className="lg:col-span-2 card p-8 flex flex-col gap-6">
-          {/* Address source toggle */}
+          
           <div>
             <label className="block text-sm font-medium mb-3">Agent Address</label>
             {connected && address && (
@@ -141,7 +141,7 @@ export default function RegisterAgentPage() {
             )}
           </div>
 
-          {/* Name */}
+        
           <div>
             <label className="block text-sm font-medium mb-2">
               Agent Name <span className="text-secondary font-normal">(max 64 chars)</span>
@@ -156,7 +156,7 @@ export default function RegisterAgentPage() {
             />
           </div>
 
-          {/* Description */}
+         
           <div>
             <label className="block text-sm font-medium mb-2">
               Description <span className="text-secondary font-normal">(max 256 chars)</span>
@@ -174,7 +174,7 @@ export default function RegisterAgentPage() {
             </p>
           </div>
 
-          {/* Spending policy */}
+        
           <div>
             <label className="block text-sm font-medium mb-1">Spending Policy</label>
             <p className="text-xs text-secondary mb-3">
@@ -206,7 +206,7 @@ export default function RegisterAgentPage() {
             </div>
           </div>
 
-          {/* Allowed categories */}
+         
           <div>
             <label className="block text-sm font-medium mb-1">Allowed Categories</label>
             <p className="text-xs text-secondary mb-3">
@@ -250,7 +250,7 @@ export default function RegisterAgentPage() {
           </button>
         </form>
 
-        {/* Preview card */}
+       
         <div className="lg:col-span-1">
           <p className="text-xs font-medium text-secondary uppercase tracking-wider mb-3">Preview</p>
           <div className="card p-5 flex flex-col gap-4">
