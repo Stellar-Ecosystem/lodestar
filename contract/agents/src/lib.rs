@@ -276,12 +276,38 @@ impl LodestarAgents {
     }
 
     // Get score for an agent
+    //
+    // # Events
+    // Emits a `("agents", "score_read", agent_address)` event with payload
+    // `(score, exists)`:
+    //   - `score`  — the agent's current score, or `-1` if no record exists
+    //   - `exists` — `true` if a registered agent record was found, `false`
+    //                otherwise (in which case `score == -1`)
+    //
+    // The payload is self-sufficient: consumers can build an activity feed
+    // without a follow-up `get_agent` read. Note that `get_score` is a view
+    // and does not mutate storage, but the event is still published so
+    // off-chain indexers can observe score reads without polling.
     pub fn get_score(env: Env, agent_address: Address) -> i32 {
-        env.storage()
+        let entry = env
+            .storage()
             .persistent()
-            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
-            .map(|a| a.score)
-            .unwrap_or(-1)
+            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address.clone()));
+        let (score, exists) = match entry {
+            Some(a) => (a.score, true),
+            None => (-1, false),
+        };
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "score_read"),
+                agent_address,
+            ),
+            (score, exists),
+        );
+
+        score
     }
 
     /// Returns whether an agent record exists for `agent_address`.
@@ -1214,6 +1240,67 @@ mod test {
         assert_eq!(config.score_success, SCORE_SUCCESS);
         assert_eq!(config.score_failure, SCORE_FAILURE);
         assert_eq!(config.flag_penalty, FLAG_PENALTY);
+    }
+
+    #[test]
+    fn test_get_score_emits_event_for_registered_agent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let _ = env.events().all();
+
+        let score = client.get_score(&agent_addr);
+        assert_eq!(score, INITIAL_SCORE);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "score_read"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(i32, bool)>::from_val(&env, &event.2),
+            (INITIAL_SCORE, true)
+        );
+    }
+
+    #[test]
+    fn test_get_score_emits_event_for_unknown_agent() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let missing = Address::generate(&env);
+        let score = client.get_score(&missing);
+        assert_eq!(score, -1);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "score_read"),
+                missing.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(<(i32, bool)>::from_val(&env, &event.2), (-1i32, false));
     }
 
     #[test]
