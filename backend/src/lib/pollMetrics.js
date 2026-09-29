@@ -22,15 +22,17 @@
  * @property {PollOutcome} outcome How the wait ended
  */
 
-const EMPTY = () => ({
-  waits: 0,
-  polls: 0,
-  sleeps: 0,
-  totalDelayMs: 0,
-  totalDurationMs: 0,
-  maxPolls: 0,
-  byOutcome: { matched: 0, timeout: 0, aborted: 0 },
-});
+function EMPTY() {
+  return {
+    waits: 0,
+    polls: 0,
+    sleeps: 0,
+    totalDelayMs: 0,
+    totalDurationMs: 0,
+    maxPolls: 0,
+    byOutcome: { matched: 0, timeout: 0, aborted: 0 },
+  };
+}
 
 let totals = EMPTY();
 
