@@ -262,6 +262,32 @@ impl LodestarRegistry {
         Ok(new_id)
     }
 
+    /// Returns the service registered under `id`.
+    ///
+    /// This read-only entrypoint calls `get` once for the persistent-storage key
+    /// `DataKey::Service(id)`. It does not require authorization, extend the
+    /// entry's TTL, write to storage, emit an event, or call another contract.
+    /// An entry is returned unchanged when present, including when it is
+    /// inactive.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment used to access contract storage.
+    /// * `id` - The registry identifier of the service to retrieve.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(ServiceEntry)` when `DataKey::Service(id)` has a live value, or
+    /// `Err(RegistryError::ServiceNotFound)` when no live value is stored at
+    /// that key.
+    ///
+    /// # Panics
+    ///
+    /// This function defines no contract-specific panic path. The Soroban SDK
+    /// will panic, without a `RegistryError` variant, if a stored value cannot
+    /// be converted to `ServiceEntry`; values written by this contract preserve
+    /// that type invariant. A missing live value returns `ServiceNotFound`
+    /// instead of panicking.
     pub fn get_service(env: Env, id: u64) -> Result<ServiceEntry, RegistryError> {
         env.storage()
             .persistent()
