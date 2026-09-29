@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, vec, Address, Env, IntoVal, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, vec, Address, Env, IntoVal, String, Symbol, Vec,
 };
 
 
@@ -18,6 +18,14 @@ const SCORE_SUCCESS: i32 = 10;
 const SCORE_FAILURE: i32 = -25;
 const FLAG_PENALTY: i32 = -200;
 
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum AgentError {
+    InvalidAmount = 1,
+    ArithmeticOverflow = 2,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -111,11 +119,13 @@ impl LodestarAgents {
         env: &Env,
         mut policy: SpendingPolicy,
         amount_stroops: i128,
-    ) -> SpendingPolicy {
+    ) -> Result<SpendingPolicy, AgentError> {
         let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(env, &policy);
-        policy.daily_spent_stroops = daily_spent + amount_stroops;
+        policy.daily_spent_stroops = daily_spent
+            .checked_add(amount_stroops)
+            .ok_or(AgentError::ArithmeticOverflow)?;
         policy.last_reset_ledger = last_reset;
-        policy
+        Ok(policy)
     }
 }
 
@@ -319,12 +329,15 @@ impl LodestarAgents {
             return false;
         }
 
-        if amount_stroops > policy.max_per_tx_stroops {
+        if amount_stroops <= 0 || amount_stroops > policy.max_per_tx_stroops {
             return false;
         }
 
         let (daily_spent, _) = Self::get_daily_spend_with_reset(&env, &policy);
-        daily_spent + amount_stroops <= policy.max_per_day_stroops
+        match daily_spent.checked_add(amount_stroops) {
+            Some(total) => total <= policy.max_per_day_stroops,
+            None => false,
+        }
     }
 
     // Record a payment outcome — updates score, stats, and daily spend
@@ -336,8 +349,12 @@ impl LodestarAgents {
         amount_stroops: i128,
         success: bool,
         caller: Address,
-    ) {
+    ) -> Result<(), AgentError> {
         caller.require_auth();
+
+        if amount_stroops <= 0 {
+            return Err(AgentError::InvalidAmount);
+        }
 
         // Cross-contract check: caller must be the service's registered provider
         let registry_contract: Address = env
@@ -376,15 +393,18 @@ impl LodestarAgents {
 
         if success {
             agent.successful_payments += 1;
-            agent.total_volume_stroops += amount_stroops;
+            agent.total_volume_stroops = agent
+                .total_volume_stroops
+                .checked_add(amount_stroops)
+                .ok_or(AgentError::ArithmeticOverflow)?;
             // Enforce min_score_to_earn: agents below the threshold do not gain
             // score from successful payments, though payment stats are still recorded.
             if agent.score >= policy.min_score_to_earn {
-                agent.score = (agent.score + SCORE_SUCCESS).min(MAX_SCORE);
+                agent.score = agent.score.saturating_add(SCORE_SUCCESS).min(MAX_SCORE);
             }
         } else {
             agent.failed_payments += 1;
-            agent.score = (agent.score + SCORE_FAILURE).max(0);
+            agent.score = agent.score.saturating_add(SCORE_FAILURE).max(0);
         }
 
         let new_score = agent.score;
@@ -396,7 +416,7 @@ impl LodestarAgents {
 
         // Update daily spend in policy using helper
         let updated_policy = if success {
-            Self::update_daily_spend(&env, policy, amount_stroops)
+            Self::update_daily_spend(&env, policy, amount_stroops)?
         } else {
             // Only update if success, but still apply reset logic if needed
             let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(&env, &policy);
@@ -427,6 +447,7 @@ impl LodestarAgents {
                 caller,
             ),
         );
+        Ok(())
     }
 
     // Flag an agent (admin-only)
@@ -1647,6 +1668,61 @@ mod test {
         );
         assert_eq!(agent.failed_payments, 1);
         assert_eq!(agent.total_payments, 1);
+    }
+
+    fn setup_payment_agent(env: &Env) -> (LodestarAgentsClient<'_>, Address, Address) {
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(env);
+        let client = LodestarAgentsClient::new(env, &contract_id);
+        let agent_addr = Address::generate(env);
+        let owner = Address::generate(env);
+        setup_agent(env, &contract_id, &agent_addr, &owner);
+        let provider = Address::generate(env);
+        let registry_id = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::RegistryContract)
+                .expect("registry contract not set")
+        });
+        MockRegistryClient::new(env, &registry_id).set_provider(&provider);
+        (client, agent_addr, provider)
+    }
+
+    #[test]
+    fn test_record_payment_rejects_non_positive_amount() {
+        let env = Env::default();
+        let (client, agent_addr, provider) = setup_payment_agent(&env);
+        for amount in [0i128, -1, i128::MIN] {
+            for success in [true, false] {
+                let res =
+                    client.try_record_payment(&agent_addr, &1u64, &amount, &success, &provider);
+                assert_eq!(res, Err(Ok(AgentError::InvalidAmount)));
+            }
+        }
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.total_payments, 0);
+        assert_eq!(client.get_policy(&agent_addr).unwrap().daily_spent_stroops, 0);
+    }
+
+    #[test]
+    fn test_record_payment_overflow_returns_error() {
+        let env = Env::default();
+        let (client, agent_addr, provider) = setup_payment_agent(&env);
+        client.record_payment(&agent_addr, &1u64, &i128::MAX, &true, &provider);
+        let res = client.try_record_payment(&agent_addr, &1u64, &1i128, &true, &provider);
+        assert_eq!(res, Err(Ok(AgentError::ArithmeticOverflow)));
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.total_volume_stroops, i128::MAX);
+        assert_eq!(agent.total_payments, 1);
+    }
+
+    #[test]
+    fn test_check_spending_allowed_rejects_bad_amounts() {
+        let env = Env::default();
+        let (client, agent_addr, _provider) = setup_payment_agent(&env);
+        assert!(!client.check_spending_allowed(&agent_addr, &0));
+        assert!(!client.check_spending_allowed(&agent_addr, &-1));
+        assert!(!client.check_spending_allowed(&agent_addr, &i128::MAX));
     }
 
     #[test]
