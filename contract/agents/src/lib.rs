@@ -1809,13 +1809,8 @@ mod test {
         for case in cases {
             let (_contract_id, client, agent_addr, provider) =
                 setup_record_payment_boundary_agent(&env);
-            let result = client.try_record_payment(
-                &agent_addr,
-                &1u64,
-                &case.amount,
-                &true,
-                &provider,
-            );
+            let result =
+                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider);
 
             match case.expected_error {
                 Some(error) => assert_eq!(result, Err(Ok(error))),
@@ -1879,13 +1874,8 @@ mod test {
                 0,
             );
 
-            let result = client.try_record_payment(
-                &agent_addr,
-                &1u64,
-                &case.amount,
-                &true,
-                &provider,
-            );
+            let result =
+                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider);
 
             match case.expected_error {
                 Some(error) => assert_eq!(result, Err(Ok(error))),
@@ -1933,13 +1923,7 @@ mod test {
                 case.min_score_to_earn,
             );
 
-            let result = client.try_record_payment(
-                &agent_addr,
-                &1u64,
-                &1i128,
-                &true,
-                &provider,
-            );
+            let result = client.try_record_payment(&agent_addr, &1u64, &1i128, &true, &provider);
 
             assert_eq!(result, Ok(Ok(())));
 
