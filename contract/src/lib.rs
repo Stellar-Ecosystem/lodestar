@@ -686,7 +686,10 @@ mod test {
 
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke},
+        testutils::{
+            Address as _, AuthorizedFunction, AuthorizedInvocation, Events, Ledger as _, MockAuth,
+            MockAuthInvoke,
+        },
         Address, FromVal, IntoVal, String,
     };
     fn setup_service(
@@ -2156,6 +2159,134 @@ mod test {
             LodestarRegistry::deactivate_service(env.clone(), other.clone(), 1u64)
         });
         assert!(matches!(result, Err(RegistryError::ProviderMismatch)));
+    }
+
+    // ── deactivate_service authorisation tests (#738) ─────────────────────
+    //
+    // deactivate_service calls provider.require_auth() and then checks that
+    // `provider` owns the service. These tests pin both checks with explicit
+    // auth mocks instead of mock_all_auths(), so dropping either one fails a
+    // test even though every legitimate caller would still succeed.
+
+    /// Registers a service owned by `provider` and returns its id, leaving no
+    /// auth mocks in place afterwards.
+    fn register_service_then_clear_auths(
+        env: &Env,
+        registry: &LodestarRegistryClient,
+        provider: &Address,
+    ) -> u64 {
+        env.mock_all_auths();
+        let id = register_service_with_provider_and_endpoint(
+            env,
+            registry,
+            provider,
+            &String::from_str(env, "https://test.com"),
+        );
+        env.set_auths(&[]);
+        id
+    }
+
+    fn assert_service_still_active(registry: &LodestarRegistryClient, id: u64) {
+        assert!(registry.get_service(&id).active);
+        let listed = registry.list_services(&0, &10, &None);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed.get(0).unwrap().id, id);
+    }
+
+    #[test]
+    fn test_deactivate_service_succeeds_with_provider_auth() {
+        let env = Env::default();
+        let (registry_id, registry, _agents) = deploy_registry_with_id(&env);
+        let provider = Address::generate(&env);
+        let id = register_service_then_clear_auths(&env, &registry, &provider);
+
+        env.mock_auths(&[MockAuth {
+            address: &provider,
+            invoke: &MockAuthInvoke {
+                contract: &registry_id,
+                fn_name: "deactivate_service",
+                args: (provider.clone(), id).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        registry.deactivate_service(&provider, &id);
+
+        // Exactly one authorisation was required: the provider, for this call.
+        assert_eq!(
+            env.auths(),
+            alloc::vec![(
+                provider.clone(),
+                AuthorizedInvocation {
+                    function: AuthorizedFunction::Contract((
+                        registry_id.clone(),
+                        Symbol::new(&env, "deactivate_service"),
+                        (provider.clone(), id).into_val(&env),
+                    )),
+                    sub_invocations: alloc::vec![],
+                }
+            )]
+        );
+        assert!(!registry.get_service(&id).active);
+        assert_eq!(registry.list_services(&0, &10, &None).len(), 0);
+    }
+
+    #[test]
+    fn test_deactivate_service_rejects_missing_auth() {
+        let env = Env::default();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+        let id = register_service_then_clear_auths(&env, &registry, &provider);
+
+        // No signature at all: require_auth aborts the call with a host auth
+        // error before any state is touched.
+        assert_eq!(
+            registry.try_deactivate_service(&provider, &id),
+            Err(Err(soroban_sdk::InvokeError::Abort))
+        );
+        assert_service_still_active(&registry, id);
+    }
+
+    #[test]
+    fn test_deactivate_service_rejects_wrong_signer() {
+        let env = Env::default();
+        let (registry_id, registry, _agents) = deploy_registry_with_id(&env);
+        let provider = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let id = register_service_then_clear_auths(&env, &registry, &provider);
+
+        // The attacker signs a call that names the real provider: the
+        // provider's own signature is missing, so require_auth aborts.
+        env.mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &registry_id,
+                fn_name: "deactivate_service",
+                args: (provider.clone(), id).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert_eq!(
+            registry.try_deactivate_service(&provider, &id),
+            Err(Err(soroban_sdk::InvokeError::Abort))
+        );
+        assert_service_still_active(&registry, id);
+
+        // The attacker signs a call that names themselves: auth passes, but
+        // they do not own the service, so the ownership check rejects it.
+        env.mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &registry_id,
+                fn_name: "deactivate_service",
+                args: (attacker.clone(), id).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert_eq!(
+            registry.try_deactivate_service(&attacker, &id),
+            Err(Ok(RegistryError::ProviderMismatch))
+        );
+        assert_service_still_active(&registry, id);
     }
 
     #[test]
