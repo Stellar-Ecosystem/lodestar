@@ -343,6 +343,15 @@ impl LodestarRegistry {
     ///
     /// Unlike list_services, this function ensures that every page except the last
     /// contains exactly page_size entries when enough active services exist.
+    ///
+    /// **Read-only: this entrypoint intentionally emits no event** (see #734).
+    /// Soroban runs read-only calls through `simulateTransaction`, whose events are
+    /// returned to the calling client but never written to a ledger, so no indexer
+    /// could observe them — emission would only add cost for every caller. A
+    /// consumer tracks what this page contains from the `registered`,
+    /// `deactivated`, `reactivated`, and `reputation` events, which are emitted by
+    /// the mutations that can change the page. The schema is documented in
+    /// `contract/DEPLOY.md` and locked by tests in this module.
     pub fn list_services_page(env: Env, page: u32, page_size: u32) -> Vec<ServiceEntry> {
         let page_size = page_size.min(20u32).max(1u32);
 
@@ -519,7 +528,12 @@ impl LodestarRegistry {
                 Symbol::new(&env, "deactivated"),
                 id,
             ),
-            (provider,),
+            (
+                entry.provider.clone(),
+                entry.name.clone(),
+                entry.category.clone(),
+                entry.reputation,
+            ),
         );
 
         Ok(())
@@ -591,7 +605,12 @@ impl LodestarRegistry {
                 Symbol::new(&env, "reactivated"),
                 id,
             ),
-            (provider,),
+            (
+                entry.provider.clone(),
+                entry.name.clone(),
+                entry.category.clone(),
+                entry.reputation,
+            ),
         );
     }
 
@@ -1030,7 +1049,179 @@ mod test {
             )
                 .into_val(&env)
         );
-        assert_eq!(<(Address,)>::from_val(&env, &event.2), (provider,));
+        // Payload is self-sufficient: no `get_service` read is needed to know
+        // where the service belongs or what it looks like (#734).
+        assert_eq!(
+            <(Address, String, String, i32)>::from_val(&env, &event.2),
+            (
+                provider,
+                String::from_str(&env, "Test Service"),
+                String::from_str(&env, "compute"),
+                42,
+            )
+        );
+    }
+
+    #[test]
+    fn test_reactivate_service_emits_reactivated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
+        let registry = LodestarRegistryClient::new(&env, &contract_id);
+        let provider = Address::generate(&env);
+
+        // Seed an inactive service directly so reactivation is the only
+        // invocation under test that can publish an event.
+        env.clone().as_contract(&contract_id, || {
+            setup_service(&env, 1, &provider, "compute", 42, false);
+        });
+
+        registry.reactivate_service(&provider, &1);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "registry"),
+                Symbol::new(&env, "reactivated"),
+                1u64,
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(Address, String, String, i32)>::from_val(&env, &event.2),
+            (
+                provider,
+                String::from_str(&env, "Test Service"),
+                String::from_str(&env, "compute"),
+                42,
+            )
+        );
+    }
+
+    /// #734 asks that off-chain consumers stop polling the listing, so pin the
+    /// read path as event-free. `list_services_page` only reads storage; an event
+    /// published from it would be visible to the caller alone (simulation events
+    /// are never written to a ledger) while costing every caller.
+    #[test]
+    fn test_list_services_page_emits_no_events() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        register_a_service(&env, &registry);
+
+        let before = env.events().all().len();
+        assert_eq!(before, 1, "setup emits exactly one registration event");
+
+        let page = registry.list_services_page(&0, &20);
+        let after = env.events().all().len();
+
+        assert_eq!(page.len(), 1);
+        // The invocation that served the page contributed no event at all.
+        assert_eq!(after, 0, "list_services_page must stay read-only");
+    }
+
+    /// Fold the events of the most recent top-level invocation into a local
+    /// replica of the listed services. An off-chain consumer sees each
+    /// transaction's events once, so this is called after every mutation; the
+    /// updates are idempotent, so replaying an event is harmless.
+    fn ingest_events(env: &Env, order: &mut Vec<u64>, active: &mut Vec<bool>) {
+        let events = env.events().all();
+        for i in 0..events.len() {
+            let event = events.get(i).unwrap();
+            let action: Symbol = Symbol::from_val(env, &event.1.get(1).unwrap());
+            let registered = action == Symbol::new(env, "registered");
+            let deactivated = action == Symbol::new(env, "deactivated");
+            let reactivated = action == Symbol::new(env, "reactivated");
+            if !registered && !deactivated && !reactivated {
+                // e.g. a reputation vote: does not change what is listed.
+                continue;
+            }
+
+            let id: u64 = u64::from_val(env, &event.1.get(2).unwrap());
+            let mut idx: u32 = 0;
+            let mut seen = false;
+            while idx < order.len() {
+                if order.get(idx).unwrap() == id {
+                    seen = true;
+                    break;
+                }
+                idx += 1;
+            }
+            if seen {
+                active.set(idx, !deactivated);
+            } else {
+                order.push_back(id);
+                active.push_back(!deactivated);
+            }
+        }
+    }
+
+    #[test]
+    fn test_list_services_page_matches_an_event_only_replica() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, agents) = deploy_registry(&env);
+
+        let mut order: Vec<u64> = vec![&env];
+        let mut active: Vec<bool> = vec![&env];
+        let mut providers: Vec<Address> = vec![&env];
+        let mut ids: Vec<u64> = vec![&env];
+        for _ in 0..5 {
+            let provider = Address::generate(&env);
+            let id = registry.register_service(
+                &provider,
+                &String::from_str(&env, "Test Service"),
+                &String::from_str(&env, "Test Description"),
+                &String::from_str(&env, "https://test.com"),
+                &String::from_str(&env, "10"),
+                &String::from_str(&env, "G_TEST_PAYMENT"),
+                &String::from_str(&env, "compute"),
+            );
+            providers.push_back(provider);
+            ids.push_back(id);
+            ingest_events(&env, &mut order, &mut active);
+        }
+
+        // Service 3 is deactivated; service 2 is deactivated and then
+        // reactivated; service 2 also gains reputation, which must not disturb
+        // the replica because reputation does not reorder `list_services_page`.
+        let second = ids.get(1).unwrap();
+        registry.deactivate_service(&providers.get(2).unwrap(), &ids.get(2).unwrap());
+        ingest_events(&env, &mut order, &mut active);
+        registry.deactivate_service(&providers.get(1).unwrap(), &second);
+        ingest_events(&env, &mut order, &mut active);
+        registry.reactivate_service(&providers.get(1).unwrap(), &second);
+        ingest_events(&env, &mut order, &mut active);
+
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+        registry.update_reputation(&second, &true, &agent);
+        ingest_events(&env, &mut order, &mut active);
+
+        let mut replica: Vec<u64> = vec![&env];
+        let mut i: u32 = 0;
+        while i < order.len() {
+            if active.get(i).unwrap() {
+                replica.push_back(order.get(i).unwrap());
+            }
+            i += 1;
+        }
+        assert_eq!(replica.len(), 4, "only service 3 stays inactive");
+
+        let mut listed: Vec<u64> = vec![&env];
+        for page in 0..2u32 {
+            let entries = registry.list_services_page(&page, &2);
+            for entry in entries.iter() {
+                listed.push_back(entry.id);
+            }
+        }
+
+        // The contract listing agrees with the event-only replica, so no
+        // follow-up read was needed to know what the page contains.
+        assert_eq!(replica, listed);
     }
 
     #[test]
@@ -1229,7 +1420,16 @@ mod test {
             )
                 .into_val(&env)
         );
-        assert_eq!(<(Address,)>::from_val(&env, &event.2), (provider,));
+        // Same self-sufficient payload as `reactivated` (#734).
+        assert_eq!(
+            <(Address, String, String, i32)>::from_val(&env, &event.2),
+            (
+                provider,
+                String::from_str(&env, "Test Service"),
+                String::from_str(&env, "compute"),
+                0,
+            )
+        );
     }
 
     #[test]
