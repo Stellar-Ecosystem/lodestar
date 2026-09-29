@@ -16,7 +16,7 @@ interface WalletContextValue {
   status: FreighterStatus;
   address: string;
   balance: string;
-  /** True while a persisted connection is being restored on mount (#838). */
+ 
   restoring: boolean;
   connect: (walletId: string) => Promise<void>;
   disconnect: () => void;
@@ -35,8 +35,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus]   = useState<FreighterStatus>('not-connected');
   const [address, setAddress] = useState('');
   const [balance, setBalance] = useState('');
-  // Start in the restoring state only when a hint actually exists, so a first-time
-  // visitor never sees a spinner for a connection that was never made.
+ 
   const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
@@ -48,9 +47,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     setRestoring(true);
 
-    // Re-verify with the provider rather than trusting the stored address: the
-    // user may have locked the wallet, revoked the site, switched accounts, or
-    // uninstalled the extension since the last visit.
+    
     (async () => {
       try {
         const restored = await restoreWalletConnection();
@@ -81,7 +78,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const addr = await connectWithWallet(walletId);
       setAddress(addr);
       setStatus('connected');
-      // Persist only the wallet id and public address — never key material (#838).
+     
       persistWalletHint(walletId, addr);
       const bal = await getBalance(addr);
       setBalance(bal);
