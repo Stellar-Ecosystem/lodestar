@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { axe } from 'jest-axe';
 import ActivityFeed from '../components/ActivityFeed';
 
 global.fetch = jest.fn();
@@ -13,6 +14,24 @@ const mockActivities = Array.from({ length: 25 }).map((_, i) => ({
 }));
 
 describe('ActivityFeed Pagination', () => {
+  it('has no critical or serious accessibility violations', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ activity: mockActivities })
+    });
+
+    const { container } = render(<ActivityFeed />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Agent/).length).toBe(10);
+    });
+
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+    expect(results.violations.filter(v => v.impact === 'critical' || v.impact === 'serious')).toHaveLength(0);
+  });
+
+
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, 'error').mockImplementation(() => {});

@@ -64,7 +64,7 @@ export default function ActivityFeed() {
           No activity yet
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+        <div className="flex-1 overflow-y-auto space-y-3 pr-1" aria-live="polite" aria-atomic="false">
           {displayedActivities.map((entry, i) => (
             <div
               key={i}
@@ -93,6 +93,7 @@ export default function ActivityFeed() {
           {hasMore && (
             <div className="pt-2 pb-2 flex justify-center">
               <button
+                type="button"
                 onClick={() => setVisibleCount((prev) => prev + LOAD_MORE_STEP)}
                 disabled={loading}
                 className="btn-primary text-xs py-1.5 px-4"
