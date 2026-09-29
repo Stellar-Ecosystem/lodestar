@@ -262,6 +262,32 @@ impl LodestarRegistry {
         Ok(new_id)
     }
 
+    /// Returns the service registered under `id`.
+    ///
+    /// This read-only entrypoint calls `get` once for the persistent-storage key
+    /// `DataKey::Service(id)`. It does not require authorization, extend the
+    /// entry's TTL, write to storage, emit an event, or call another contract.
+    /// An entry is returned unchanged when present, including when it is
+    /// inactive.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment used to access contract storage.
+    /// * `id` - The registry identifier of the service to retrieve.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(ServiceEntry)` when `DataKey::Service(id)` has a live value, or
+    /// `Err(RegistryError::ServiceNotFound)` when no live value is stored at
+    /// that key.
+    ///
+    /// # Panics
+    ///
+    /// This function defines no contract-specific panic path. The Soroban SDK
+    /// will panic, without a `RegistryError` variant, if a stored value cannot
+    /// be converted to `ServiceEntry`; values written by this contract preserve
+    /// that type invariant. A missing live value returns `ServiceNotFound`
+    /// instead of panicking.
     pub fn get_service(env: Env, id: u64) -> Result<ServiceEntry, RegistryError> {
         env.storage()
             .persistent()
@@ -1950,6 +1976,155 @@ mod test {
             .with_mut(|li| li.sequence_number += VOTE_COOLDOWN_LEDGERS as u32 + 1);
         registry.update_reputation(&1u64, &false, &agent);
         assert_eq!(registry.get_service(&1u64).reputation, MIN_REPUTATION);
+    }
+
+    // ── update_reputation boundary tests (#736) ───────────────────────────
+    //
+    // Each table below pins one value on each side of a threshold where
+    // update_reputation changes behaviour. Every test uses a single Env so it
+    // records exactly one snapshot under test_snapshots/test/, making changes
+    // to storage writes, events or auth trees visible in review.
+
+    #[test]
+    fn test_update_reputation_boundaries_around_clamps() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry_id, registry, agents) = deploy_registry_with_id(&env);
+        let provider = Address::generate(&env);
+
+        // (starting reputation, positive vote, expected reputation)
+        let cases = [
+            // Upper clamp at MAX_REPUTATION.
+            (MAX_REPUTATION - 2, true, MAX_REPUTATION - 1),
+            (MAX_REPUTATION - 1, true, MAX_REPUTATION),
+            (MAX_REPUTATION, true, MAX_REPUTATION),
+            (MAX_REPUTATION, false, MAX_REPUTATION - 1),
+            // Lower clamp at MIN_REPUTATION.
+            (MIN_REPUTATION + 2, false, MIN_REPUTATION + 1),
+            (MIN_REPUTATION + 1, false, MIN_REPUTATION),
+            (MIN_REPUTATION, false, MIN_REPUTATION),
+            (MIN_REPUTATION, true, MIN_REPUTATION + 1),
+            // Zero, where the sign flips.
+            (-1, true, 0),
+            (0, true, 1),
+            (0, false, -1),
+            (1, false, 0),
+        ];
+
+        for (i, (start, positive, expected)) in cases.iter().enumerate() {
+            // A fresh service and agent per case keeps the cooldown out of play.
+            let id = i as u64 + 1;
+            env.clone().as_contract(&registry_id, || {
+                setup_service(&env, id, &provider, "compute", *start, true);
+            });
+            let agent = Address::generate(&env);
+            agents.set_registered(&agent, &true);
+
+            registry.update_reputation(&id, positive, &agent);
+            assert_eq!(
+                registry.get_service(&id).reputation,
+                *expected,
+                "start={} positive={}",
+                start,
+                positive
+            );
+        }
+    }
+
+    #[test]
+    fn test_update_reputation_cooldown_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry_id, registry, agents) = deploy_registry_with_id(&env);
+        let provider = Address::generate(&env);
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+
+        let cooldown = VOTE_COOLDOWN_LEDGERS as u32;
+        // (ledgers elapsed since the previous vote, second vote accepted)
+        let cases = [
+            (0, false),
+            (1, false),
+            (cooldown - 1, false),
+            (cooldown, true),
+            (cooldown + 1, true),
+        ];
+
+        // Ledger 0 covers a first vote at the lowest possible sequence; the
+        // second base covers a vote recorded at a non-zero sequence.
+        let mut next_id = 1u64;
+        for base in [0u32, 1_000] {
+            env.ledger().with_mut(|li| li.sequence_number = base);
+
+            // One service per case so each has its own LastVote entry, all
+            // first voted on at `base`.
+            let first_id = next_id;
+            for _ in cases.iter() {
+                env.clone().as_contract(&registry_id, || {
+                    setup_service(&env, next_id, &provider, "compute", 0, true);
+                });
+                registry.update_reputation(&next_id, &true, &agent);
+                next_id += 1;
+            }
+
+            for (i, (elapsed, accepted)) in cases.iter().enumerate() {
+                let id = first_id + i as u64;
+                env.ledger()
+                    .with_mut(|li| li.sequence_number = base + elapsed);
+
+                let result = registry.try_update_reputation(&id, &true, &agent);
+                if *accepted {
+                    assert_eq!(result, Ok(Ok(())), "base={} elapsed={}", base, elapsed);
+                    assert_eq!(registry.get_service(&id).reputation, 2);
+                } else {
+                    assert_eq!(
+                        result,
+                        Err(Ok(RegistryError::ReputationVoteCooldown)),
+                        "base={} elapsed={}",
+                        base,
+                        elapsed
+                    );
+                    assert_eq!(registry.get_service(&id).reputation, 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_update_reputation_service_id_boundaries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, agents) = deploy_registry(&env);
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+
+        // Empty registry: no id is votable, including the extremes.
+        for id in [0u64, 1, u64::MAX] {
+            assert_eq!(
+                registry.try_update_reputation(&id, &true, &agent),
+                Err(Ok(RegistryError::ServiceNotFound)),
+                "empty registry, id={}",
+                id
+            );
+        }
+
+        // Ids are assigned from 1, so 0 and last + 1 sit either side of the
+        // valid range.
+        let id = register_a_service(&env, &registry);
+        assert_eq!(id, 1);
+        for missing in [0u64, id + 1, u64::MAX] {
+            assert_eq!(
+                registry.try_update_reputation(&missing, &true, &agent),
+                Err(Ok(RegistryError::ServiceNotFound)),
+                "id={}",
+                missing
+            );
+        }
+        assert_eq!(
+            registry.try_update_reputation(&id, &true, &agent),
+            Ok(Ok(()))
+        );
+        assert_eq!(registry.get_service(&id).reputation, 1);
     }
 
     // ── register_service input validation tests ───────────────────────────
