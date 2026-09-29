@@ -1505,6 +1505,11 @@ mod test {
 
     #[contractimpl]
     impl MockAgents {
+        /// Test-only fixture setter. It deliberately has no authorisation:
+        /// it exists only inside this `#[cfg(test)]` module, is never part of
+        /// the deployed registry or agents Wasm, and lets tests toggle what
+        /// `is_registered` returns. See the #744 tests below, which pin that
+        /// the deployed registry exposes no such entrypoint.
         pub fn set_registered(env: Env, agent: Address, registered: bool) {
             env.storage().persistent().set(&agent, &registered);
         }
@@ -1566,6 +1571,55 @@ mod test {
             &String::from_str(env, "G_TEST_PAYMENT"),
             &String::from_str(env, "compute"),
         )
+    }
+
+    // ── set_registered is a test fixture, not a contract entrypoint (#744) ──
+    //
+    // Voting eligibility comes from the agents contract's `is_registered`.
+    // `set_registered` above only exists on the test mock; these tests pin that
+    // the deployed registry offers no way to write registration status, so no
+    // caller (signed or not) can make themselves eligible to vote through it.
+
+    #[test]
+    fn test_registry_does_not_expose_set_registered() {
+        let env = Env::default();
+        let (registry_id, _registry, _agents) = deploy_registry_with_id(&env);
+        let agent = Address::generate(&env);
+
+        for authorised in [false, true] {
+            if authorised {
+                env.mock_all_auths();
+            }
+            let result = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                &registry_id,
+                &Symbol::new(&env, "set_registered"),
+                vec![&env, agent.into_val(&env), true.into_val(&env)],
+            );
+            assert!(result.is_err(), "authorised={}", authorised);
+        }
+    }
+
+    #[test]
+    fn test_unregistered_caller_cannot_become_voter_via_registry() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry_id, registry, agents) = deploy_registry_with_id(&env);
+        let id = register_a_service(&env, &registry);
+        let agent = Address::generate(&env);
+
+        // Even with every signature mocked, the registry has no path that
+        // flips registration, so the vote is still rejected.
+        let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+            &registry_id,
+            &Symbol::new(&env, "set_registered"),
+            vec![&env, agent.into_val(&env), true.into_val(&env)],
+        );
+        assert!(!agents.is_registered(&agent));
+        assert_eq!(
+            registry.try_update_reputation(&id, &true, &agent),
+            Err(Ok(RegistryError::CallerNotRegisteredAgent))
+        );
+        assert_eq!(registry.get_service(&id).reputation, 0);
     }
 
     #[test]
