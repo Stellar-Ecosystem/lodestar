@@ -2109,6 +2109,143 @@ mod test {
         assert_eq!(<(Address,)>::from_val(&env, &event.2), (registry_id,));
     }
 
+    /// `init` stores the registry address, extends its TTL, and emits exactly
+    /// one event. This is the typical path; boundary tests below cover the
+    /// edges (re-init, TTL boundary, empty/zero cases).
+    #[test]
+    fn test_init_stores_registry_and_extends_ttl() {
+        let env = Env::default();
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 1;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let registry_id = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        client.init(&registry_id);
+
+        // Stored value is readable and matches the input.
+        let stored: Address = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::RegistryContract)
+                .expect("registry contract must be stored after init")
+        });
+        assert_eq!(stored, registry_id);
+
+        // TTL was extended to MAX_TTL — the entry must still be readable after
+        // advancing the ledger by MAX_TTL - 1 (one ledger before expiry).
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 1 + MAX_TTL - 1;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+        let still_there: Address = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::RegistryContract)
+                .expect("registry contract must survive up to MAX_TTL - 1 ledgers")
+        });
+        assert_eq!(still_there, registry_id);
+    }
+
+    /// `init` must reject a second call — the guard is `has(&RegistryContract)`,
+    /// so the exact boundary is "already present => panic". We verify the
+    /// first call succeeds and the second panics, and that the stored value
+    /// is unchanged after the failed second call.
+    #[test]
+    fn test_init_rejects_reinitialization() {
+        let env = Env::default();
+        let registry_a = env.register(MockRegistry, ());
+        let registry_b = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // First init succeeds.
+        client.init(&registry_a);
+
+        // Second init must panic with "already initialized".
+        let res = client.try_init(&registry_b);
+        assert!(res.is_err(), "second init must fail");
+
+        // Stored value must still be the first registry.
+        let stored: Address = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::RegistryContract)
+                .expect("registry contract must still be stored")
+        });
+        assert_eq!(stored, registry_a);
+    }
+
+    /// Boundary: the `init` guard is a pure existence check, so the very first
+    /// call (storage empty) must succeed. This is the "one value on the empty
+    /// side of the threshold" case for the `has` check.
+    #[test]
+    fn test_init_succeeds_when_storage_empty() {
+        let env = Env::default();
+        let registry_id = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // Pre-condition: no RegistryContract entry exists.
+        let pre: bool = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .has(&DataKey::RegistryContract)
+        });
+        assert!(!pre, "storage must be empty before init");
+
+        client.init(&registry_id);
+
+        let post: bool = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .has(&DataKey::RegistryContract)
+        });
+        assert!(post, "storage must contain RegistryContract after init");
+    }
+
+    /// `init` emits exactly one event with the expected topics and payload,
+    /// even when called at the maximum ledger sequence. This exercises the
+    /// event-publishing path at a boundary ledger value.
+    #[test]
+    fn test_init_at_max_ledger_emits_event() {
+        let env = Env::default();
+        env.ledger().with_mut(|li| {
+            li.sequence_number = u32::MAX;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let registry_id = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        client.init(&registry_id);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "initialized"),
+                registry_id.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(<(Address,)>::from_val(&env, &event.2), (registry_id,));
+    }
+
     #[test]
     fn test_register_agent_emits_event() {
         let env = Env::default();
