@@ -1,13 +1,13 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, vec, Address, Env, IntoVal, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, vec, Address, Env, IntoVal, String,
+    Symbol, Vec,
 };
 
-
-const MAX_TTL: u32 = 100_000_000; 
+const MAX_TTL: u32 = 100_000_000;
 #[cfg(not(test))]
-const DAY_LEDGERS: u64 = 17_280; 
+const DAY_LEDGERS: u64 = 17_280;
 #[cfg(test)]
 const DAY_LEDGERS: u64 = 5;
 #[cfg(test)]
@@ -17,7 +17,6 @@ const INITIAL_SCORE: i32 = 100;
 const SCORE_SUCCESS: i32 = 10;
 const SCORE_FAILURE: i32 = -25;
 const FLAG_PENALTY: i32 = -200;
-
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -38,7 +37,6 @@ pub enum DataKey {
     Admin,
 }
 
-
 #[contracttype]
 #[derive(Clone)]
 pub struct ServiceEntry {
@@ -54,7 +52,6 @@ pub struct ServiceEntry {
     pub registered_at: u64,
 }
 
-
 #[contracttype]
 #[derive(Clone)]
 pub struct AgentEntry {
@@ -66,7 +63,7 @@ pub struct AgentEntry {
     pub total_payments: u64,
     pub successful_payments: u64,
     pub failed_payments: u64,
-    
+
     pub total_volume_stroops: i128,
     pub registered_at: u64,
     pub last_active: u64,
@@ -82,7 +79,7 @@ pub struct SpendingPolicy {
     pub max_per_tx_stroops: i128,
     pub max_per_day_stroops: i128,
     pub allowed_categories: Vec<String>,
-    
+
     pub min_score_to_earn: i32,
     pub daily_spent_stroops: i128,
     pub last_reset_ledger: u64,
@@ -97,13 +94,10 @@ pub struct ScoringConfig {
     pub flag_penalty: i32,
 }
 
-
 #[contract]
 pub struct LodestarAgents;
 
-
 impl LodestarAgents {
-    
     fn get_daily_spend_with_reset(env: &Env, policy: &SpendingPolicy) -> (i128, u64) {
         let now = env.ledger().sequence() as u64;
         if now >= policy.last_reset_ledger + DAY_LEDGERS {
@@ -1701,7 +1695,10 @@ mod test {
         }
         let agent = client.get_agent(&agent_addr).unwrap();
         assert_eq!(agent.total_payments, 0);
-        assert_eq!(client.get_policy(&agent_addr).unwrap().daily_spent_stroops, 0);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            0
+        );
     }
 
     #[test]

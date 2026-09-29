@@ -597,7 +597,9 @@ impl LodestarRegistry {
             .storage()
             .persistent()
             .get(&DataKey::Service(id))
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, RegistryError::ServiceNotFound));
+            .unwrap_or_else(|| {
+                soroban_sdk::panic_with_error!(&env, RegistryError::ServiceNotFound)
+            });
 
         if provider != entry.provider {
             soroban_sdk::panic_with_error!(&env, RegistryError::ProviderMismatch);
@@ -1230,8 +1232,7 @@ mod test {
         assert_eq!(all.len(), 1);
         assert_eq!(all.get(0).unwrap().id, 1);
 
-        let by_category =
-            registry.list_services(&0, &20, &Some(String::from_str(&env, "compute")));
+        let by_category = registry.list_services(&0, &20, &Some(String::from_str(&env, "compute")));
         assert_eq!(by_category.len(), 1);
         assert_eq!(by_category.get(0).unwrap().id, 1);
 
@@ -1436,7 +1437,7 @@ mod test {
         });
 
         let result = registry.try_reactivate_service(&other, &1);
-        assert!(matches!(result, Err(Ok(soroban_sdk::Error::from_contract_error(8)))));
+        assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(8))));
         let service = registry.get_service(&1);
         assert!(!service.active);
         assert_eq!(service.reputation, 42);
@@ -1451,7 +1452,7 @@ mod test {
         let provider = Address::generate(&env);
 
         let result = registry.try_reactivate_service(&provider, &999);
-        assert!(matches!(result, Err(Ok(soroban_sdk::Error::from_contract_error(4)))));
+        assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(4))));
     }
 
     #[test]
@@ -1464,12 +1465,12 @@ mod test {
 
         env.clone().as_contract(&contract_id, || {
             setup_service(&env, 1, &provider, "compute", 42, false); // Deactivated
-            setup_service(&env, 2, &provider, "compute", 42, true);  // Active duplicate (same provider, endpoint)
+            setup_service(&env, 2, &provider, "compute", 42, true); // Active duplicate (same provider, endpoint)
         });
 
         // Try to reactivate the first one, it should fail with DuplicateActiveService (3)
         let result = registry.try_reactivate_service(&provider, &1);
-        assert!(matches!(result, Err(Ok(soroban_sdk::Error::from_contract_error(3)))));
+        assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(3))));
     }
     // Minimal stand-in for the LodestarAgents contract exposing just the
     // `is_registered` entrypoint the registry cross-calls.
@@ -1678,40 +1679,9 @@ mod test {
         );
 
         // Advance ledger by somewhat less than MAX_TTL
-        env.ledger().with_mut(|li| li.sequence_number += 3110400 - 100);
-        
-        // This should bump the TTL again
-        registry.deactivate_service(&provider, &id);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += 3110400 - 100);
 
-        // Advance ledger past the original threshold.
-        // If TTL was not bumped during deactivate_service, this would archive it
-        // and retrieving the service entry would fail or return an archived state.
-        env.ledger().with_mut(|li| li.sequence_number += 150);
-
-        // Assert readability
-        let entry = registry.get_service(&id);
-        assert_eq!(entry.active, false);
-    }
-
-    #[test]
-    fn test_deactivate_service_preserves_ttl() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (registry, _agents) = deploy_registry(&env);
-        let provider = Address::generate(&env);
-        let id = registry.register_service(
-            &provider,
-            &String::from_str(&env, "Test Service"),
-            &String::from_str(&env, "Test Description"),
-            &String::from_str(&env, "https://test.com"),
-            &String::from_str(&env, "10"),
-            &String::from_str(&env, "G_TEST_PAYMENT"),
-            &String::from_str(&env, "compute"),
-        );
-
-        // Advance ledger by somewhat less than MAX_TTL
-        env.ledger().with_mut(|li| li.sequence_number += 3110400 - 100);
-        
         // This should bump the TTL again
         registry.deactivate_service(&provider, &id);
 
@@ -2426,8 +2396,7 @@ mod test {
 
         // This read must bump DataKey::ServiceIdsByCategory("weather") and
         // DataKey::Service(id).
-        let page1 =
-            registry.list_services(&0, &20, &Some(String::from_str(&env, "weather")));
+        let page1 = registry.list_services(&0, &20, &Some(String::from_str(&env, "weather")));
         assert_eq!(page1.len(), 1, "service must be visible before TTL lapses");
         assert_eq!(page1.get(0).unwrap().id, id);
 
@@ -2435,8 +2404,7 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 2);
 
         // Both keys were bumped — the service must still be listed.
-        let page2 =
-            registry.list_services(&0, &20, &Some(String::from_str(&env, "weather")));
+        let page2 = registry.list_services(&0, &20, &Some(String::from_str(&env, "weather")));
         assert_eq!(
             page2.len(),
             1,
