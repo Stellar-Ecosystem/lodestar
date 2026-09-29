@@ -161,3 +161,24 @@ export class RpcThrottledError extends ContractError {
     if (cause) this.cause = cause;
   }
 }
+
+/**
+ * Route-level error codes that are not Soroban contract codes but still need
+ * to be catalogued so clients can branch on a stable identifier.
+ */
+export const ROUTE_ERROR_CODES = Object.freeze({
+  UPSTREAM_TIMEOUT: {
+    code: 'UPSTREAM_TIMEOUT',
+    status: 504,
+    message: 'Upstream call timed out',
+  },
+});
+
+export class UpstreamTimeoutError extends ContractError {
+  constructor(message, timeoutMs, cause) {
+    super(message || 'Upstream call timed out', 'UPSTREAM_TIMEOUT');
+    this.name = 'UpstreamTimeoutError';
+    this.timeoutMs = timeoutMs;
+    if (cause) this.cause = cause;
+  }
+}
