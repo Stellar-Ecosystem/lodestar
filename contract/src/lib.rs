@@ -532,16 +532,14 @@ impl LodestarRegistry {
             .storage()
             .persistent()
             .get(&DataKey::Service(id))
-            .expect("Service not found");
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, RegistryError::ServiceNotFound));
 
-        assert!(
-            provider == entry.provider,
-            "Only the provider can reactivate this service"
-        );
-        assert!(
-            !active_service_exists(&env, &provider, &entry.endpoint),
-            "Active service with same provider and endpoint already exists"
-        );
+        if provider != entry.provider {
+            soroban_sdk::panic_with_error!(&env, RegistryError::ProviderMismatch);
+        }
+        if active_service_exists(&env, &provider, &entry.endpoint) {
+            soroban_sdk::panic_with_error!(&env, RegistryError::DuplicateActiveService);
+        }
 
         entry.active = true;
         env.storage()
@@ -1046,10 +1044,41 @@ mod test {
             setup_service(&env, 1, &provider, "compute", 42, false);
         });
 
-        assert!(registry.try_reactivate_service(&other, &1).is_err());
+        let result = registry.try_reactivate_service(&other, &1);
+        assert!(matches!(result, Err(Ok(soroban_sdk::Error::from_contract_error(8)))));
         let service = registry.get_service(&1);
         assert!(!service.active);
         assert_eq!(service.reputation, 42);
+    }
+
+    #[test]
+    fn test_reactivate_service_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
+        let registry = LodestarRegistryClient::new(&env, &contract_id);
+        let provider = Address::generate(&env);
+
+        let result = registry.try_reactivate_service(&provider, &999);
+        assert!(matches!(result, Err(Ok(soroban_sdk::Error::from_contract_error(4)))));
+    }
+
+    #[test]
+    fn test_reactivate_service_duplicate() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
+        let registry = LodestarRegistryClient::new(&env, &contract_id);
+        let provider = Address::generate(&env);
+
+        env.clone().as_contract(&contract_id, || {
+            setup_service(&env, 1, &provider, "compute", 42, false); // Deactivated
+            setup_service(&env, 2, &provider, "compute", 42, true);  // Active duplicate (same provider, endpoint)
+        });
+
+        // Try to reactivate the first one, it should fail with DuplicateActiveService (3)
+        let result = registry.try_reactivate_service(&provider, &1);
+        assert!(matches!(result, Err(Ok(soroban_sdk::Error::from_contract_error(3)))));
     }
     // Minimal stand-in for the LodestarAgents contract exposing just the
     // `is_registered` entrypoint the registry cross-calls.
