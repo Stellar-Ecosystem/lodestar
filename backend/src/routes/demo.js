@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
@@ -9,6 +9,7 @@ import { getService } from '../lib/contract.js';
 import { waitForActivityTxHash } from '../lib/waitForActivityTxHash.js';
 import { recordActivity, getActivityFeed } from './services.js';
 import { validateDemoEndpoint } from './demoValidate.js';
+import { getCachedService, getDemoCacheMetrics } from '../lib/demoRunCache.js';
 
 const router = Router();
 
@@ -44,6 +45,11 @@ router.use((req, res, next) => {
   next();
 });
 
+router.get('/demo-run/metrics', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(getDemoCacheMetrics());
+});
+
 function buildHttpClient() {
   const signer = createEd25519Signer(config.server.secret, 'stellar:testnet');
   const scheme = new ExactStellarScheme(signer, { url: config.stellar.rpcUrl });
@@ -77,7 +83,7 @@ function buildHttpClient() {
   return httpClient;
 }
 
-outer.post('/demo-run', async (req, res) => {
+router.post('/demo-run', async (req, res) => {
   // Wire the abort plumbing once, up front, so a client disconnect propagates
   // through the WHOLE handler — including the waitForActivityTxHash polling
   // phase — and not just the fetchWithTx call.
@@ -92,7 +98,7 @@ outer.post('/demo-run', async (req, res) => {
       return res.status(400).json({ error: 'serviceId and category are required', code: 'INVALID_BODY' });
     }
 
-    const service = await getService(Number(serviceId));
+    const service = await getCachedService(Number(serviceId), getService);
     if (!service) {
       return res.status(404).json({ error: 'Service not found', code: 'NOT_FOUND' });
     }
@@ -191,8 +197,15 @@ outer.post('/demo-run', async (req, res) => {
       txHash,
     });
 
+    const payload = { data, txHash, dataValid };
+    const etag = `W/"${createHash('sha256').update(JSON.stringify(payload)).digest('hex')}"`;
+    res.set('Cache-Control', `private, max-age=${config.demoRun.cacheTtlSeconds}, must-revalidate`);
+    res.set('ETag', etag);
     logger.info({ serviceId, category, txHash, dataValid }, 'Demo run complete');
-    res.json({ data, txHash, dataValid });
+    if (req.get('If-None-Match')?.split(',').map((value) => value.trim()).includes(etag)) {
+      return res.status(304).end();
+    }
+    res.json(payload);
   } catch (err) {
     if (err.name === 'AbortError') {
       logger.info({ serviceId: req.body?.serviceId, category: req.body?.category }, 'Demo run aborted by client');
