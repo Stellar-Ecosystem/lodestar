@@ -350,13 +350,15 @@ impl LodestarAgents {
     }
 
     // Check if agent is eligible (active, not flagged, score >= min)
-    pub fn is_eligible(env: Env, agent_address: Address, min_score: i32) -> bool {
-        env.storage()
-            .persistent()
-            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
-            .map(|a| a.active && !a.flagged && a.score >= min_score)
-            .unwrap_or(false)
-    }
+ pub fn is_eligible(env: Env, agent_address: Address, min_score: i32) -> bool {
+    agent_address.require_auth();
+
+    env.storage()
+        .persistent()
+        .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
+        .map(|a| a.active && !a.flagged && a.score >= min_score)
+        .unwrap_or(false)
+}
 
     // Check if a transaction is allowed under the spending policy
     // Returns true if allowed, false otherwise
@@ -937,6 +939,70 @@ impl LodestarAgents {
             flag_penalty: FLAG_PENALTY,
         }
     }
+}
+
+#[test]
+fn test_is_eligible_succeeds_with_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(LodestarAgents, (admin,));
+    let client = LodestarAgentsClient::new(&env, &contract_id);
+
+    let agent_addr = Address::generate(&env);
+    let owner = Address::generate(&env);
+    setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+    assert!(client.is_eligible(&agent_addr, &INITIAL_SCORE));
+}
+
+#[test]
+fn test_is_eligible_requires_auth() {
+    let env = Env::default();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(LodestarAgents, (admin,));
+    let client = LodestarAgentsClient::new(&env, &contract_id);
+
+    let agent_addr = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    env.mock_all_auths();
+    setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+    env.set_auths(&[]);
+    assert!(client
+        .try_is_eligible(&agent_addr, &INITIAL_SCORE)
+        .is_err());
+}
+
+#[test]
+fn test_is_eligible_rejects_wrong_signer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(LodestarAgents, (admin,));
+    let client = LodestarAgentsClient::new(&env, &contract_id);
+
+    let agent_addr = Address::generate(&env);
+    let owner = Address::generate(&env);
+    setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+    let wrong_signer = Address::generate(&env);
+
+    env.set_auths(&[soroban_sdk::testutils::AuthorizedFunction::Contract(
+        soroban_sdk::testutils::AuthorizedFunction::ContractInvocation {
+            contract: contract_id.clone(),
+            function: soroban_sdk::Symbol::new(&env, "is_eligible"),
+            args: (agent_addr.clone(), INITIAL_SCORE).into_val(&env),
+        },
+    )]);
+
+    assert!(client
+        .try_is_eligible(&agent_addr, &INITIAL_SCORE)
+        .is_err());
 }
 
 #[cfg(test)]
