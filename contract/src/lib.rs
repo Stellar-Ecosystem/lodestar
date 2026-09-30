@@ -124,6 +124,41 @@ impl LodestarRegistry {
     /// Deploy-time setup: store the address of the LodestarAgents contract so
     /// `update_reputation` can verify voters are registered agents.
     ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment used to access contract storage.
+    /// * `agents_contract` - Address of the LodestarAgents contract that
+    ///   `update_reputation` will cross-call (`is_registered`) to authorise
+    ///   reputation voters. Stored verbatim; not validated at construction time.
+    ///
+    /// # Returns
+    ///
+    /// This function returns `()`. Its only observable effect is the storage
+    /// write described below.
+    ///
+    /// # Authorisation
+    ///
+    /// This is a contract constructor. It runs exactly once, atomically, as part
+    /// of deployment, and can never be invoked by a later caller. It therefore
+    /// requires no `require_auth` and exposes no post-deploy setter: the agents
+    /// address is fixed for the contract's lifetime. That closes the
+    /// trust-anchor takeover risk a public `init` would carry (a front-runner
+    /// pointing the registry at a malicious agents contract where everyone is
+    /// "registered").
+    ///
+    /// # Panics
+    ///
+    /// This function defines no contract-specific panic path and returns no
+    /// `RegistryError` variant. The Soroban SDK will panic, without a
+    /// `RegistryError` variant, if the persistent-storage write or TTL extension
+    /// fails (for example, if the host rejects the storage access).
+    ///
+    /// # Storage
+    ///
+    /// * `DataKey::AgentsContract` — written with the supplied `agents_contract`
+    ///   address, then its TTL is extended by `MAX_TTL` ledgers (both threshold
+    ///   and extend-to), so the trust anchor does not expire.
+    ///
     /// This is a contract constructor — it runs exactly once, atomically, as part
     /// of deployment, and can never be invoked by a later caller. That closes the
     /// trust-anchor takeover risk a public `init` would carry (a front-runner
