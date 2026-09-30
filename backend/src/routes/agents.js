@@ -211,6 +211,11 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
 });
 
 // GET /api/agents/:address/can-spend?amount=0.001&category=weather
+//
+// `code` is a stable machine-readable reason (see AGENT_ERROR_CODES for the
+// contract-sourced ones, e.g. DAILY_LIMIT_EXCEEDED). It is additive: `allowed`
+// and `reason` keep their previous meaning and values, so existing clients are
+// unaffected and can opt into `code` when they want to branch.
 router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res) => {
   try {
     const { address } = req.params;
@@ -218,20 +223,20 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
     const category = req.query.category ?? '';
     const amountStroops = usdcToStroops(amountUsdc);
 
-    const [allowed, policy, agent] = await Promise.all([
+    const [verdict, policy, agent] = await Promise.all([
       checkSpendingAllowed(address, amountStroops),
       getAgentPolicy(address),
       getAgent(address),
     ]);
 
     if (!agent) {
-      return res.json({ allowed: false, reason: 'Agent not registered' });
+      return res.json({ allowed: false, reason: 'Agent not registered', code: 'AGENT_NOT_FOUND' });
     }
     if (agent.flagged) {
-      return res.json({ allowed: false, reason: 'Agent is flagged' });
+      return res.json({ allowed: false, reason: 'Agent is flagged', code: 'AGENT_FLAGGED' });
     }
     if (!agent.active) {
-      return res.json({ allowed: false, reason: 'Agent is deactivated' });
+      return res.json({ allowed: false, reason: 'Agent is deactivated', code: 'AGENT_INACTIVE' });
     }
 
     // Category check (backend-level since contract stores policy)
@@ -240,31 +245,56 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
         return res.json({
           allowed: false,
           reason: `Category "${category}" not in agent's allowed list`,
+          code: 'CATEGORY_NOT_ALLOWED',
         });
       }
     }
 
-    if (!allowed) {
+    if (!verdict.allowed) {
+      // Prefer the contract's own cause: it knows the exact rule that rejected
+      // the payment, and its message can be paired with the concrete limit.
       const maxTx = policy ? BigInt(policy.max_per_tx_stroops) : 0n;
       const dailySpent = policy ? BigInt(policy.daily_spent_stroops) : 0n;
       const maxDay = policy ? BigInt(policy.max_per_day_stroops) : 0n;
 
+      if (verdict.code) {
+        if (verdict.code === 'PER_TRANSACTION_LIMIT_EXCEEDED') {
+          return res.json({
+            allowed: false,
+            reason: `Amount exceeds per-transaction limit of $${stroopsToUsdcDisplay(maxTx)} USDC`,
+            code: verdict.code,
+          });
+        }
+        if (verdict.code === 'DAILY_LIMIT_EXCEEDED') {
+          return res.json({
+            allowed: false,
+            reason: `Daily spending limit of $${stroopsToUsdcDisplay(maxDay)} USDC reached`,
+            code: verdict.code,
+          });
+        }
+        return res.json({ allowed: false, reason: verdict.reason, code: verdict.code });
+      }
+
+      // The check could not run (RPC failure), so the cause is unknown. Fall
+      // back to evaluating the policy locally rather than guessing.
       if (amountStroops > maxTx) {
         return res.json({
           allowed: false,
           reason: `Amount exceeds per-transaction limit of $${stroopsToUsdcDisplay(maxTx)} USDC`,
+          code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
         });
       }
       if (dailySpent + amountStroops > maxDay) {
         return res.json({
           allowed: false,
           reason: `Daily spending limit of $${stroopsToUsdcDisplay(maxDay)} USDC reached`,
+          code: 'DAILY_LIMIT_EXCEEDED',
         });
       }
-      return res.json({ allowed: false, reason: 'Spending policy violation' });
+      return res.json({ allowed: false, reason: 'Spending policy violation', code: null });
     }
 
-    res.json({ allowed: true, reason: 'OK' });
+    res.json({ allowed: true, reason: 'OK', code: null });
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/can-spend failed');
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
@@ -443,8 +473,15 @@ router.get('/agents/:address/check', requireAgentsContract, async (req, res) => 
   try {
     const { address } = req.params;
     const amount = BigInt(req.query.amount ?? '0');
-    const allowed = await checkSpendingAllowed(address, amount);
-    res.json({ allowed, agentAddress: address, amountStroops: amount.toString() });
+    const verdict = await checkSpendingAllowed(address, amount);
+    // `code` and `reason` are additive; `allowed` keeps its old meaning.
+    res.json({
+      allowed: verdict.allowed,
+      code: verdict.code,
+      reason: verdict.reason,
+      agentAddress: address,
+      amountStroops: amount.toString(),
+    });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/:address/check failed');
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');

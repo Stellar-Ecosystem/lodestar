@@ -18,6 +18,33 @@ export const REGISTRY_ERROR_CODES = Object.freeze({
   15: { code: 'REGISTRY_STORAGE_CORRUPTED', message: 'Registry storage could not be read consistently' },
 });
 
+/**
+ * Numeric codes of the `AgentError` enum in `contract/agents/src/lib.rs`.
+ *
+ * Kept separate from `REGISTRY_ERROR_CODES` because the two contracts number
+ * their errors independently and the numbers collide: `2` is
+ * `ArithmeticOverflow` here and `INVALID_DESCRIPTION` there. Always resolve a
+ * code against the contract that produced it — see `extractContractErrorCode`.
+ *
+ * Append-only: a code is part of the agents contract's ABI and must never be
+ * renumbered. Keep in sync with the `#[contracterror]` enum.
+ */
+export const AGENT_ERROR_CODES = Object.freeze({
+  1: { code: 'INVALID_AMOUNT', message: 'Amount must be a positive number of stroops' },
+  2: { code: 'ARITHMETIC_OVERFLOW', message: 'Amount exceeds the supported numeric range' },
+  3: { code: 'POLICY_NOT_FOUND', message: 'Agent has no spending policy' },
+  4: { code: 'AGENT_NOT_FOUND', message: 'Agent is not registered' },
+  5: { code: 'AGENT_INACTIVE', message: 'Agent has been deactivated' },
+  6: { code: 'AGENT_FLAGGED', message: 'Agent has been flagged by an administrator' },
+  7: { code: 'PER_TRANSACTION_LIMIT_EXCEEDED', message: 'Amount exceeds the agent per-transaction spending limit' },
+  8: { code: 'DAILY_LIMIT_EXCEEDED', message: 'Amount would exceed the agent daily spending limit' },
+});
+
+export const CONTRACT_ERROR_CATALOGS = Object.freeze({
+  registry: REGISTRY_ERROR_CODES,
+  agents: AGENT_ERROR_CODES,
+});
+
 const REGISTRY_ERROR_PATTERNS = [
   /Error\(Contract,\s*#?(\d+)\)/i,
   /ContractError\((\d+)\)/i,
@@ -45,30 +72,37 @@ const REGISTRY_ERROR_CONTAINER_KEYS = new Set([
   'cause',
 ]);
 
-function registryCodeFromNumber(value) {
-  if (Number.isInteger(value) && REGISTRY_ERROR_CODES[value]) return value;
+function contractCodeFromNumber(value, catalog) {
+  if (Number.isInteger(value) && catalog[value]) return value;
   return null;
 }
 
-function registryCodeFromString(value) {
+function contractCodeFromString(value, catalog) {
   for (const pattern of REGISTRY_ERROR_PATTERNS) {
     const match = pattern.exec(value);
     if (!match) continue;
-    const code = registryCodeFromNumber(Number(match[1]));
+    const code = contractCodeFromNumber(Number(match[1]), catalog);
     if (code !== null) return code;
   }
   return null;
 }
 
-export function extractRegistryErrorCode(value, seen = new Set()) {
-  const numericCode = registryCodeFromNumber(value);
+/**
+ * Pull a numeric contract error code out of an RPC failure payload.
+ *
+ * `catalog` scopes the lookup: only codes that the contract in question
+ * actually defines are accepted, so a registry code can never be mistaken for
+ * an agents code (or the reverse) just because the numbers overlap.
+ */
+export function extractContractErrorCode(value, catalog, seen = new Set()) {
+  const numericCode = contractCodeFromNumber(value, catalog);
   if (numericCode !== null) return numericCode;
 
   if (typeof value === 'bigint') {
-    return registryCodeFromNumber(Number(value));
+    return contractCodeFromNumber(Number(value), catalog);
   }
   if (typeof value === 'string') {
-    return registryCodeFromString(value);
+    return contractCodeFromString(value, catalog);
   }
   if (!value || typeof value !== 'object' || seen.has(value)) {
     return null;
@@ -76,23 +110,23 @@ export function extractRegistryErrorCode(value, seen = new Set()) {
   seen.add(value);
 
   for (const key of REGISTRY_ERROR_CODE_KEYS) {
-    const numericCode = registryCodeFromNumber(Number(value[key]));
+    const numericCode = contractCodeFromNumber(Number(value[key]), catalog);
     if (numericCode !== null) return numericCode;
   }
 
   if (typeof value.toString === 'function' && value.toString !== Object.prototype.toString) {
-    const code = registryCodeFromString(value.toString());
+    const code = contractCodeFromString(value.toString(), catalog);
     if (code !== null) return code;
   }
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const code = extractRegistryErrorCode(item, seen);
+      const code = extractContractErrorCode(item, catalog, seen);
       if (code !== null) return code;
     }
   } else {
     for (const key of REGISTRY_ERROR_CONTAINER_KEYS) {
-      const code = extractRegistryErrorCode(value[key], seen);
+      const code = extractContractErrorCode(value[key], catalog, seen);
       if (code !== null) return code;
     }
   }
@@ -100,16 +134,48 @@ export function extractRegistryErrorCode(value, seen = new Set()) {
   return null;
 }
 
-export function registryErrorFromCode(numericCode) {
-  const meta = REGISTRY_ERROR_CODES[numericCode];
+export function extractRegistryErrorCode(value, seen) {
+  return extractContractErrorCode(value, REGISTRY_ERROR_CODES, seen);
+}
+
+export function extractAgentErrorCode(value, seen) {
+  return extractContractErrorCode(value, AGENT_ERROR_CODES, seen);
+}
+
+/**
+ * Resolve a numeric contract error code to a `ContractError` using the catalog
+ * of the contract that produced it.
+ *
+ * @param {number} numericCode
+ * @param {string} contractName key of `CONTRACT_ERROR_CATALOGS`
+ * @returns {ContractError|null} null when the code is not in that catalog
+ */
+export function contractErrorFromCode(numericCode, contractName) {
+  const catalog = CONTRACT_ERROR_CATALOGS[contractName];
+  const meta = catalog?.[numericCode];
   if (!meta) return null;
   const err = new ContractError(meta.message, meta.code);
-  err.registryErrorCode = numericCode;
+  err.contractErrorCode = numericCode;
+  // Alias for callers that want the contract-specific field name.
+  if (contractName === 'agents') err.agentErrorCode = numericCode;
+  if (contractName === 'registry') err.registryErrorCode = numericCode;
   return err;
+}
+
+export function registryErrorFromCode(numericCode) {
+  return contractErrorFromCode(numericCode, 'registry');
+}
+
+export function agentErrorFromCode(numericCode) {
+  return contractErrorFromCode(numericCode, 'agents');
 }
 
 export function registryErrorFromHostError(details) {
   return registryErrorFromCode(extractRegistryErrorCode(details));
+}
+
+export function agentErrorFromHostError(details) {
+  return agentErrorFromCode(extractAgentErrorCode(details));
 }
 
 export class SimulationError extends ContractError {
