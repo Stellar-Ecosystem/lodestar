@@ -282,11 +282,24 @@ impl LodestarAgents {
             .unwrap_or(-1)
     }
 
-    // Check if agent is registered
+    /// Check storage membership and emit a registration observation.
+    /// Topics: ("agents", "registration_checked", agent_address).
+    /// Data: (registered,). This is a query result, not a state transition;
+    /// simulation events are visible only to the calling client.
     pub fn is_registered(env: Env, agent_address: Address) -> bool {
-        env.storage()
+        let registered = env
+            .storage()
             .persistent()
-            .has(&DataKey::Agent(agent_address))
+            .has(&DataKey::Agent(agent_address.clone()));
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "registration_checked"),
+                agent_address,
+            ),
+            (registered,),
+        );
+        registered
     }
 
     // Check if agent is eligible (active, not flagged, score >= min)
@@ -1994,6 +2007,56 @@ mod test {
             <(Address, String, String, i32)>::from_val(&env, &event.2),
             (owner, name, description, INITIAL_SCORE)
         );
+    }
+
+    #[test]
+    fn test_is_registered_emits_registration_checked_event() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+
+        // Unknown addresses return false and still emit a complete result.
+        assert!(!client.is_registered(&agent_addr));
+        assert_registration_checked_event(&env, &contract_id, &agent_addr, false);
+        assert!(client.get_agent(&agent_addr).is_none());
+
+        setup_agent(&env, &contract_id, &agent_addr, &agent_addr);
+        // Repeated reads report the same result, without creating agents.
+        for _ in 0..2 {
+            assert!(client.is_registered(&agent_addr));
+            assert_registration_checked_event(&env, &contract_id, &agent_addr, true);
+        }
+        assert_eq!(client.get_agent_count(), 1);
+
+        // Registered membership is independent of eligibility.
+        env.mock_all_auths();
+        client.deactivate_agent(&agent_addr, &agent_addr);
+        assert!(client.is_registered(&agent_addr));
+        assert_registration_checked_event(&env, &contract_id, &agent_addr, true);
+    }
+
+    fn assert_registration_checked_event(
+        env: &Env,
+        contract_id: &Address,
+        agent_addr: &Address,
+        registered: bool,
+    ) {
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(event.0, *contract_id);
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(env, "agents"),
+                Symbol::new(env, "registration_checked"),
+                agent_addr.clone(),
+            )
+                .into_val(env)
+        );
+        assert_eq!(<(bool,)>::from_val(env, &event.2), (registered,));
     }
 
     #[test]

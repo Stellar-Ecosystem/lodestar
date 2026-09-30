@@ -74,13 +74,15 @@ This will register three demo agents with varying scores:
 
 ## Agent Events
 
-The agents contract emits structured Soroban events for all state-mutating operations.
+The agents contract emits structured Soroban events for all state-mutating operations
+and for registration checks.
 The first topic is the contract domain symbol `("agents")`, the second topic is the action
 symbol, and the third topic is the affected address (e.g., `agent_address`, `new_admin`, or `registry_contract`).
 
 | Action | Topics | Data |
 | --- | --- | --- |
 | Register agent | `("agents", "registered", agent_address)` | `(owner, name, description, initial_score)` |
+| Check registration | `("agents", "registration_checked", agent_address)` | `(registered,)` |
 | Record payment | `("agents", "payment", agent_address)` | `(service_id, amount_stroops, success, old_score, new_score, caller)` |
 | Flag agent | `("agents", "flagged", agent_address)` | `(caller, reason, old_score, new_score)` |
 | Deactivate agent | `("agents", "deactivated", agent_address)` | `(caller, owner, score, name)` |
@@ -90,3 +92,26 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 
 Indexers, activity feeds, and dashboards can reconstruct the complete score history of any agent
 purely from chain events by filtering for topics matching `("agents", *, agent_address)`.
+
+### Registration observations
+
+`is_registered` belongs to `LodestarAgents`, not the registry. It checks whether
+an `Agent(address)` entry exists; it does not change registration state, require
+authorization, or extend storage TTLs.
+
+Its `registration_checked` event uses the same domain/action/address topic
+scheme as the mutation events. The first two topics are Soroban symbols and
+`agent_address` is an `Address`. Data is a one-element tuple containing a `bool`,
+identical to the return value. `true` means the address has a stored agent entry,
+even if the agent is inactive or flagged; `false` means no entry exists. The
+address and boolean fully describe the check without a follow-up read. Every
+successful check emits exactly one observation, including repeated checks and
+negative results.
+
+This is an observation, not a registration transition. A simulation returns
+the event to its caller but does not persist it for RPC `getEvents` subscribers.
+It is visible on-chain only when invoked in a successfully submitted
+transaction (including the registry's cross-contract reputation check).
+Activity feeds should subscribe to the existing `("agents", "registered",
+agent_address)` event from `register_agent` for actual new registrations,
+rather than submit transactions just to observe these checks.
