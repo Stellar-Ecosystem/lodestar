@@ -203,6 +203,69 @@ vi.mock('../lib/activityFeed.js', async () => {
 
 const VALID_ADDR = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
 
+describe('GET /api/agents/:address/score', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the score for a registered agent', async () => {
+    mockGetAgentScore.mockResolvedValueOnce(742);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ score: 742 });
+    expect(mockGetAgentScore).toHaveBeenCalledWith(VALID_ADDR);
+  });
+
+  it('returns 404 AGENT_NOT_FOUND instead of an in-band -1 sentinel', async () => {
+    mockGetAgentScore.mockResolvedValueOnce(null);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Agent not found', code: 'AGENT_NOT_FOUND' });
+  });
+
+  it('surfaces a mapped contract error as its own HTTP status', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetAgentScore.mockRejectedValueOnce(
+      new ContractError('Agent not found', 'AGENT_NOT_FOUND', 404)
+    );
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('AGENT_NOT_FOUND');
+  });
+
+  it('returns 500 for an unexpected read failure', async () => {
+    mockGetAgentScore.mockRejectedValueOnce(new Error('RPC down'));
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('FETCH_ERROR');
+  });
+});
+
+describe('GET /api/agents/:address/eligible', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports a null score for an agent with no score instead of -1', async () => {
+    mockGetAgentScore.mockResolvedValueOnce(null);
+    mockIsAgentEligible.mockResolvedValueOnce(false);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/eligible?min_score=500`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ eligible: false, score: null, required: 500 });
+  });
+});
+
+
 describe('GET /api/agents/:address/payment-history', () => {
   beforeEach(() => {
     vi.clearAllMocks();

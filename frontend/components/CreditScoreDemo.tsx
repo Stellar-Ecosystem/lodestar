@@ -56,7 +56,9 @@ export default function CreditScoreDemo() {
         ...prev,
         [agent.address]: res.eligible
           ? `Score ${res.score} ≥ ${premiumMinScore} — access granted`
-          : `Score ${res.score} — minimum ${res.required} required`,
+          : res.score === null
+            ? `No score yet — minimum ${res.required} required`
+            : `Score ${res.score} — minimum ${res.required} required`,
       }));
     } catch {
       setAccessResults((prev) => ({ ...prev, [agent.address]: 'denied' }));
