@@ -18,12 +18,35 @@ const SCORE_SUCCESS: i32 = 10;
 const SCORE_FAILURE: i32 = -25;
 const FLAG_PENALTY: i32 = -200;
 
+/// Errors surfaced by the agents contract.
+///
+/// # Stability of the numeric codes
+/// The `#[repr(u32)]` discriminants are part of this contract's public ABI: the
+/// host reports them as `Error(Contract, #N)` and off-chain code (for example
+/// the Lodestar backend's `AGENT_ERROR_CODES` map) keys off the number. A code
+/// therefore must never be renumbered or reused — append new variants with the
+/// next free value instead. Codes 1 and 2 predate the spending-policy guard and
+/// are already deployed.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum AgentError {
+    /// A payment amount was zero or negative.
     InvalidAmount = 1,
+    /// An `i128` accumulator would have overflowed.
     ArithmeticOverflow = 2,
+    /// No `SpendingPolicy` exists for the agent.
+    PolicyNotFound = 3,
+    /// No `AgentEntry` exists for the agent.
+    AgentNotFound = 4,
+    /// The agent was deactivated, by its owner or by the admin.
+    AgentInactive = 5,
+    /// The agent was flagged by the admin.
+    AgentFlagged = 6,
+    /// The amount exceeds the policy's per-transaction cap.
+    PerTransactionLimitExceeded = 7,
+    /// The amount would push the agent past its daily cap.
+    DailyLimitExceeded = 8,
 }
 
 #[contracttype]
@@ -120,6 +143,83 @@ impl LodestarAgents {
             .ok_or(AgentError::ArithmeticOverflow)?;
         policy.last_reset_ledger = last_reset;
         Ok(policy)
+    }
+
+    /// Single source of truth for the spending-policy decision.
+    ///
+    /// Every rejection maps to its own `AgentError` variant so the caller can
+    /// tell the causes apart. The checks are ordered from "cheapest and most
+    /// specific" to "most expensive", and the order is part of the contract's
+    /// behaviour: a flagged agent reports `AgentFlagged` before any limit is
+    /// consulted, and a non-positive amount is reported before the ceilings.
+    ///
+    /// Pure: the caller supplies the entry, the policy, and the daily spend
+    /// already projected through [`LodestarAgents::get_daily_spend_with_reset`],
+    /// so the caller can still emit its `spending_checked` event around the call
+    /// without duplicating any of the limits.
+    fn evaluate_spending(
+        agent: &AgentEntry,
+        policy: &SpendingPolicy,
+        daily_spent: i128,
+        amount_stroops: i128,
+    ) -> Result<(), AgentError> {
+        if !agent.active {
+            return Err(AgentError::AgentInactive);
+        }
+        if agent.flagged {
+            return Err(AgentError::AgentFlagged);
+        }
+
+        // A non-positive amount is a caller bug, not a policy breach, so it
+        // keeps the same `InvalidAmount` code `record_payment` already uses.
+        if amount_stroops <= 0 {
+            return Err(AgentError::InvalidAmount);
+        }
+        if amount_stroops > policy.max_per_tx_stroops {
+            return Err(AgentError::PerTransactionLimitExceeded);
+        }
+
+        let projected = daily_spent
+            .checked_add(amount_stroops)
+            .ok_or(AgentError::ArithmeticOverflow)?;
+        if projected > policy.max_per_day_stroops {
+            return Err(AgentError::DailyLimitExceeded);
+        }
+
+        Ok(())
+    }
+
+    /// Publish the `("agents", "spending_checked", agent_address)` event.
+    ///
+    /// Kept in one place so every exit from `check_spending_allowed` — success,
+    /// rejection, and the two early returns — emits the same topic scheme and
+    /// the same six-field payload documented in `docs/architecture.md`.
+    #[allow(clippy::too_many_arguments)]
+    fn publish_spending_checked(
+        env: &Env,
+        agent_address: &Address,
+        allowed: bool,
+        amount_stroops: i128,
+        daily_spent: i128,
+        max_per_tx_stroops: i128,
+        max_per_day_stroops: i128,
+        last_reset_ledger: u64,
+    ) {
+        env.events().publish(
+            (
+                Symbol::new(env, "agents"),
+                Symbol::new(env, "spending_checked"),
+                agent_address.clone(),
+            ),
+            (
+                allowed,
+                amount_stroops,
+                daily_spent,
+                max_per_tx_stroops,
+                max_per_day_stroops,
+                last_reset_ledger,
+            ),
+        );
     }
 }
 
@@ -357,11 +457,35 @@ impl LodestarAgents {
             .unwrap_or(false)
     }
 
-    /// Check if a transaction is allowed under the spending policy
-    /// Returns true if allowed, false otherwise
+    /// Check whether a payment is allowed under the agent's spending policy.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment used for the two persistent reads, the event, and the ledger clock.
+    /// - `agent_address`: Agent whose policy and entry are evaluated.
+    /// - `amount_stroops`: Proposed payment amount in stroops; must be strictly positive.
+    ///
+    /// # Returns
+    /// `Ok(())` when the payment is permitted. Otherwise the specific cause:
+    ///
+    /// | Variant                              | Cause |
+    /// |--------------------------------------|-------|
+    /// | `AgentError::PolicyNotFound`         | the agent has no spending policy |
+    /// | `AgentError::AgentNotFound`          | the agent has no entry |
+    /// | `AgentError::AgentInactive`          | the agent was deactivated |
+    /// | `AgentError::AgentFlagged`           | the admin flagged the agent |
+    /// | `AgentError::InvalidAmount`          | `amount_stroops <= 0` |
+    /// | `AgentError::PerTransactionLimitExceeded` | amount above `max_per_tx_stroops` |
+    /// | `AgentError::DailyLimitExceeded`     | amount would exceed `max_per_day_stroops` |
+    /// | `AgentError::ArithmeticOverflow`     | the daily total would overflow `i128` |
+    ///
+    /// Each variant keeps its own numeric code, so off-chain callers can map a
+    /// rejection to a specific HTTP status and message instead of collapsing
+    /// every denial into one "not allowed" answer. The order of the checks is
+    /// observable: the first failing cause in the table's order wins.
     ///
     /// # Events
-    /// Emits a `("agents", "spending_checked", agent_address)` event with payload:
+    /// Emits a `("agents", "spending_checked", agent_address)` event on every
+    /// path, including a rejection, with payload:
     /// `(allowed, amount_stroops, daily_spent, max_per_tx_stroops, max_per_day_stroops, last_reset_ledger)`:
     ///   - `allowed`             — `true` if the transaction is permitted, `false` otherwise
     ///   - `amount_stroops`      — transaction amount evaluated in stroops
@@ -371,8 +495,28 @@ impl LodestarAgents {
     ///   - `last_reset_ledger`   — ledger sequence of the last reset (0 if missing)
     ///
     /// The payload is self-sufficient: consumers can observe spending checks and determine
-    /// allowance, limits, and window resets without follow-up reads.
-    pub fn check_spending_allowed(env: Env, agent_address: Address, amount_stroops: i128) -> bool {
+    /// allowance, limits, and window resets without follow-up reads. `allowed` is the
+    /// verdict; the reason for a rejection is carried by the return value.
+    ///
+    /// # Authorisation
+    /// None. This is a view: any caller may ask about any agent, no
+    /// `require_auth` is invoked, and no storage is written.
+    ///
+    /// # Errors on the wire
+    /// Returning `Err(AgentError::N)` makes the host fail the invocation with
+    /// `Error(Contract, #N)`, the same wire representation `panic_with_error!`
+    /// would produce. A typed return is used instead of a panic because it
+    /// stays catchable by in-contract callers (and therefore unit-testable),
+    /// and because `record_payment` already reports its failures the same way.
+    ///
+    /// # Cost
+    /// Two persistent reads, one event publication, and, in the worst case, one
+    /// `i128` addition. The policy's TTL is not extended.
+    pub fn check_spending_allowed(
+        env: Env,
+        agent_address: Address,
+        amount_stroops: i128,
+    ) -> Result<(), AgentError> {
         let key = DataKey::Policy(agent_address.clone());
         let policy = match env
             .storage()
@@ -381,15 +525,17 @@ impl LodestarAgents {
         {
             Some(p) => p,
             None => {
-                env.events().publish(
-                    (
-                        Symbol::new(&env, "agents"),
-                        Symbol::new(&env, "spending_checked"),
-                        agent_address,
-                    ),
-                    (false, amount_stroops, 0i128, 0i128, 0i128, 0u64),
+                Self::publish_spending_checked(
+                    &env,
+                    &agent_address,
+                    false,
+                    amount_stroops,
+                    0i128,
+                    0i128,
+                    0i128,
+                    0u64,
                 );
-                return false;
+                return Err(AgentError::PolicyNotFound);
             }
         };
         let agent = match env
@@ -399,57 +545,37 @@ impl LodestarAgents {
         {
             Some(a) => a,
             None => {
-                env.events().publish(
-                    (
-                        Symbol::new(&env, "agents"),
-                        Symbol::new(&env, "spending_checked"),
-                        agent_address,
-                    ),
-                    (
-                        false,
-                        amount_stroops,
-                        0i128,
-                        policy.max_per_tx_stroops,
-                        policy.max_per_day_stroops,
-                        policy.last_reset_ledger,
-                    ),
+                Self::publish_spending_checked(
+                    &env,
+                    &agent_address,
+                    false,
+                    amount_stroops,
+                    0i128,
+                    policy.max_per_tx_stroops,
+                    policy.max_per_day_stroops,
+                    policy.last_reset_ledger,
                 );
-                return false;
+                return Err(AgentError::AgentNotFound);
             }
         };
 
+        // Read the counter through the reset helper so a new day starts the
+        // projection from zero without mutating storage.
         let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(&env, &policy);
+        let verdict = Self::evaluate_spending(&agent, &policy, daily_spent, amount_stroops);
 
-        let allowed = if !agent.active
-            || agent.flagged
-            || amount_stroops <= 0
-            || amount_stroops > policy.max_per_tx_stroops
-        {
-            false
-        } else {
-            match daily_spent.checked_add(amount_stroops) {
-                Some(total) => total <= policy.max_per_day_stroops,
-                None => false,
-            }
-        };
-
-        env.events().publish(
-            (
-                Symbol::new(&env, "agents"),
-                Symbol::new(&env, "spending_checked"),
-                agent_address,
-            ),
-            (
-                allowed,
-                amount_stroops,
-                daily_spent,
-                policy.max_per_tx_stroops,
-                policy.max_per_day_stroops,
-                last_reset,
-            ),
+        Self::publish_spending_checked(
+            &env,
+            &agent_address,
+            verdict.is_ok(),
+            amount_stroops,
+            daily_spent,
+            policy.max_per_tx_stroops,
+            policy.max_per_day_stroops,
+            last_reset,
         );
 
-        allowed
+        verdict
     }
 
     /// Record a payment outcome for an agent's service.
@@ -1091,6 +1217,25 @@ mod test {
         (contract_id, admin, registry_id)
     }
 
+    /// Invoke `check_spending_allowed` and report the contract's own verdict.
+    ///
+    /// The generated `check_spending_allowed` client method unwraps the result
+    /// and panics on rejection, which would hide the very cause the tests for
+    /// issue #699 need to observe. Going through `try_` keeps the `AgentError`
+    /// variant intact so a test can assert the exact code per failure cause.
+    fn spending_verdict(
+        client: &LodestarAgentsClient,
+        agent_addr: &Address,
+        amount_stroops: i128,
+    ) -> Result<(), AgentError> {
+        match client.try_check_spending_allowed(agent_addr, &amount_stroops) {
+            Ok(Ok(())) => Ok(()),
+            Err(Ok(cause)) => Err(cause),
+            Err(Err(invoke)) => panic!("unexpected invoke error: {invoke:?}"),
+            Ok(Err(_)) => unreachable!("check_spending_allowed only ever returns Ok(())"),
+        }
+    }
+
     #[test]
     fn test_constructor_sets_admin() {
         let env = Env::default();
@@ -1144,7 +1289,6 @@ mod test {
             .try_flag_agent(&agent_addr, &String::from_str(&env, "bad behavior"), &owner,)
             .is_err());
     }
-
     #[test]
     fn test_flag_agent_succeeds_with_admin() {
         let env = Env::default();
@@ -1910,13 +2054,16 @@ mod test {
         );
 
         // Also verify check_spending_allowed sees the accumulated spend
-        // (seeded_spend = 750, max = 1000, so 251 should be allowed, 251+750=1001 blocked)
-        assert!(
-            client.check_spending_allowed(&agent_addr, &250),
+        // (seeded_spend = 750, max = 1000, so 250 should be allowed, 250+750=1000 fits,
+        // 251+750=1001 is blocked and reports the daily-limit cause)
+        assert_eq!(
+            spending_verdict(&client, &agent_addr, 250),
+            Ok(()),
             "250 should still fit within the daily budget"
         );
-        assert!(
-            !client.check_spending_allowed(&agent_addr, &251),
+        assert_eq!(
+            spending_verdict(&client, &agent_addr, 251),
+            Err(AgentError::DailyLimitExceeded),
             "251 should be rejected because 750+251 > 1000"
         );
     }
@@ -1951,9 +2098,12 @@ mod test {
         );
 
         // Initially should allow up to max_per_day
-        assert!(client.check_spending_allowed(&agent_addr, &500));
-        assert!(client.check_spending_allowed(&agent_addr, &1000));
-        assert!(!client.check_spending_allowed(&agent_addr, &1001));
+        assert_eq!(spending_verdict(&client, &agent_addr, 500), Ok(()));
+        assert_eq!(spending_verdict(&client, &agent_addr, 1000), Ok(()));
+        assert_eq!(
+            spending_verdict(&client, &agent_addr, 1001),
+            Err(AgentError::PerTransactionLimitExceeded)
+        );
 
         // Advance to next day
         env.ledger().with_mut(|li| {
@@ -1963,7 +2113,7 @@ mod test {
         });
 
         // Should allow full amount again after reset
-        assert!(client.check_spending_allowed(&agent_addr, &1000));
+        assert_eq!(spending_verdict(&client, &agent_addr, 1000), Ok(()));
     }
 
     /// A failed payment must not inflate `total_volume_stroops` — no value moved.
@@ -2255,9 +2405,198 @@ mod test {
     fn test_check_spending_allowed_rejects_bad_amounts() {
         let env = Env::default();
         let (client, agent_addr, _provider) = setup_payment_agent(&env);
-        assert!(!client.check_spending_allowed(&agent_addr, &0));
-        assert!(!client.check_spending_allowed(&agent_addr, &-1));
-        assert!(!client.check_spending_allowed(&agent_addr, &i128::MAX));
+
+        // 0 and -1 are caller errors, so they keep the `InvalidAmount` code that
+        // `record_payment` already uses rather than a limit-specific one.
+        for bad in [0i128, -1i128] {
+            assert_eq!(
+                spending_verdict(&client, &agent_addr, bad),
+                Err(AgentError::InvalidAmount),
+                "{bad} should be rejected as an invalid amount"
+            );
+        }
+
+        // i128::MAX is a valid amount as far as the caller is concerned, it is
+        // simply far above the per-transaction cap.
+        assert_eq!(
+            spending_verdict(&client, &agent_addr, i128::MAX),
+            Err(AgentError::PerTransactionLimitExceeded)
+        );
+    }
+
+    /// Every `check_spending_allowed` failure cause must map to its own variant.
+    ///
+    /// This is the regression test for the old `-> bool` signature, where all
+    /// of these cases collapsed into the same `false`.
+    #[test]
+    fn test_check_spending_allowed_reports_distinct_cause_for_each_failure() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let agent = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent, &owner);
+
+        // Sanity: the baseline agent is allowed a small payment.
+        assert_eq!(spending_verdict(&client, &agent, 100), Ok(()));
+
+        // 1. Deactivated by its own owner.
+        client.deactivate_agent(&agent, &owner);
+        assert!(!client.get_agent(&agent).unwrap().active);
+        assert_eq!(
+            spending_verdict(&client, &agent, 100),
+            Err(AgentError::AgentInactive)
+        );
+        client.reactivate_agent(&agent, &owner);
+        assert_eq!(spending_verdict(&client, &agent, 100), Ok(()));
+
+        // 2. Flagged by the admin. `flag_agent` leaves `active` untouched, so
+        //    this isolates `AgentFlagged` from `AgentInactive`.
+        client.flag_agent(&agent, &String::from_str(&env, "abuse"), &admin);
+        let entry = client.get_agent(&agent).unwrap();
+        assert!(entry.active && entry.flagged);
+        assert_eq!(
+            spending_verdict(&client, &agent, 100),
+            Err(AgentError::AgentFlagged)
+        );
+
+        // Both states at once still report the first failing cause, `AgentInactive`,
+        // because the guard checks `active` before `flagged`.
+        client.deactivate_agent(&agent, &owner);
+        assert_eq!(
+            spending_verdict(&client, &agent, 100),
+            Err(AgentError::AgentInactive)
+        );
+    }
+
+    /// A missing policy and a missing agent entry are different problems and
+    /// must not share a variant, even though both are "not found".
+    #[test]
+    fn test_check_spending_allowed_separates_missing_policy_from_missing_agent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // An address that was never registered has neither record.
+        let unknown = Address::generate(&env);
+        assert_eq!(
+            spending_verdict(&client, &unknown, 100),
+            Err(AgentError::PolicyNotFound)
+        );
+
+        // Policy present, agent entry missing: the guard reads the policy first,
+        // so dropping the entry surfaces the agent-level cause.
+        let orphan = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &orphan, &owner);
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Agent(orphan.clone()));
+        });
+        assert!(client.get_agent(&orphan).is_none());
+        assert!(client.get_policy(&orphan).is_some());
+        assert_eq!(
+            spending_verdict(&client, &orphan, 100),
+            Err(AgentError::AgentNotFound)
+        );
+    }
+
+    /// The daily projection is checked with `checked_add`, so a saturated
+    /// counter reports an overflow instead of wrapping into a negative total
+    /// that would compare `<= max_per_day_stroops` and wrongly allow the spend.
+    #[test]
+    fn test_check_spending_allowed_reports_overflow_instead_of_wrapping() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let agent = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent, &owner);
+
+        // Headroom on both caps, but the daily counter is already saturated.
+        client.update_policy(&agent, &i128::MAX, &i128::MAX, &vec![&env], &0, &owner);
+        seed_daily_spent(&env, &contract_id, &agent, &owner, i128::MAX, i128::MAX);
+
+        assert_eq!(
+            spending_verdict(&client, &agent, 1),
+            Err(AgentError::ArithmeticOverflow)
+        );
+    }
+
+    /// The numeric discriminants are part of the public ABI — off-chain callers
+    /// key off them — so they are pinned here. Append only; never renumber.
+    #[test]
+    fn test_agent_error_codes_are_stable_and_unique() {
+        /// Recover the `u32` the host reports for a variant, i.e. the number
+        /// that appears in `Error(Contract, #N)` and in the backend's error map.
+        fn code_of(variant: AgentError) -> u32 {
+            let error = soroban_sdk::Error::from(variant);
+            assert!(
+                error.is_type(soroban_sdk::xdr::ScErrorType::Contract),
+                "{variant:?} must surface as a contract error"
+            );
+            error.get_code()
+        }
+
+        let expected: [(AgentError, u32); 8] = [
+            (AgentError::InvalidAmount, 1),
+            (AgentError::ArithmeticOverflow, 2),
+            (AgentError::PolicyNotFound, 3),
+            (AgentError::AgentNotFound, 4),
+            (AgentError::AgentInactive, 5),
+            (AgentError::AgentFlagged, 6),
+            (AgentError::PerTransactionLimitExceeded, 7),
+            (AgentError::DailyLimitExceeded, 8),
+        ];
+
+        for (variant, code) in expected {
+            assert_eq!(
+                code_of(variant),
+                code,
+                "{variant:?} must keep its published numeric code"
+            );
+        }
+
+        // No two causes may collapse onto the same code.
+        for (i, (left, left_code)) in expected.iter().enumerate() {
+            for (right, right_code) in expected.iter().skip(i + 1) {
+                assert_ne!(
+                    left_code, right_code,
+                    "{left:?} and {right:?} must not share code {left_code}"
+                );
+            }
+        }
+    }
+
+    /// The guard is a view: it must not require auth, extend TTLs, or write
+    /// storage, so it can be called by anyone for any agent.
+    #[test]
+    fn test_check_spending_allowed_is_a_read_only_view() {
+        let env = Env::default();
+        // Only the constructor needs a mocked authorization; it is revoked below.
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let agent = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent, &owner);
+
+        env.set_auths(&[]);
+        assert_eq!(spending_verdict(&client, &agent, 100), Ok(()));
+
+        // A rejection is reported the same way with no authorizations.
+        env.set_auths(&[]);
+        assert_eq!(
+            spending_verdict(&client, &agent, i128::MAX),
+            Err(AgentError::PerTransactionLimitExceeded)
+        );
     }
 
     #[test]
@@ -2270,8 +2609,7 @@ mod test {
 
         let _ = env.events().all();
 
-        let allowed = client.check_spending_allowed(&agent_addr, &500);
-        assert!(allowed);
+        assert_eq!(spending_verdict(&client, &agent_addr, 500), Ok(()));
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
@@ -2309,8 +2647,10 @@ mod test {
         let _ = env.events().all();
 
         // Exceeds max_per_tx_stroops (10_000_000_000)
-        let allowed = client.check_spending_allowed(&agent_addr, &10_000_000_001i128);
-        assert!(!allowed);
+        assert_eq!(
+            spending_verdict(&client, &agent_addr, 10_000_000_001i128),
+            Err(AgentError::PerTransactionLimitExceeded)
+        );
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
@@ -2350,8 +2690,7 @@ mod test {
 
         let _ = env.events().all();
 
-        let allowed = client.check_spending_allowed(&agent_addr, &1_000);
-        assert!(allowed);
+        assert_eq!(spending_verdict(&client, &agent_addr, 1_000), Ok(()));
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
@@ -2386,8 +2725,10 @@ mod test {
         let missing = Address::generate(&env);
         let _ = env.events().all();
 
-        let allowed = client.check_spending_allowed(&missing, &500);
-        assert!(!allowed);
+        assert_eq!(
+            spending_verdict(&client, &missing, 500),
+            Err(AgentError::PolicyNotFound)
+        );
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);

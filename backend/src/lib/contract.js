@@ -25,6 +25,9 @@ import {
   SimulationError,
   TransactionFailedError,
   TransactionTimeoutError,
+  CONTRACT_ERROR_CATALOGS,
+  contractErrorFromCode,
+  extractContractErrorCode,
   registryErrorFromHostError,
 } from './contractErrors.js';
 import {
@@ -103,6 +106,22 @@ function throwRegistryErrorIfPresent(details) {
   if (registryError) {
     throw registryError;
   }
+}
+
+/**
+ * Translate a host error into a `ContractError` using the catalog of the
+ * contract that produced it, and throw it if the code is recognised.
+ *
+ * Scoping the lookup matters: the contracts number their errors independently,
+ * so resolving an agents code against the registry would report a wrong cause
+ * (agents `2` is ArithmeticOverflow, registry `2` is INVALID_DESCRIPTION).
+ */
+function throwContractErrorIfPresent(details, contractName = 'registry') {
+  const catalog = CONTRACT_ERROR_CATALOGS[contractName];
+  if (!catalog) return undefined;
+  const err = contractErrorFromCode(extractContractErrorCode(details, catalog), contractName);
+  if (err) throw err;
+  return undefined;
 }
 
 export function getSubmitQueueDepth() {
@@ -309,7 +328,12 @@ async function buildUnsignedTx(operation) {
   return assembleTransactionForSubmit(tx, simResult).build().toXDR();
 }
 
-async function simulateRead(operation) {
+/**
+ * @param {object} operation
+ * @param {string} [contractName] key of `CONTRACT_ERROR_CATALOGS`; the contract
+ *   the operation invokes, used to interpret contract error codes.
+ */
+async function simulateRead(operation, contractName = 'registry') {
   const server = getStellarServer();
   const keypair = getServerKeypair();
   const passphrase = getNetworkPassphrase();
@@ -329,7 +353,7 @@ async function simulateRead(operation) {
   logRpcCall('simulateTransaction', Date.now() - simStart);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throwRegistryErrorIfPresent(simResult.error);
+    throwContractErrorIfPresent(simResult.error, contractName);
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
@@ -1017,6 +1041,23 @@ export async function isAgentEligible(agentAddress, minScore) {
   }
 }
 
+/**
+ * Ask the agents contract whether `amountStroops` is allowed for `agentAddress`.
+ *
+ * `check_spending_allowed` returns `Result<(), AgentError>` rather than a bare
+ * boolean, so a denial arrives as a contract error instead of an indistinguishable
+ * `false`. That makes three things true here that were not before:
+ *
+ *   - a successful simulation means the payment is allowed. The contract
+ *     returns unit on success, so the return value must not be coerced to a
+ *     boolean — that would report every allowed payment as denied.
+ *   - a denial is translated through the `agents` error catalog into a stable
+ *     `code`/`reason` pair instead of being logged and discarded.
+ *   - an infrastructure failure (RPC, network) is still reported as a denial,
+ *     preserving the previous fail-safe behaviour.
+ *
+ * @returns {Promise<{allowed: boolean, code: string|null, reason: string|null, agentErrorCode: number|null}>}
+ */
 export async function checkSpendingAllowed(agentAddress, amountStroops) {
   try {
     const contract = getAgentsContract();
@@ -1025,12 +1066,21 @@ export async function checkSpendingAllowed(agentAddress, amountStroops) {
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(amountStroops), { type: 'i128' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return false;
-    return Boolean(scValToNative(retval));
+    // No retval to inspect: `Ok(())` carries no data, so reaching this point
+    // without a contract error *is* the allowed answer.
+    await simulateRead(op, 'agents');
+    return { allowed: true, code: null, reason: null, agentErrorCode: null };
   } catch (err) {
+    if (err instanceof ContractError && err.agentErrorCode !== undefined) {
+      return {
+        allowed: false,
+        code: err.code,
+        reason: err.message,
+        agentErrorCode: err.agentErrorCode,
+      };
+    }
     logger.error({ err, agentAddress }, 'checkSpendingAllowed failed');
-    return false;
+    return { allowed: false, code: null, reason: null, agentErrorCode: null };
   }
 }
 

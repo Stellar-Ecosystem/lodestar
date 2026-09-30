@@ -40,6 +40,7 @@ vi.mock('node:fs', () => ({
 }));
 
 import sdkPkg from '@stellar/stellar-sdk';
+import config from '../config.js';
 import * as contractLib from './contract.js';
 
 const { StrKey } = sdkPkg;
@@ -907,5 +908,92 @@ describe('submitQueue management', () => {
     const promise = contractLib.simulateAndSubmit(contract.call('get_service_count'));
     expect(contractLib.getSubmitQueueDepth()).toBeGreaterThan(0);
     await promise;
+  });
+});
+
+describe('checkSpendingAllowed', () => {
+  // Derived from the mocked secret so it is a well-formed account address;
+  // `Address.fromString` rejects malformed checksums before any RPC call.
+  const AGENT_ADDRESS = sdkPkg.Keypair.fromSecret(config.server.secret).publicKey();
+  let originalAgentsId;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    originalAgentsId = config.contract.agentsId;
+    // The file-level config mock uses a placeholder id; the agents contract is
+    // only constructed lazily, so a real id is needed to reach the RPC mock.
+    config.contract.agentsId = VALID_CONTRACT_ID;
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+  });
+
+  afterEach(() => {
+    config.contract.agentsId = originalAgentsId;
+  });
+
+  it('reports allowed when the simulation succeeds', async () => {
+    // `check_spending_allowed` returns `Result<(), AgentError>`, so success
+    // carries a void retval. Reading a boolean out of that would report every
+    // allowed payment as denied.
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+
+    expect(await contractLib.checkSpendingAllowed(AGENT_ADDRESS, 1000)).toEqual({
+      allowed: true,
+      code: null,
+      reason: null,
+      agentErrorCode: null,
+    });
+  });
+
+  it('maps a denial to the cause the contract reported', async () => {
+    mockSimulateTransaction.mockResolvedValue({ error: 'HostError: Error(Contract, #8)' });
+
+    expect(await contractLib.checkSpendingAllowed(AGENT_ADDRESS, 1000)).toEqual({
+      allowed: false,
+      code: 'DAILY_LIMIT_EXCEEDED',
+      reason: 'Amount would exceed the agent daily spending limit',
+      agentErrorCode: 8,
+    });
+  });
+
+  it('resolves overlapping codes against the agents contract, not the registry', async () => {
+    // Code 2 is ArithmeticOverflow for the agents contract and
+    // INVALID_DESCRIPTION for the registry. The wrong catalog would report a
+    // description error for an arithmetic failure.
+    mockSimulateTransaction.mockResolvedValue({ error: 'Error(Contract, #2)' });
+
+    const verdict = await contractLib.checkSpendingAllowed(AGENT_ADDRESS, 1000);
+
+    expect(verdict.code).toBe('ARITHMETIC_OVERFLOW');
+    expect(verdict.code).not.toBe('INVALID_DESCRIPTION');
+  });
+
+  it('denies with an unknown cause when the check cannot be evaluated', async () => {
+    mockSimulateTransaction.mockResolvedValue({ error: 'Error(Contract, #99)' });
+
+    expect(await contractLib.checkSpendingAllowed(AGENT_ADDRESS, 1000)).toEqual({
+      allowed: false,
+      code: null,
+      reason: null,
+      agentErrorCode: null,
+    });
+  });
+
+  it('denies without a cause when the RPC fails', async () => {
+    mockSimulateTransaction.mockRejectedValue(new Error('socket hang up'));
+
+    expect(await contractLib.checkSpendingAllowed(AGENT_ADDRESS, 1000)).toEqual({
+      allowed: false,
+      code: null,
+      reason: null,
+      agentErrorCode: null,
+    });
+  });
+
+  it('denies without a cause for a malformed agent address', async () => {
+    const verdict = await contractLib.checkSpendingAllowed('not-an-address', 1000);
+
+    expect(verdict).toEqual({ allowed: false, code: null, reason: null, agentErrorCode: null });
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(0);
   });
 });

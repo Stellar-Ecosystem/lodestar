@@ -157,6 +157,13 @@ export interface AgentEligibilityResponse {
 export interface AgentSpendCheckResponse {
   allowed: boolean;
   reason: string;
+  /**
+   * Stable machine-readable reason, e.g. `DAILY_LIMIT_EXCEEDED`. Sourced from
+   * the agents contract's error codes, so it distinguishes causes that used to
+   * collapse into one "not allowed" answer. `null` when the check could not be
+   * evaluated. Absent on responses served before this field existed.
+   */
+  code?: string | null;
 }
 
 // ─ Category Helpers ─ — 
