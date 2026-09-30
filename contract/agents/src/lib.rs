@@ -265,7 +265,11 @@ impl LodestarAgents {
             .get(&DataKey::Agent(agent_address))
     }
 
-    // Get spending policy with automatic daily reset
+    /// Get spending policy with automatic daily reset
+    ///
+    /// # Storage
+    /// Persistent keys touched:
+    /// - `DataKey::Policy(agent_address)` (read) — entry is read and its TTL is extended.
     pub fn get_policy(env: Env, agent_address: Address) -> Option<SpendingPolicy> {
         let key = DataKey::Policy(agent_address.clone());
         if let Some(mut policy) = env
@@ -273,6 +277,10 @@ impl LodestarAgents {
             .persistent()
             .get::<DataKey, SpendingPolicy>(&key)
         {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, MAX_TTL, MAX_TTL);
+
             let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(&env, &policy);
             policy.daily_spent_stroops = daily_spent;
             policy.last_reset_ledger = last_reset;
@@ -1221,6 +1229,35 @@ mod test {
             String::from_str(&env, "violation of terms")
         );
     }
+
+    #[test]
+    fn test_get_policy_extends_ttl_and_entry_remains_readable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| {
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Reading policy should extend its TTL
+        let policy = client.get_policy(&agent_addr);
+        assert!(policy.is_some(), "policy should be readable initially");
+
+        // Advance ledger past the original default TTL expiration
+        env.ledger().with_mut(|li| li.sequence_number += 500_000);
+
+        let policy_after = client.get_policy(&agent_addr);
+        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+    }
+
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
