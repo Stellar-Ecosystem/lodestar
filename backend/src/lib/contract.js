@@ -25,7 +25,10 @@ import {
   SimulationError,
   TransactionFailedError,
   TransactionTimeoutError,
-  registryErrorFromHostError,
+  AGENT_ERROR,
+  AGENT_ERROR_SCOPE,
+  REGISTRY_ERROR_SCOPE,
+  contractErrorFromHostError,
 } from './contractErrors.js';
 import {
   trackPendingTransaction,
@@ -98,10 +101,18 @@ export function __setAssembleTransactionForTest(fn) {
   assembleTransactionForSubmit = fn ?? rpc.assembleTransaction;
 }
 
-function throwRegistryErrorIfPresent(details) {
-  const registryError = registryErrorFromHostError(details);
-  if (registryError) {
-    throw registryError;
+/**
+ * Throw a typed `ContractError` when `details` carries a contract error code.
+ *
+ * `scope` selects the error map the numeric code is resolved against. It is
+ * required because `RegistryError` and `AgentError` are separate `#[repr(u32)]`
+ * enums whose discriminants overlap, so resolving an agents-contract failure
+ * against the registry map would report a different contract's error.
+ */
+function throwContractErrorIfPresent(details, scope) {
+  const contractError = contractErrorFromHostError(details, scope);
+  if (contractError) {
+    throw contractError;
   }
 }
 
@@ -187,7 +198,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   logRpcCall('simulateTransaction', Date.now() - simStart);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throwRegistryErrorIfPresent(simResult.error);
+    throwContractErrorIfPresent(simResult.error, REGISTRY_ERROR_SCOPE);
     throw new SimulationError(`Simulation failed: ${simResult.error}`, simResult.error);
   }
 
@@ -219,7 +230,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
       return _simulateAndSubmit(operation, signer, retryCount + 1);
     }
     const details = sendResult.errorResult || sendResult;
-    throwRegistryErrorIfPresent(details);
+    throwContractErrorIfPresent(details, REGISTRY_ERROR_SCOPE);
     throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(details)}`, sendResult.hash, details);
   }
 
@@ -246,7 +257,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   removePendingTransaction(txHash);
 
   if (getResult.status === 'FAILED') {
-    throwRegistryErrorIfPresent(getResult);
+    throwContractErrorIfPresent(getResult, REGISTRY_ERROR_SCOPE);
     throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
   }
 
@@ -302,14 +313,14 @@ async function buildUnsignedTx(operation) {
 
   const simResult = await server.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(simResult)) {
-    throwRegistryErrorIfPresent(simResult.error);
+    throwContractErrorIfPresent(simResult.error, REGISTRY_ERROR_SCOPE);
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
   return assembleTransactionForSubmit(tx, simResult).build().toXDR();
 }
 
-async function simulateRead(operation) {
+async function simulateRead(operation, scope = REGISTRY_ERROR_SCOPE) {
   const server = getStellarServer();
   const keypair = getServerKeypair();
   const passphrase = getNetworkPassphrase();
@@ -329,14 +340,14 @@ async function simulateRead(operation) {
   logRpcCall('simulateTransaction', Date.now() - simStart);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throwRegistryErrorIfPresent(simResult.error);
+    throwContractErrorIfPresent(simResult.error, scope);
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
   return simResult.result?.retval;
 }
 
-export async function simulateReadBatch(operations) {
+export async function simulateReadBatch(operations, scope = REGISTRY_ERROR_SCOPE) {
   if (operations.length === 0) return [];
 
   const server = getStellarServer();
@@ -359,7 +370,7 @@ export async function simulateReadBatch(operations) {
     logRpcCall('simulateTransaction', Date.now() - simStart);
 
     if (rpc.Api.isSimulationError(simResult)) {
-      throwRegistryErrorIfPresent(simResult.error);
+      throwContractErrorIfPresent(simResult.error, scope);
       throw new ContractError(`Batch simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
     }
 
@@ -836,7 +847,7 @@ export async function listAgents(limit = 50) {
   try {
     const contract = getAgentsContract();
     const op = contract.call('list_agents', nativeToScVal(limit, { type: 'u32' }));
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return [];
     const vec = scValToNative(retval);
     if (!Array.isArray(vec)) return [];
@@ -855,7 +866,7 @@ export async function listAgentsPage(page = 0, pageSize = 20) {
       nativeToScVal(page, { type: 'u32' }),
       nativeToScVal(pageSize, { type: 'u32' })
     );
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return [];
     const vec = scValToNative(retval);
     if (!Array.isArray(vec)) return [];
@@ -873,7 +884,7 @@ export async function getAgent(agentAddress) {
       'get_agent',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return null;
     const native = scValToNative(retval);
     if (!native) return null;
@@ -898,7 +909,7 @@ export async function isAgentRegistered(agentAddress) {
       'is_registered',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return false;
     return scValToNative(retval);
   } catch (err) {
@@ -914,7 +925,7 @@ export async function getAgentPolicy(agentAddress) {
       'get_policy',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return null;
     const native = scValToNative(retval);
     if (!native) return null;
@@ -925,6 +936,19 @@ export async function getAgentPolicy(agentAddress) {
   }
 }
 
+/**
+ * Read an agent's credit score.
+ *
+ * `get_score` returns `Err(AgentError::AgentNotFound)` rather than an in-band
+ * sentinel, so a missing agent is reported as `null` instead of being
+ * indistinguishable from a real score. Every other failure (RPC, simulation,
+ * malformed address) is rethrown so the caller can tell "no score yet" apart
+ * from "we could not read the score".
+ *
+ * @param {string} agentAddress - Stellar address of the agent
+ * @returns {Promise<number|null>} The score, or `null` when the agent is not registered
+ * @throws {ContractError} `AGENT_NOT_FOUND` if the agent is not registered
+ */
 export async function getAgentScore(agentAddress) {
   try {
     const contract = getAgentsContract();
@@ -932,12 +956,15 @@ export async function getAgentScore(agentAddress) {
       'get_score',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    const retval = await simulateRead(op);
-    if (!retval) return -1;
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
+    if (!retval) return null;
     return Number(scValToNative(retval));
   } catch (err) {
+    if (err instanceof ContractError && err.contractErrorCode === AGENT_ERROR.AGENT_NOT_FOUND) {
+      return null;
+    }
     logger.error({ err, agentAddress }, 'getAgentScore failed');
-    return -1;
+    throw err;
   }
 }
 
@@ -945,7 +972,7 @@ export async function getAgentCount() {
   try {
     const contract = getAgentsContract();
     const op = contract.call('get_agent_count');
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return 0;
     return Number(scValToNative(retval));
   } catch (err) {
@@ -1008,7 +1035,7 @@ export async function isAgentEligible(agentAddress, minScore) {
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(minScore, { type: 'i32' })
     );
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return false;
     return Boolean(scValToNative(retval));
   } catch (err) {
@@ -1025,7 +1052,7 @@ export async function checkSpendingAllowed(agentAddress, amountStroops) {
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(BigInt(amountStroops), { type: 'i128' })
     );
-    const retval = await simulateRead(op);
+    const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return false;
     return Boolean(scValToNative(retval));
   } catch (err) {
@@ -1176,7 +1203,7 @@ async function submitSignedTx(signedXdr) {
   const sendResult = await server.sendTransaction(tx);
   logRpcCall('sendTransaction', Date.now() - sendStart);
   if (sendResult.status === 'ERROR') {
-    throwRegistryErrorIfPresent(sendResult.errorResult || sendResult);
+    throwContractErrorIfPresent(sendResult.errorResult || sendResult, REGISTRY_ERROR_SCOPE);
     throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
   }
 
@@ -1201,7 +1228,7 @@ async function submitSignedTx(signedXdr) {
   removePendingTransaction(signedTxHash);
 
   if (getResult.status === 'FAILED') {
-    throwRegistryErrorIfPresent(getResult);
+    throwContractErrorIfPresent(getResult, REGISTRY_ERROR_SCOPE);
     throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
   }
 

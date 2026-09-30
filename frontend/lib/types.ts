@@ -150,7 +150,11 @@ export interface AgentStats {
 
 export interface AgentEligibilityResponse {
   eligible: boolean;
-  score: number;
+  /**
+   * `null` when the agent has no on-chain score yet. The API distinguishes
+   * "no score" from a real score instead of returning the old `-1` sentinel.
+   */
+  score: number | null;
   required: number;
 }
 

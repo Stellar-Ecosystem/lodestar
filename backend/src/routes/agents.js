@@ -187,6 +187,11 @@ router.get('/agents/:address/policy', requireAgentsContract, async (req, res) =>
 router.get('/agents/:address/score', requireAgentsContract, async (req, res) => {
   try {
     const score = await getAgentScore(req.params.address);
+    // `get_score` returns Err(AgentError::AgentNotFound) for an unknown agent, so
+    // a null score is a real "not found" rather than a successful read of -1.
+    if (score === null) {
+      return res.status(404).json({ error: 'Agent not found', code: 'AGENT_NOT_FOUND' });
+    }
     res.json({ score });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/:address/score failed');
@@ -203,6 +208,9 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
       getAgentScore(address),
       isAgentEligible(address, minScore),
     ]);
+    // `score` is null for an agent that is not registered yet; `eligible` is
+    // still reported so the caller can distinguish "not eligible" from
+    // "no score to compare against".
     res.json({ eligible, score, required: minScore });
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/eligible failed');
