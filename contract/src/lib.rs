@@ -2570,6 +2570,104 @@ mod test {
         assert_eq!(max, MAX_REPUTATION);
     }
 
+    // ── get_reputation_bounds boundary tests (#742) ──────────────────────
+    //
+    // `get_reputation_bounds` takes no input and returns the (MIN, MAX) pair
+    // that `update_reputation` clamps to, so the "boundaries" are the returned
+    // values themselves. The table below pins one value on each side of every
+    // threshold (MIN-1/MIN/MIN+1, the sign flip at -1/0/1, MAX-1/MAX/MAX+1,
+    // plus the i32 extremes). Each test uses a single Env so it records
+    // exactly one snapshot under test_snapshots/test/.
+    #[test]
+    fn test_get_reputation_bounds_boundaries() {
+        let env = Env::default();
+        let registry_id = env.register(LodestarRegistry, (Address::generate(&env),));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        let (min, max) = registry.get_reputation_bounds();
+        assert_eq!(min, MIN_REPUTATION);
+        assert_eq!(max, MAX_REPUTATION);
+        assert!(min < max, "lower bound must sit below the upper bound");
+        assert!(
+            min < 0 && 0 < max,
+            "zero must fall strictly inside the bounds"
+        );
+        assert_eq!(max - min, 20_000, "bound width must stay 20,000");
+        assert_eq!(min, -max, "bounds must stay symmetric around zero");
+        // A +/-1 vote from any in-bounds reputation must stay representable:
+        // the clamps sit strictly inside the i32 extremes.
+        assert!(min > i32::MIN && max < i32::MAX);
+
+        // (probe value, below_min, within_inclusive, above_max)
+        let cases: [(i32, bool, bool, bool); 11] = [
+            (MIN_REPUTATION - 1, true, false, false),
+            (MIN_REPUTATION, false, true, false),
+            (MIN_REPUTATION + 1, false, true, false),
+            (-1, false, true, false),
+            (0, false, true, false),
+            (1, false, true, false),
+            (MAX_REPUTATION - 1, false, true, false),
+            (MAX_REPUTATION, false, true, false),
+            (MAX_REPUTATION + 1, false, false, true),
+            (i32::MIN, true, false, false),
+            (i32::MAX, false, false, true),
+        ];
+
+        for (value, below, within, above) in cases {
+            assert_eq!(value < min, below, "below_min mismatch for {}", value);
+            assert_eq!(
+                value >= min && value <= max,
+                within,
+                "within mismatch for {}",
+                value
+            );
+            assert_eq!(value > max, above, "above_max mismatch for {}", value);
+        }
+    }
+
+    // Empty registry vs registry holding entries parked exactly on the clamps
+    // (the "empty and maximum collection cases" for a getter with no input):
+    // the reported bounds must be identical in both states, and the
+    // `update_reputation` clamp must agree with them so an off-by-one cannot
+    // ship as a permanent on-chain constant.
+    #[test]
+    fn test_get_reputation_bounds_stable_across_registry_states() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry_id, registry, agents) = deploy_registry_with_id(&env);
+
+        // Empty registry: bounds are still the compile-time constants.
+        assert_eq!(
+            registry.get_reputation_bounds(),
+            (MIN_REPUTATION, MAX_REPUTATION)
+        );
+
+        // Seed entries parked exactly on each clamp (maximum collection case:
+        // reputations sitting on the boundary values themselves).
+        let provider = Address::generate(&env);
+        env.clone().as_contract(&registry_id, || {
+            setup_service(&env, 1, &provider, "compute", MIN_REPUTATION, true);
+            setup_service(&env, 2, &provider, "compute", MAX_REPUTATION, true);
+            setup_service(&env, 3, &provider, "compute", 0, true);
+        });
+
+        let (min, max) = registry.get_reputation_bounds();
+        assert_eq!((min, max), (MIN_REPUTATION, MAX_REPUTATION));
+
+        // The clamp honours the reported bounds on both sides.
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+        registry.update_reputation(&2u64, &true, &agent);
+        assert_eq!(registry.get_service(&2u64).reputation, max);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += VOTE_COOLDOWN_LEDGERS as u32 + 1);
+        registry.update_reputation(&1u64, &false, &agent);
+        assert_eq!(registry.get_service(&1u64).reputation, min);
+
+        // Bounds are unchanged after the votes above.
+        assert_eq!(registry.get_reputation_bounds(), (min, max));
+    }
+
     // ── TTL extension tests for list_services / list_services_page (#733) ────
     //
     // Every persistent storage key read by a listing function must have its TTL
