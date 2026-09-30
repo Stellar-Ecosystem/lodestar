@@ -65,6 +65,33 @@ first access. That materialisation is an observable state change, so it emits:
 The payload is self-contained: consumers do not need a follow-up `get_score` read
 to know the agent, the score, or whether the call was the initialising one.
 
+### `check_spending_allowed` event
+
+`check_spending_allowed` evaluates whether an attempted transaction amount is permitted
+under the agent's spending policy and credit status, taking into account transaction limits
+and the 24-hour rolling reset window. To prevent off-chain consumers from having to poll
+to detect whether spending checks pass or fail, it emits a structured event on every evaluation:
+
+- **Topics:** `("agents", "spending_checked", agent: Address)`
+  - `"agents"` — contract namespace topic.
+  - `"spending_checked"` — operation topic distinguishing spending allowance checks.
+  - `agent: Address` — the agent address whose spending policy was evaluated.
+- **Payload:** `(allowed: bool, amount_stroops: i128, daily_spent: i128, max_per_tx_stroops: i128, max_per_day_stroops: i128, last_reset_ledger: u64)`
+  - `allowed` (`bool`) — `true` if spending is permitted, `false` otherwise.
+  - `amount_stroops` (`i128`) — transaction amount evaluated in stroops.
+  - `daily_spent` (`i128`) — current accumulated daily spend in stroops (after applying any 24h daily reset; `0` if policy missing).
+  - `max_per_tx_stroops` (`i128`) — policy maximum stroops per transaction (`0` if policy missing).
+  - `max_per_day_stroops` (`i128`) — policy maximum stroops per day (`0` if policy missing).
+  - `last_reset_ledger` (`u64`) — ledger sequence number of the last reset window (`0` if policy missing).
+
+The payload is self-sufficient: consumers can observe spending checks and determine allowance,
+accumulated daily spend, remaining daily limit (`max_per_day_stroops - daily_spent`), and window resets
+without requiring a follow-up contract read.
+
+**Example Event:**
+- Topics: `("agents", "spending_checked", "CAAAAA...HK3M")`
+- Data: `(true, 500, 0, 10000000000, 100000000000, 12345)`
+
 ## Trust Boundaries
 
 - **Providers vs. Registry:** Providers are untrusted. They can register any endpoint. The registry relies on the x402 payment success/failure feedback loop (reputation) from agents to bubble up good services and bury bad ones.
