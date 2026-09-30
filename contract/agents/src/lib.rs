@@ -542,6 +542,12 @@ impl LodestarAgents {
     }
 
     // Flag an agent (admin-only)
+    //
+    // # Storage
+    // Persistent keys touched:
+    // - `DataKey::Admin` (read) — caller must match the stored admin.
+    // - `DataKey::Agent(agent_address)` (read + write) — entry is mutated and
+    //   its TTL is extended below.
     pub fn flag_agent(env: Env, agent_address: Address, reason: String, caller: Address) {
         caller.require_auth();
 
@@ -570,6 +576,8 @@ impl LodestarAgents {
 
         let new_score = agent.score;
 
+        // Extend TTL on the mutated agent entry so it is not archived and
+        // later reads do not fail as if the data were lost.
         env.storage().persistent().set(&key, &agent);
         env.storage()
             .persistent()
@@ -1106,6 +1114,48 @@ mod test {
             String::from_str(&env, "violation of terms")
         );
         assert!(agent.score < INITIAL_SCORE);
+    }
+
+    /// `flag_agent` must extend the TTL of the agent entry it writes.
+    ///
+    /// Advance the ledger past the persistent-entry threshold and assert the
+    /// flagged entry is still readable (i.e. it was not archived).
+    #[test]
+    fn test_flag_agent_extends_ttl_and_entry_remains_readable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| {
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        client.flag_agent(
+            &agent_addr,
+            &String::from_str(&env, "violation of terms"),
+            &admin,
+        );
+
+        // Advance the ledger past the TTL threshold that would archive an
+        // entry whose TTL was never bumped.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += TEST_MAX_TTL + 1);
+
+        let agent = client
+            .get_agent(&agent_addr)
+            .expect("flagged agent entry must remain readable after TTL boundary");
+        assert!(agent.flagged);
+        assert_eq!(
+            agent.flag_reason,
+            String::from_str(&env, "violation of terms")
+        );
     }
 
     #[test]
