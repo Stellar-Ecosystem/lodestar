@@ -2814,4 +2814,63 @@ mod test {
         );
         assert_eq!(page2.get(0).unwrap().id, id);
     }
+
+    // ── get_agents_contract authorization posture ─────────────────────────────
+    //
+    // `get_agents_contract` takes no `Address` argument and calls no `require_auth`, so
+    // it is a permissionless read. The tests below pin that posture from both
+    // sides: the read must keep working for a caller who signs nothing, and it
+    // must keep working for a caller whose signature comes from an address with
+    // no relationship to the registry. A future refactor that adds a hidden auth
+    // requirement (or drops a state write into a read path) fails here.
+
+    #[test]
+    fn test_get_agents_contract_succeeds_with_no_auths() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let agents_id = env.register(MockAgents, ());
+        let registry_id = env.register(LodestarRegistry, (agents_id.clone(),));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        // Drop every auth mock, so nothing is left to authorise the read with.
+        env.set_auths(&[]);
+
+        let result = registry.get_agents_contract();
+        assert_eq!(result, Some(agents_id));
+
+        // A read that demands no authorization must not consume any either.
+        assert!(
+            env.auths().is_empty(),
+            "get_agents_contract must not require or record an authorization",
+        );
+    }
+
+    #[test]
+    fn test_get_agents_contract_succeeds_for_any_signer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let agents_id = env.register(MockAgents, ());
+        let registry_id = env.register(LodestarRegistry, (agents_id.clone(),));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        // The anonymous read, with no auths available at all.
+        env.set_auths(&[]);
+        let anonymous = registry.get_agents_contract();
+        assert_eq!(anonymous, Some(agents_id.clone()));
+
+        // The same read signed by an address that is neither the provider nor
+        // anything the registry knows about.
+        let stranger = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &registry_id,
+                fn_name: "get_agents_contract",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let signed_by_stranger = registry.get_agents_contract();
+        assert_eq!(signed_by_stranger, Some(agents_id));
+    }
 }
