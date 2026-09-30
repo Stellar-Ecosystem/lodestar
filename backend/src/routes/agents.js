@@ -301,6 +301,18 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
     res.status(201).json({ success: true, agentCount: count, agentAddress });
   } catch (err) {
     logger.error({ err }, 'POST /api/agents/register failed');
+    // Soroban returns contract errors as `Error(<u32>)` in simulation failures.
+    // Keep the HTTP contract stable while preserving the typed on-chain cause.
+    const contractError = String(err.message || '').match(/(?:Error|contract error)\s*\(?([0-9]+)\)?/i);
+    const registerErrorCodes = {
+      3: { status: 409, error: 'Agent already registered', code: 'ALREADY_EXISTS' },
+      4: { status: 503, error: 'Agent registry is full', code: 'AGENT_LIST_FULL' },
+      5: { status: 503, error: 'Agent registry count overflow', code: 'AGENT_COUNT_OVERFLOW' },
+    };
+    const mapped = contractError && registerErrorCodes[Number(contractError[1])];
+    if (mapped) {
+      return res.status(mapped.status).json({ error: mapped.error, code: mapped.code, agentAddress });
+    }
     if (err.message?.includes('already registered')) {
       return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
     }

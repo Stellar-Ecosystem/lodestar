@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, vec, Address, Env, IntoVal, String,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, Env,
+    IntoVal, String, Symbol, Vec,
 };
 
 const MAX_TTL: u32 = 100_000_000;
@@ -24,6 +24,9 @@ const FLAG_PENALTY: i32 = -200;
 pub enum AgentError {
     InvalidAmount = 1,
     ArithmeticOverflow = 2,
+    AgentAlreadyRegistered = 3,
+    AgentListOverflow = 4,
+    AgentCountOverflow = 5,
 }
 
 #[contracttype]
@@ -167,7 +170,7 @@ impl LodestarAgents {
     ) -> u64 {
         let key = DataKey::Agent(agent_address.clone());
         if env.storage().persistent().has(&key) {
-            panic!("agent already registered");
+            panic_with_error!(&env, AgentError::AgentAlreadyRegistered);
         }
 
         let now = env.ledger().sequence() as u64;
@@ -201,6 +204,9 @@ impl LodestarAgents {
             .persistent()
             .get(&ids_key)
             .unwrap_or_else(|| vec![&env]);
+        if ids.len() == u32::MAX {
+            panic_with_error!(&env, AgentError::AgentListOverflow);
+        }
         ids.push_back(agent_address.clone());
         env.storage().persistent().set(&ids_key, &ids);
         env.storage()
@@ -210,7 +216,10 @@ impl LodestarAgents {
         // Update count
         let count_key = DataKey::AgentCount;
         let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0u64);
-        let new_count = count + 1;
+        let new_count = match count.checked_add(1) {
+            Some(value) => value,
+            None => panic_with_error!(&env, AgentError::AgentCountOverflow),
+        };
         env.storage().persistent().set(&count_key, &new_count);
         env.storage()
             .persistent()
@@ -2594,6 +2603,26 @@ mod test {
         assert_eq!(
             <(Address, String, String, i32)>::from_val(&env, &event.2),
             (owner, name, description, INITIAL_SCORE)
+        );
+    }
+
+    #[test]
+    fn test_register_agent_duplicate_returns_typed_error() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Agent Alpha");
+        let description = String::from_str(&env, "Autonomous trading agent");
+
+        client.register_agent(&agent, &name, &description, &owner);
+        assert_eq!(
+            client.try_register_agent(&agent, &name, &description, &owner),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                AgentError::AgentAlreadyRegistered as u32,
+            )))
         );
     }
 
