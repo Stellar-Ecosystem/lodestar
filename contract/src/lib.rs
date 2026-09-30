@@ -124,6 +124,41 @@ impl LodestarRegistry {
     /// Deploy-time setup: store the address of the LodestarAgents contract so
     /// `update_reputation` can verify voters are registered agents.
     ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment used to access contract storage.
+    /// * `agents_contract` - Address of the LodestarAgents contract that
+    ///   `update_reputation` will cross-call (`is_registered`) to authorise
+    ///   reputation voters. Stored verbatim; not validated at construction time.
+    ///
+    /// # Returns
+    ///
+    /// This function returns `()`. Its only observable effect is the storage
+    /// write described below.
+    ///
+    /// # Authorisation
+    ///
+    /// This is a contract constructor. It runs exactly once, atomically, as part
+    /// of deployment, and can never be invoked by a later caller. It therefore
+    /// requires no `require_auth` and exposes no post-deploy setter: the agents
+    /// address is fixed for the contract's lifetime. That closes the
+    /// trust-anchor takeover risk a public `init` would carry (a front-runner
+    /// pointing the registry at a malicious agents contract where everyone is
+    /// "registered").
+    ///
+    /// # Panics
+    ///
+    /// This function defines no contract-specific panic path and returns no
+    /// `RegistryError` variant. The Soroban SDK will panic, without a
+    /// `RegistryError` variant, if the persistent-storage write or TTL extension
+    /// fails (for example, if the host rejects the storage access).
+    ///
+    /// # Storage
+    ///
+    /// * `DataKey::AgentsContract` — written with the supplied `agents_contract`
+    ///   address, then its TTL is extended by `MAX_TTL` ledgers (both threshold
+    ///   and extend-to), so the trust anchor does not expire.
+    ///
     /// This is a contract constructor — it runs exactly once, atomically, as part
     /// of deployment, and can never be invoked by a later caller. That closes the
     /// trust-anchor takeover risk a public `init` would carry (a front-runner
@@ -478,6 +513,12 @@ impl LodestarRegistry {
     /// 3. A per-(service, agent) cooldown of `VOTE_COOLDOWN_LEDGERS` rate-limits
     ///    repeat votes, preventing a single identity from inflating or tanking a
     ///    score in a tight loop.
+    ///
+    /// Storage keys touched by this function:
+    /// 1. DataKey::AgentsContract — read to resolve the agents contract; TTL extended.
+    /// 2. DataKey::Service(id) — read, updated, and TTL extended.
+    /// 3. DataKey::LastVote(id, caller) — read for the cooldown check, written
+    ///    with the current ledger, and TTL extended.
     pub fn update_reputation(
         env: Env,
         id: u64,
@@ -492,6 +533,9 @@ impl LodestarRegistry {
             .persistent()
             .get(&DataKey::AgentsContract)
             .ok_or(RegistryError::AgentsContractNotConfigured)?;
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::AgentsContract, MAX_TTL, MAX_TTL);
 
         let registered: bool = env.invoke_contract(
             &agents_contract,
@@ -507,11 +551,17 @@ impl LodestarRegistry {
             .persistent()
             .get(&DataKey::Service(id))
             .ok_or(RegistryError::ServiceNotFound)?;
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Service(id), MAX_TTL, MAX_TTL);
 
         // ── 2. Per-(service, agent) cooldown ──────────────────────────────────
         let now = env.ledger().sequence() as u64;
         let vote_key = DataKey::LastVote(id, caller.clone());
         if let Some(last_vote) = env.storage().persistent().get::<DataKey, u64>(&vote_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&vote_key, MAX_TTL, MAX_TTL);
             if now < last_vote + VOTE_COOLDOWN_LEDGERS {
                 return Err(RegistryError::ReputationVoteCooldown);
             }
@@ -1719,6 +1769,41 @@ mod test {
         // Assert readability
         let entry = registry.get_service(&id);
         assert_eq!(entry.active, false);
+    }
+
+    /// `set_registered` on the agents contract is exercised through the
+    /// registry's `update_reputation` path. Every persistent key touched by
+    /// `update_reputation` must have its TTL extended, otherwise an entry can
+    /// be archived between writes and a later read looks like data loss.
+    #[test]
+    fn test_update_reputation_extends_ttl_on_all_touched_keys() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, agents) = deploy_registry(&env);
+        let id = register_a_service(&env, &registry);
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+
+        // Advance to just before the original TTL would expire.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MAX_TTL - 1);
+
+        // This vote must bump DataKey::AgentsContract, DataKey::Service(id),
+        // and DataKey::LastVote(id, agent).
+        registry.update_reputation(&id, &true, &agent);
+        assert_eq!(registry.get_service(&id).reputation, 1);
+
+        // Advance past the original registration TTL. Without the extend_ttl
+        // calls the entries would now be archived and the next read would fail.
+        env.ledger().with_mut(|li| li.sequence_number += 2);
+
+        // The service entry must still be readable after the original TTL window.
+        let entry = registry.get_service(&id);
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.reputation, 1);
+
+        // The agents contract trust anchor must still be readable too.
+        assert!(registry.get_agents_contract().is_some());
     }
 
     #[test]
