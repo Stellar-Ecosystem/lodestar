@@ -28,6 +28,7 @@ async function loadConfig(overrides = {}) {
     'DEMO_RUN_POLL_MAX_WAIT_MS',
     'DEMO_RUN_POLL_INITIAL_DELAY_MS',
     'DEMO_RUN_POLL_MAX_DELAY_MS',
+    'DEMO_RUN_CACHE_TTL_SECONDS',
   ]) {
     if (!(key in overrides)) delete process.env[key];
   }
@@ -112,6 +113,27 @@ describe('config demoRun polling env validation', () => {
     });
     expect(config.demoRun.pollInitialDelayMs).toBe(250);
     expect(config.demoRun.pollMaxDelayMs).toBe(2000);
+  });
+});
+
+describe('config demo-run cache TTL validation', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+  });
+
+  it('defaults the demo-run cache TTL to 15 seconds', async () => {
+    expect((await loadConfig()).demoRun.cacheTtlSeconds).toBe(15);
+  });
+
+  it('accepts a positive integer override and falls back for invalid values', async () => {
+    expect((await loadConfig({ DEMO_RUN_CACHE_TTL_SECONDS: '30' })).demoRun.cacheTtlSeconds).toBe(30);
+    expect((await loadConfig({ DEMO_RUN_CACHE_TTL_SECONDS: '0' })).demoRun.cacheTtlSeconds).toBe(15);
+    expect(console.warn).toHaveBeenCalled();
   });
 });
 

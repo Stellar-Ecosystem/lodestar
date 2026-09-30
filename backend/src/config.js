@@ -143,6 +143,7 @@ const config = Object.freeze({
   },
 
   demoRun: {
+    cacheTtlSeconds: parsePositiveInt(process.env.DEMO_RUN_CACHE_TTL_SECONDS, 15, 'DEMO_RUN_CACHE_TTL_SECONDS'),
     pollMaxWaitMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_WAIT_MS, 8_000, 'DEMO_RUN_POLL_MAX_WAIT_MS'),
     pollInitialDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_INITIAL_DELAY_MS, 250, 'DEMO_RUN_POLL_INITIAL_DELAY_MS'),
     pollMaxDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_DELAY_MS, 2_000, 'DEMO_RUN_POLL_MAX_DELAY_MS'),
