@@ -26,8 +26,11 @@ export default function ActivityFeed() {
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
 
-  async function load() {
+  async function load(isRetry = false) {
+    if (isRetry) setLoading(true);
+    setError(null);
     try {
       const res = await fetch(`${API_URL}/demo/activity`);
       if (!res.ok) {
@@ -35,8 +38,9 @@ export default function ActivityFeed() {
       }
       const data = (await res.json()) as { activity: ActivityEntry[] };
       setActivity(data.activity);
-    } catch (error) {
-      console.error(JSON.stringify({ event: 'activity_feed_fetch_failed', error: String(error) }));
+    } catch (err) {
+      console.error(JSON.stringify({ event: 'activity_feed_fetch_failed', error: String(err) }));
+      setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
       setLoading(false);
     }
@@ -44,7 +48,7 @@ export default function ActivityFeed() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 5_000);
+    const interval = setInterval(() => load(), 5_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -55,9 +59,32 @@ export default function ActivityFeed() {
     <div className="card p-6 h-full flex flex-col">
       <h2 className="font-semibold text-sm mb-4">Live Registry Activity</h2>
 
-      {loading && activity.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-secondary text-sm">
-          Loading...
+      {loading && activity.length === 0 && !error ? (
+        <div data-testid="activity-feed-loading" className="flex-1 overflow-hidden space-y-3 pr-1" aria-busy="true">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="border border-border rounded-lg px-4 py-3 space-y-2 animate-pulse">
+              <div className="flex items-center justify-between">
+                <div className="h-3 w-20 bg-border/60 rounded" />
+                <div className="h-3 w-12 bg-border/50 rounded" />
+              </div>
+              <div className="h-3.5 w-3/4 bg-border/50 rounded" />
+              <div className="flex items-center justify-between pt-1">
+                <div className="h-3 w-16 bg-border/60 rounded" />
+                <div className="h-3 w-14 bg-border/50 rounded" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : error && activity.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-secondary text-sm gap-3">
+          <p>Failed to load activity</p>
+          <button 
+            type="button" 
+            onClick={() => load(true)} 
+            className="btn-secondary text-xs py-1.5 px-4"
+          >
+            Retry
+          </button>
         </div>
       ) : activity.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-secondary text-sm">
