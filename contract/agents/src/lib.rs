@@ -148,10 +148,9 @@ impl LodestarAgents {
     }
 
     /// Deploy-time setup: store the admin address for privileged operations.
-    pub fn __constructor(env: Env, admin: Address) {
-        // Persistent keys touched here:
-        // - DataKey::Admin
-        env.storage().persistent().set(&DataKey::Admin, &admin);
+ pub fn __constructor(env: Env, admin: Address) {
+    admin.require_auth();
+    env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Admin, MAX_TTL, MAX_TTL);
