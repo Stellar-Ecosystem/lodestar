@@ -83,6 +83,7 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 | --- | --- | --- |
 | Register agent | `("agents", "registered", agent_address)` | `(owner, name, description, initial_score)` |
 | Check registration | `("agents", "registration_checked", agent_address)` | `(registered,)` |
+| Read score | `("agents", "score_read", agent_address)` | `(score, exists)` |
 | Record payment | `("agents", "payment", agent_address)` | `(service_id, amount_stroops, success, old_score, new_score, caller)` |
 | Flag agent | `("agents", "flagged", agent_address)` | `(caller, reason, old_score, new_score)` |
 | Deactivate agent | `("agents", "deactivated", agent_address)` | `(caller, owner, score, name)` |
@@ -115,3 +116,25 @@ transaction (including the registry's cross-contract reputation check).
 Activity feeds should subscribe to the existing `("agents", "registered",
 agent_address)` event from `register_agent` for actual new registrations,
 rather than submit transactions just to observe these checks.
+
+`get_score` emits `score_read` only on success. Reading the score of an agent that
+was never registered fails with `AgentError::AgentNotFound` (see below), so no
+event is emitted and the caller must not treat the failure as a zero score.
+
+## Error Codes
+
+Failures are reported as typed `AgentError` values, not as in-band sentinel
+values. The discriminants are part of the contract ABI and must stay stable.
+
+| Code | Variant | Meaning |
+| --- | --- | --- |
+| 1 | `InvalidAmount` | Payment amount must be greater than zero |
+| 2 | `ArithmeticOverflow` | Score arithmetic overflowed |
+| 3 | `AgentAlreadyRegistered` | `register_agent` called for an existing agent |
+| 4 | `AgentListOverflow` | Agent list exceeded the maximum supported length |
+| 5 | `AgentCountOverflow` | Agent count exceeded the maximum supported value |
+| 6 | `AgentNotFound` | `get_score` called for an agent that is not registered |
+
+`RegistryError` (the service registry contract) is a separate `#[repr(u32)]`
+enum whose discriminants overlap these values. A numeric code must always be
+resolved against the map for the contract that was actually invoked.

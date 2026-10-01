@@ -44,6 +44,54 @@ its value type, TTL class and growth characteristics are documented in
 **[Storage Layout](./storage-layout.md)** — the reference for reasoning about
 migration cost, TTL rent, and what a redeploy would have to preserve.
 
+## Contract Events
+
+`LodestarAgents` emits structured events for every observable state transition so
+off-chain consumers (indexers, activity feeds, the frontend leaderboard) can react
+without polling.
+
+### `get_score` event
+
+`get_score` is a read-only view, but it lazily materialises the agent's score on
+first access. That materialisation is an observable state change, so it emits:
+
+- **Topics:** `("score", "get")` — the `"score"` topic namespaces all score-related
+  events; `"get"` distinguishes the lazy-materialisation path from future
+  score-mutating events (e.g. `record_payment`).
+- **Payload:** `(agent: Address, score: u32, initialized: bool)` — the agent whose
+  score was read, the resulting score (0-1000), and whether this call performed the
+  initial materialisation (`true`) or merely read an existing value (`false`).
+
+The payload is self-contained: consumers do not need a follow-up `get_score` read
+to know the agent, the score, or whether the call was the initialising one.
+
+### `check_spending_allowed` event
+
+`check_spending_allowed` evaluates whether an attempted transaction amount is permitted
+under the agent's spending policy and credit status, taking into account transaction limits
+and the 24-hour rolling reset window. To prevent off-chain consumers from having to poll
+to detect whether spending checks pass or fail, it emits a structured event on every evaluation:
+
+- **Topics:** `("agents", "spending_checked", agent: Address)`
+  - `"agents"` — contract namespace topic.
+  - `"spending_checked"` — operation topic distinguishing spending allowance checks.
+  - `agent: Address` — the agent address whose spending policy was evaluated.
+- **Payload:** `(allowed: bool, amount_stroops: i128, daily_spent: i128, max_per_tx_stroops: i128, max_per_day_stroops: i128, last_reset_ledger: u64)`
+  - `allowed` (`bool`) — `true` if spending is permitted, `false` otherwise.
+  - `amount_stroops` (`i128`) — transaction amount evaluated in stroops.
+  - `daily_spent` (`i128`) — current accumulated daily spend in stroops (after applying any 24h daily reset; `0` if policy missing).
+  - `max_per_tx_stroops` (`i128`) — policy maximum stroops per transaction (`0` if policy missing).
+  - `max_per_day_stroops` (`i128`) — policy maximum stroops per day (`0` if policy missing).
+  - `last_reset_ledger` (`u64`) — ledger sequence number of the last reset window (`0` if policy missing).
+
+The payload is self-sufficient: consumers can observe spending checks and determine allowance,
+accumulated daily spend, remaining daily limit (`max_per_day_stroops - daily_spent`), and window resets
+without requiring a follow-up contract read.
+
+**Example Event:**
+- Topics: `("agents", "spending_checked", "CAAAAA...HK3M")`
+- Data: `(true, 500, 0, 10000000000, 100000000000, 12345)`
+
 ## Trust Boundaries
 
 - **Providers vs. Registry:** Providers are untrusted. They can register any endpoint. The registry relies on the x402 payment success/failure feedback loop (reputation) from agents to bubble up good services and bury bad ones.
@@ -63,6 +111,7 @@ migration cost, TTL rent, and what a redeploy would have to preserve.
 4. **Reputation Update:**
    `AI Agent` -> `LodestarAgents (record_payment)` -> Updates Agent Score.
    `AI Agent` -> `LodestarRegistry (update_reputation)` -> Updates Service Score.
+   `AI Agent` -> `LodestarAgents (get_score)` -> Emits `("score", "get")` event on lazy materialisation.
 
 ## Failure Modes
 
@@ -73,6 +122,8 @@ migration cost, TTL rent, and what a redeploy would have to preserve.
 2. **LodestarAgents (Soroban Contract)**
    - **Failure:** Agent fails to pay or service rejects payment.
    - **Mitigation:** The agent's credit score is penalized (-25 points), preventing malicious or faulty agents from maintaining a high tier or draining resources.
+   - **Failure:** Off-chain consumers miss a lazy score materialisation because they only polled `get_score` results.
+   - **Mitigation:** `get_score` emits a structured `("score", "get")` event with the agent, score, and initialisation flag, so consumers can subscribe instead of polling.
 
 3. **Backend / API Services:**
    - **Failure:** The off-chain service endpoint goes down or returns 500s.

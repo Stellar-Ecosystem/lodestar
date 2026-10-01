@@ -187,6 +187,11 @@ router.get('/agents/:address/policy', requireAgentsContract, async (req, res) =>
 router.get('/agents/:address/score', requireAgentsContract, async (req, res) => {
   try {
     const score = await getAgentScore(req.params.address);
+    // `get_score` returns Err(AgentError::AgentNotFound) for an unknown agent, so
+    // a null score is a real "not found" rather than a successful read of -1.
+    if (score === null) {
+      return res.status(404).json({ error: 'Agent not found', code: 'AGENT_NOT_FOUND' });
+    }
     res.json({ score });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/:address/score failed');
@@ -203,6 +208,9 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
       getAgentScore(address),
       isAgentEligible(address, minScore),
     ]);
+    // `score` is null for an agent that is not registered yet; `eligible` is
+    // still reported so the caller can distinguish "not eligible" from
+    // "no score to compare against".
     res.json({ eligible, score, required: minScore });
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/eligible failed');
@@ -301,6 +309,18 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
     res.status(201).json({ success: true, agentCount: count, agentAddress });
   } catch (err) {
     logger.error({ err }, 'POST /api/agents/register failed');
+    // Soroban returns contract errors as `Error(<u32>)` in simulation failures.
+    // Keep the HTTP contract stable while preserving the typed on-chain cause.
+    const contractError = String(err.message || '').match(/(?:Error|contract error)\s*\(?([0-9]+)\)?/i);
+    const registerErrorCodes = {
+      3: { status: 409, error: 'Agent already registered', code: 'ALREADY_EXISTS' },
+      4: { status: 503, error: 'Agent registry is full', code: 'AGENT_LIST_FULL' },
+      5: { status: 503, error: 'Agent registry count overflow', code: 'AGENT_COUNT_OVERFLOW' },
+    };
+    const mapped = contractError && registerErrorCodes[Number(contractError[1])];
+    if (mapped) {
+      return res.status(mapped.status).json({ error: mapped.error, code: mapped.code, agentAddress });
+    }
     if (err.message?.includes('already registered')) {
       return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
     }

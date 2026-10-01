@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { axe } from 'jest-axe';
 import ActivityFeed from '../components/ActivityFeed';
 
 global.fetch = jest.fn();
@@ -13,6 +14,24 @@ const mockActivities = Array.from({ length: 25 }).map((_, i) => ({
 }));
 
 describe('ActivityFeed Pagination', () => {
+  it('has no critical or serious accessibility violations', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ activity: mockActivities })
+    });
+
+    const { container } = render(<ActivityFeed />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Agent/).length).toBe(10);
+    });
+
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+    expect(results.violations.filter(v => v.impact === 'critical' || v.impact === 'serious')).toHaveLength(0);
+  });
+
+
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -30,10 +49,10 @@ describe('ActivityFeed Pagination', () => {
 
     render(<ActivityFeed />);
 
-    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    expect(screen.getByTestId('activity-feed-loading')).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('activity-feed-loading')).not.toBeInTheDocument();
     });
 
     // Should have 10 items rendered
@@ -99,8 +118,8 @@ describe('ActivityFeed Pagination', () => {
     });
   });
 
-  it('logs structured error on fetch failure', async () => {
-    (global.fetch as jest.Mock).mockRejectedValue(new Error('Network disconnected'));
+  it('logs structured error on fetch failure and shows error state with retry', async () => {
+    (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network disconnected'));
 
     render(<ActivityFeed />);
 
@@ -108,6 +127,28 @@ describe('ActivityFeed Pagination', () => {
       expect(console.error).toHaveBeenCalled();
       const logArg = (console.error as jest.Mock).mock.calls[0][0];
       expect(logArg).toContain('activity_feed_fetch_failed');
+    });
+
+    // Error state should be visible
+    expect(screen.getByText('Failed to load activity')).toBeInTheDocument();
+    const retryButton = screen.getByRole('button', { name: 'Retry' });
+    expect(retryButton).toBeInTheDocument();
+
+    // Mock success for retry
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ activity: mockActivities.slice(0, 1) })
+    });
+
+    fireEvent.click(retryButton);
+
+    // Should go back to loading state
+    expect(screen.getByTestId('activity-feed-loading')).toBeInTheDocument();
+
+    // Then show the item
+    await waitFor(() => {
+      expect(screen.getByText(/Agent/)).toBeInTheDocument();
+      expect(screen.queryByText('Failed to load activity')).not.toBeInTheDocument();
     });
   });
 });

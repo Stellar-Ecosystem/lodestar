@@ -60,8 +60,21 @@ function validate(f: FormState): Record<string, string> {
   return errors;
 }
 
+function isFormValid(form: FormState) {
+  return (
+    form.name.trim().length >= 3 &&
+    form.name.trim().length <= 64 &&
+    form.description.trim().length >= 10 &&
+    form.description.trim().length <= 256 &&
+    form.endpoint.trim().startsWith('https://') &&
+    form.endpoint.trim().length <= 256 &&
+    PRICE_USDC_REGEX.test(form.price_usdc.trim()) &&
+    Number(form.price_usdc.trim()) >= 0.0001
+  );
+}
+
 export default function RegisterForm({ walletAddress }: Props) {
-  const [form, setForm]     = useState<FormState>(EMPTY);
+  const [form, setForm] = useState<FormState>(EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [pendingTx, setPendingTx] = useState<{ txHash: string } | null>(null);
@@ -69,12 +82,14 @@ export default function RegisterForm({ walletAddress }: Props) {
   const [submitError, setSubmitError] = useState('');
 
   function set(field: keyof FormState, value: string) {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    
     const updatedForm = { ...form, [field]: value };
+    setForm(updatedForm);
+
     const errs = validate(updatedForm);
     setErrors(errs);
   }
+
+  const canSubmit = isFormValid(form) && !submitting;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -155,8 +170,10 @@ export default function RegisterForm({ walletAddress }: Props) {
         label="Service Name"
         error={errors.name}
         hint="3–64 characters"
+        htmlFor="service-name"
       >
         <input
+          id="service-name"
           type="text"
           value={form.name}
           onChange={(e) => set('name', e.target.value)}
@@ -170,8 +187,10 @@ export default function RegisterForm({ walletAddress }: Props) {
         label="Description"
         error={errors.description}
         hint="10–256 characters"
+        htmlFor="service-description"
       >
         <textarea
+          id="service-description"
           rows={3}
           value={form.description}
           onChange={(e) => set('description', e.target.value)}
@@ -185,8 +204,10 @@ export default function RegisterForm({ walletAddress }: Props) {
         label="Endpoint URL"
         error={errors.endpoint}
         hint="https://, max 256 characters"
+        htmlFor="service-endpoint"
       >
         <input
+          id="service-endpoint"
           type="url"
           value={form.endpoint}
           onChange={(e) => set('endpoint', e.target.value)}
@@ -197,11 +218,11 @@ export default function RegisterForm({ walletAddress }: Props) {
       </Field>
 
       <div className="grid grid-cols-2 gap-4">
-        <Field label="Price (USDC)" error={errors.price_usdc} hint="Min 0.0001">
+        <Field label="Price (USDC)" error={errors.price_usdc} hint="Min 0.0001" htmlFor="service-price">
           <input
-            type="number"
-            step="0.0001"
-            min="0.0001"
+            id="service-price"
+            type="text"
+            inputMode="decimal"
             value={form.price_usdc}
             onChange={(e) => set('price_usdc', e.target.value)}
             placeholder="0.001"
@@ -210,8 +231,9 @@ export default function RegisterForm({ walletAddress }: Props) {
           />
         </Field>
 
-        <Field label="Category" error={errors.category}>
+        <Field label="Category" error={errors.category} htmlFor="service-category">
           <select
+            id="service-category"
             value={form.category}
             onChange={(e) => set('category', e.target.value as Category)}
             disabled={submitting}
@@ -232,7 +254,7 @@ export default function RegisterForm({ walletAddress }: Props) {
 
       <button
         type="submit"
-        disabled={submitting || Object.keys(errors).length > 0}
+        disabled={!canSubmit}
         className="btn-primary w-full py-3 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {submitting ? 'Registering…' : 'Register Service'}
@@ -253,17 +275,21 @@ function Field({
   label,
   error,
   hint,
+  htmlFor,
   children,
 }: {
   label: string;
   error?: string;
   hint?: string;
+  htmlFor?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <label className="text-sm font-medium">{label}</label>
+        <label htmlFor={htmlFor} className="text-sm font-medium">
+          {label}
+        </label>
         {hint && !error && <span className="text-xs text-secondary">{hint}</span>}
         {error && <span className="text-xs text-error">{error}</span>}
       </div>

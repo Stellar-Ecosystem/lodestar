@@ -82,7 +82,7 @@ export function scoreTier(score: number): ScoreTier {
   return 'new';
 }
 
-export const TIER_LABELS: RecordScoreTier, string> = {
+export const TIER_LABELS: Record<ScoreTier, string> = {
   new: 'New',
   building: 'Building',
   established: 'Established',
@@ -90,7 +90,7 @@ export const TIER_LABELS: RecordScoreTier, string> = {
   elite: 'Elite',
 };
 
-export const TIER_COLORS: RecordScoreTier, string> = {
+export const TIER_COLORS: Record<ScoreTier, string> = {
   new: 'text-gray-500 bg-gray-50',
   building: 'text-blue-600 bg-blue-50',
   established: 'text-violet-600 bg-violet-50',
@@ -150,7 +150,11 @@ export interface AgentStats {
 
 export interface AgentEligibilityResponse {
   eligible: boolean;
-  score: number;
+  /**
+   * `null` when the agent has no on-chain score yet. The API distinguishes
+   * "no score" from a real score instead of returning the old `-1` sentinel.
+   */
+  score: number | null;
   required: number;
 }
 

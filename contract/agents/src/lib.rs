@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, vec, Address, Env, IntoVal, String,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, Env,
+    IntoVal, String, Symbol, Vec,
 };
 
 const MAX_TTL: u32 = 100_000_000;
@@ -24,6 +24,10 @@ const FLAG_PENALTY: i32 = -200;
 pub enum AgentError {
     InvalidAmount = 1,
     ArithmeticOverflow = 2,
+    AgentAlreadyRegistered = 3,
+    AgentListOverflow = 4,
+    AgentCountOverflow = 5,
+    AgentNotFound = 6,
 }
 
 #[contracttype]
@@ -167,7 +171,7 @@ impl LodestarAgents {
     ) -> u64 {
         let key = DataKey::Agent(agent_address.clone());
         if env.storage().persistent().has(&key) {
-            panic!("agent already registered");
+            panic_with_error!(&env, AgentError::AgentAlreadyRegistered);
         }
 
         let now = env.ledger().sequence() as u64;
@@ -201,6 +205,9 @@ impl LodestarAgents {
             .persistent()
             .get(&ids_key)
             .unwrap_or_else(|| vec![&env]);
+        if ids.len() == u32::MAX {
+            panic_with_error!(&env, AgentError::AgentListOverflow);
+        }
         ids.push_back(agent_address.clone());
         env.storage().persistent().set(&ids_key, &ids);
         env.storage()
@@ -210,7 +217,10 @@ impl LodestarAgents {
         // Update count
         let count_key = DataKey::AgentCount;
         let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0u64);
-        let new_count = count + 1;
+        let new_count = match count.checked_add(1) {
+            Some(value) => value,
+            None => panic_with_error!(&env, AgentError::AgentCountOverflow),
+        };
         env.storage().persistent().set(&count_key, &new_count);
         env.storage()
             .persistent()
@@ -273,19 +283,104 @@ impl LodestarAgents {
         }
     }
 
-    // Get score for an agent
-    pub fn get_score(env: Env, agent_address: Address) -> i32 {
-        env.storage()
-            .persistent()
-            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
-            .map(|a| a.score)
-            .unwrap_or(-1)
+    /// Read the credit score for a registered agent.
+    ///
+    /// # Returns
+    /// `Ok(score)` holding the agent's current score.
+    ///
+    /// # Errors
+    /// `AgentError::AgentNotFound` (`6`) — no `DataKey::Agent(agent_address)`
+    /// entry exists, i.e. the address was never registered. This replaces the
+    /// old `-1` return value, which the caller could not tell apart from a
+    /// genuine negative score.
+    ///
+    /// The variant reaches the host as `Error(Contract, #6)`, so the backend can
+    /// map it to a distinct HTTP status instead of guessing from the message.
+    ///
+    /// Note that this is deliberately an `Err` and not a `panic_with_error!`:
+    /// a panic raised inside a `Result`-returning function is downgraded by the
+    /// host to a bare `Error(Context, InvalidAction)`, which drops the numeric
+    /// discriminant the caller needs. `Err` keeps the code, which is why
+    /// `get_service` in the registry contract uses the same shape.
+    ///
+    /// The remaining failure mode — a live key whose value cannot be decoded as
+    /// an `AgentEntry` — is not given a variant on purpose: the SDK's
+    /// `Storage::get` aborts the whole invocation on a decode mismatch before
+    /// any contract code can branch on it, so no variant could be reported.
+    ///
+    /// # Events
+    /// On success only, emits a `("agents", "score_read", agent_address)` event
+    /// with payload `(score, exists)`:
+    ///   - `score`  — the agent's current score
+    ///   - `exists` — always `true`. The flag is retained so the payload shape
+    ///                is unchanged for indexers built against the original
+    ///                schema; a failed read emits nothing because the
+    ///                invocation is reverted, so the flag can no longer be
+    ///                `false`.
+    ///
+    /// The payload is self-sufficient: consumers can build an activity feed
+    /// without a follow-up `get_agent` read. Note that `get_score` is a view
+    /// and does not mutate storage, but the event is still published so
+    /// off-chain indexers can observe score reads without polling.
+    pub fn get_score(env: Env, agent_address: Address) -> Result<i32, AgentError> {
+        let key = DataKey::Agent(agent_address.clone());
+        let score = match env.storage().persistent().get::<DataKey, AgentEntry>(&key) {
+            Some(entry) => entry.score,
+            None => return Err(AgentError::AgentNotFound),
+        };
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "score_read"),
+                agent_address,
+            ),
+            (score, true),
+        );
+
+        Ok(score)
     }
 
-    /// Check storage membership and emit a registration observation.
-    /// Topics: ("agents", "registration_checked", agent_address).
-    /// Data: (registered,). This is a query result, not a state transition;
-    /// simulation events are visible only to the calling client.
+    /// Returns whether an agent record exists for `agent_address`.
+    ///
+    /// # Parameters
+    /// - `agent_address`: the address the agent was registered under via
+    ///   `register_agent`.
+    ///
+    /// # Returns
+    /// `true` if a `DataKey::Agent(agent_address)` entry exists in persistent
+    /// storage, `false` otherwise.
+    ///
+    /// This is an existence check. It does not inspect the entry, so it
+    /// still returns `true` for agents that are deactivated (`active == false`)
+    /// or flagged (`flagged == true`), since neither operation removes the
+    /// record — no function in this contract deletes an agent entry, so once
+    /// `true` it stays `true`. Use `is_eligible` to check whether an agent is
+    /// active, unflagged and above a minimum score.
+    ///
+    /// # Authorisation
+    /// None. Any caller may query any address; no `require_auth` is invoked.
+    ///
+    /// # Panics
+    /// This function never panics and returns no `AgentError` variant. An
+    /// unknown address yields `false`, not an error. It does not depend on
+    /// `init` or the constructor having run.
+    ///
+    /// # Storage
+    /// - Reads (existence only): `DataKey::Agent(agent_address)` in
+    ///   persistent storage.
+    /// - Writes: none. The entry's TTL is not extended.
+    ///
+    /// # Events
+    /// Emits a `("agents", "registration_checked", agent_address)` event with
+    /// `(registered,)` data for every successful check. This is an observation,
+    /// not a registration transition. Simulation events are visible only to
+    /// the calling client.
+    ///
+    /// # Cost
+    /// A single persistent-storage `has` lookup. The entry's value is not
+    /// deserialised, so cost is constant regardless of the size of the
+    /// stored `AgentEntry` or the number of registered agents.
     pub fn is_registered(env: Env, agent_address: Address) -> bool {
         let registered = env
             .storage()
@@ -311,8 +406,21 @@ impl LodestarAgents {
             .unwrap_or(false)
     }
 
-    // Check if a transaction is allowed under the spending policy
-    // Returns true if allowed, false otherwise
+    /// Check if a transaction is allowed under the spending policy
+    /// Returns true if allowed, false otherwise
+    ///
+    /// # Events
+    /// Emits a `("agents", "spending_checked", agent_address)` event with payload:
+    /// `(allowed, amount_stroops, daily_spent, max_per_tx_stroops, max_per_day_stroops, last_reset_ledger)`:
+    ///   - `allowed`             — `true` if the transaction is permitted, `false` otherwise
+    ///   - `amount_stroops`      — transaction amount evaluated in stroops
+    ///   - `daily_spent`         — current daily spend in stroops (with reset window applied; 0 if missing)
+    ///   - `max_per_tx_stroops`  — policy maximum stroops per transaction (0 if missing)
+    ///   - `max_per_day_stroops` — policy maximum stroops per day (0 if missing)
+    ///   - `last_reset_ledger`   — ledger sequence of the last reset (0 if missing)
+    ///
+    /// The payload is self-sufficient: consumers can observe spending checks and determine
+    /// allowance, limits, and window resets without follow-up reads.
     pub fn check_spending_allowed(env: Env, agent_address: Address, amount_stroops: i128) -> bool {
         let key = DataKey::Policy(agent_address.clone());
         let policy = match env
@@ -321,34 +429,116 @@ impl LodestarAgents {
             .get::<DataKey, SpendingPolicy>(&key)
         {
             Some(p) => p,
-            None => return false,
+            None => {
+                env.events().publish(
+                    (
+                        Symbol::new(&env, "agents"),
+                        Symbol::new(&env, "spending_checked"),
+                        agent_address,
+                    ),
+                    (false, amount_stroops, 0i128, 0i128, 0i128, 0u64),
+                );
+                return false;
+            }
         };
         let agent = match env
             .storage()
             .persistent()
-            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
+            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address.clone()))
         {
             Some(a) => a,
-            None => return false,
+            None => {
+                env.events().publish(
+                    (
+                        Symbol::new(&env, "agents"),
+                        Symbol::new(&env, "spending_checked"),
+                        agent_address,
+                    ),
+                    (
+                        false,
+                        amount_stroops,
+                        0i128,
+                        policy.max_per_tx_stroops,
+                        policy.max_per_day_stroops,
+                        policy.last_reset_ledger,
+                    ),
+                );
+                return false;
+            }
         };
 
-        if !agent.active || agent.flagged {
-            return false;
-        }
+        let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(&env, &policy);
 
-        if amount_stroops <= 0 || amount_stroops > policy.max_per_tx_stroops {
-            return false;
-        }
+        let allowed = if !agent.active
+            || agent.flagged
+            || amount_stroops <= 0
+            || amount_stroops > policy.max_per_tx_stroops
+        {
+            false
+        } else {
+            match daily_spent.checked_add(amount_stroops) {
+                Some(total) => total <= policy.max_per_day_stroops,
+                None => false,
+            }
+        };
 
-        let (daily_spent, _) = Self::get_daily_spend_with_reset(&env, &policy);
-        match daily_spent.checked_add(amount_stroops) {
-            Some(total) => total <= policy.max_per_day_stroops,
-            None => false,
-        }
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "spending_checked"),
+                agent_address,
+            ),
+            (
+                allowed,
+                amount_stroops,
+                daily_spent,
+                policy.max_per_tx_stroops,
+                policy.max_per_day_stroops,
+                last_reset,
+            ),
+        );
+
+        allowed
     }
 
-    // Record a payment outcome — updates score, stats, and daily spend
-    // Only the service provider (caller) may record a payment for their service.
+    /// Record a payment outcome for an agent's service.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment used for storage, events, ledger access, and the registry call.
+    /// - `agent_address`: Agent whose score, payment counters, and volume are updated.
+    /// - `service_id`: Service identifier passed to the registry contract.
+    /// - `amount_stroops`: Payment amount in stroops; must be strictly positive.
+    /// - `success`: Whether the payment succeeded.
+    /// - `caller`: Address that signs the invocation and must be the registered service provider.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` after persisting the updated agent and policy state.
+    /// Returns `Err(AgentError::InvalidAmount)` if `amount_stroops <= 0`.
+    /// Returns `Err(AgentError::ArithmeticOverflow)` if updating the agent's total volume or the
+    /// policy's daily spend overflows `i128`.
+    ///
+    /// # Authorisation
+    /// `caller` must satisfy `require_auth()` and must equal the provider returned by the
+    /// registry contract's `get_service(service_id)` call.
+    ///
+    /// # Panics
+    /// - `expect("registry contract not set — call init() first")` if the registry contract
+    ///   address has not been initialized.
+    /// - `panic!("unauthorized: caller is not the service provider")` if the registry's provider
+    ///   does not match `caller`.
+    /// - `expect("agent not found")` if `DataKey::Agent(agent_address)` is missing.
+    /// - `expect("policy not found")` if `DataKey::Policy(agent_address)` is missing.
+    /// - Any panic or revert raised by the registry contract's `get_service` implementation.
+    ///
+    /// # Storage
+    /// Reads `DataKey::RegistryContract`, `DataKey::Agent(agent_address)`, and
+    /// `DataKey::Policy(agent_address)`.
+    /// Writes `DataKey::Agent(agent_address)` and `DataKey::Policy(agent_address)`.
+    /// Both written entries have their TTL extended.
+    ///
+    /// # Cost
+    /// One auth check, one persistent read for the registry address, one cross-contract call,
+    /// two persistent reads, up to two persistent writes, and two TTL extensions.
     pub fn record_payment(
         env: Env,
         agent_address: Address,
@@ -458,6 +648,12 @@ impl LodestarAgents {
     }
 
     // Flag an agent (admin-only)
+    //
+    // # Storage
+    // Persistent keys touched:
+    // - `DataKey::Admin` (read) — caller must match the stored admin.
+    // - `DataKey::Agent(agent_address)` (read + write) — entry is mutated and
+    //   its TTL is extended below.
     pub fn flag_agent(env: Env, agent_address: Address, reason: String, caller: Address) {
         caller.require_auth();
 
@@ -486,6 +682,8 @@ impl LodestarAgents {
 
         let new_score = agent.score;
 
+        // Extend TTL on the mutated agent entry so it is not archived and
+        // later reads do not fail as if the data were lost.
         env.storage().persistent().set(&key, &agent);
         env.storage()
             .persistent()
@@ -963,6 +1161,23 @@ mod test {
     }
 
     #[test]
+    fn test_constructor_admin_remains_readable_after_ttl_boundary() {
+        let env = Env::default();
+        env.ledger().with_mut(|li| {
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        env.ledger().with_mut(|li| li.sequence_number += 500_000);
+
+        assert_eq!(client.get_admin(), admin);
+    }
+
+    #[test]
     fn test_flag_agent_owner_cannot_flag() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1004,6 +1219,47 @@ mod test {
             String::from_str(&env, "violation of terms")
         );
         assert!(agent.score < INITIAL_SCORE);
+    }
+
+    /// `flag_agent` must extend the TTL of the agent entry it writes.
+    ///
+    /// Advance the ledger past the persistent-entry threshold and assert the
+    /// flagged entry is still readable (i.e. it was not archived).
+    #[test]
+    fn test_flag_agent_extends_ttl_and_entry_remains_readable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| {
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        client.flag_agent(
+            &agent_addr,
+            &String::from_str(&env, "violation of terms"),
+            &admin,
+        );
+
+        // Advance the ledger past the TTL threshold that would archive an
+        // entry whose TTL was never bumped.
+        env.ledger().with_mut(|li| li.sequence_number += 500_000);
+
+        let agent = client
+            .get_agent(&agent_addr)
+            .expect("flagged agent entry must remain readable after TTL boundary");
+        assert!(agent.flagged);
+        assert_eq!(
+            agent.flag_reason,
+            String::from_str(&env, "violation of terms")
+        );
     }
 
     #[test]
@@ -1138,6 +1394,176 @@ mod test {
         assert_eq!(config.score_success, SCORE_SUCCESS);
         assert_eq!(config.score_failure, SCORE_FAILURE);
         assert_eq!(config.flag_penalty, FLAG_PENALTY);
+    }
+
+    #[test]
+    fn test_get_score_emits_event_for_registered_agent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let _ = env.events().all();
+
+        let score = client.get_score(&agent_addr);
+        assert_eq!(score, INITIAL_SCORE);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "score_read"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(i32, bool)>::from_val(&env, &event.2),
+            (INITIAL_SCORE, true)
+        );
+    }
+
+    #[test]
+    fn test_get_score_returns_agent_not_found_for_unknown_agent() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let missing = Address::generate(&env);
+
+        assert_eq!(
+            client.try_get_score(&missing),
+            Err(Ok(AgentError::AgentNotFound))
+        );
+        // The variant must carry a stable numeric discriminant so off-chain
+        // callers can branch on it without parsing a message.
+        assert_eq!(AgentError::AgentNotFound as u32, 6);
+    }
+
+    #[test]
+    fn test_deactivated_agent_score_read_still_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        client.deactivate_agent(&agent_addr, &owner);
+
+        // Deactivation never removes the record, so a score read still succeeds.
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE);
+    }
+
+    #[test]
+    fn test_get_score_emits_no_event_when_it_fails() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let missing = Address::generate(&env);
+        let _ = env.events().all();
+
+        assert!(client.try_get_score(&missing).is_err());
+
+        // A failed invocation is reverted, so it must not leave a `score_read`
+        // event claiming a read that did not happen.
+        assert_eq!(env.events().all().len(), 0);
+    }
+
+    #[test]
+    fn test_get_score_reports_a_corrupt_entry_as_a_distinct_cause() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // Write a value under the agent key that is not a decodable `AgentEntry`.
+        // A corrupt entry must not be reported as `AgentNotFound`, because the
+        // two causes need different remediation (the agent does not exist vs.
+        // the contract cannot read what it stored).
+        let agent_addr = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Agent(agent_addr.clone()), &7u32);
+        });
+
+        let result = client.try_get_score(&agent_addr);
+        assert!(result.is_err());
+        assert_ne!(
+            result,
+            Err(Ok(AgentError::AgentNotFound)),
+            "a live but undecodable key must not be reported as a missing agent"
+        );
+    }
+
+    #[test]
+    fn test_get_agent_boundary_cases() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let missing = Address::generate(&env);
+        assert!(client.get_agent(&missing).is_none());
+        assert_eq!(client.get_agent_count(), 0);
+        assert_eq!(client.list_agents(&0).len(), 0);
+        assert_eq!(client.list_agents_page(&0, &0).len(), 0);
+
+        let mut agent_ids = vec![&env];
+        for _ in 0..3 {
+            let agent_addr = Address::generate(&env);
+            let owner = Address::generate(&env);
+            setup_agent(&env, &contract_id, &agent_addr, &owner);
+            agent_ids.push_back(agent_addr.clone());
+        }
+
+        assert_eq!(client.get_agent_count(), 3);
+        assert!(client.get_agent(&agent_ids.get(0).unwrap()).is_some());
+        assert!(client.get_agent(&agent_ids.get(1).unwrap()).is_some());
+        assert!(client.get_agent(&agent_ids.get(2).unwrap()).is_some());
+
+        let boundary_cases = [
+            (0u32, 0u32, 0u32),
+            (0u32, 1u32, 1u32),
+            (0u32, 2u32, 2u32),
+            (1u32, 1u32, 1u32),
+            (1u32, 2u32, 1u32),
+            (2u32, 1u32, 1u32),
+            (3u32, 1u32, 0u32),
+            (u32::MAX, 1u32, 0u32),
+            (0u32, u32::MAX, 3u32),
+        ];
+
+        for (page, page_size, expected_len) in boundary_cases {
+            assert_eq!(
+                client.list_agents_page(&page, &page_size).len(),
+                expected_len,
+                "page={page} page_size={page_size} should yield {expected_len} entries"
+            );
+        }
+
+        assert_eq!(client.list_agents(&0).len(), 0);
+        assert_eq!(client.list_agents(&1).len(), 1);
+        assert_eq!(client.list_agents(&2).len(), 2);
+        assert_eq!(client.list_agents(&u32::MAX).len(), 3);
+
+        let after_last = Address::generate(&env);
+        assert!(client.get_agent(&after_last).is_none());
     }
 
     /// Seed a non-zero `daily_spent_stroops` directly into contract storage.
@@ -1802,13 +2228,8 @@ mod test {
         for case in cases {
             let (_contract_id, client, agent_addr, provider) =
                 setup_record_payment_boundary_agent(&env);
-            let result = client.try_record_payment(
-                &agent_addr,
-                &1u64,
-                &case.amount,
-                &true,
-                &provider,
-            );
+            let result =
+                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider);
 
             match case.expected_error {
                 Some(error) => assert_eq!(result, Err(Ok(error))),
@@ -1872,13 +2293,8 @@ mod test {
                 0,
             );
 
-            let result = client.try_record_payment(
-                &agent_addr,
-                &1u64,
-                &case.amount,
-                &true,
-                &provider,
-            );
+            let result =
+                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider);
 
             match case.expected_error {
                 Some(error) => assert_eq!(result, Err(Ok(error))),
@@ -1926,13 +2342,7 @@ mod test {
                 case.min_score_to_earn,
             );
 
-            let result = client.try_record_payment(
-                &agent_addr,
-                &1u64,
-                &1i128,
-                &true,
-                &provider,
-            );
+            let result = client.try_record_payment(&agent_addr, &1u64, &1i128, &true, &provider);
 
             assert_eq!(result, Ok(Ok(())));
 
@@ -1953,8 +2363,288 @@ mod test {
     }
 
     #[test]
+    fn test_check_spending_allowed_emits_event_when_allowed() {
+        let env = Env::default();
+        let (client, agent_addr, _provider) = setup_payment_agent(&env);
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        let initial_reset = policy.last_reset_ledger;
+
+        let _ = env.events().all();
+
+        let allowed = client.check_spending_allowed(&agent_addr, &500);
+        assert!(allowed);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "spending_checked"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(bool, i128, i128, i128, i128, u64)>::from_val(&env, &event.2),
+            (
+                true,
+                500i128,
+                0i128,
+                10_000_000_000i128,
+                100_000_000_000i128,
+                initial_reset
+            )
+        );
+    }
+
+    #[test]
+    fn test_check_spending_allowed_emits_event_when_rejected() {
+        let env = Env::default();
+        let (client, agent_addr, _provider) = setup_payment_agent(&env);
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        let initial_reset = policy.last_reset_ledger;
+
+        let _ = env.events().all();
+
+        // Exceeds max_per_tx_stroops (10_000_000_000)
+        let allowed = client.check_spending_allowed(&agent_addr, &10_000_000_001i128);
+        assert!(!allowed);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "spending_checked"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(bool, i128, i128, i128, i128, u64)>::from_val(&env, &event.2),
+            (
+                false,
+                10_000_000_001i128,
+                0i128,
+                10_000_000_000i128,
+                100_000_000_000i128,
+                initial_reset
+            )
+        );
+    }
+
+    #[test]
+    fn test_check_spending_allowed_emits_event_on_daily_reset() {
+        let env = Env::default();
+        let (client, agent_addr, _provider) = setup_payment_agent(&env);
+
+        // Advance ledger past DAY_LEDGERS
+        let initial_policy = client.get_policy(&agent_addr).unwrap();
+        let new_seq = initial_policy.last_reset_ledger + DAY_LEDGERS + 5;
+        env.ledger()
+            .with_mut(|li| li.sequence_number = new_seq as u32);
+
+        let _ = env.events().all();
+
+        let allowed = client.check_spending_allowed(&agent_addr, &1_000);
+        assert!(allowed);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "spending_checked"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(bool, i128, i128, i128, i128, u64)>::from_val(&env, &event.2),
+            (
+                true,
+                1_000i128,
+                0i128,
+                10_000_000_000i128,
+                100_000_000_000i128,
+                new_seq
+            )
+        );
+    }
+
+    #[test]
+    fn test_check_spending_allowed_emits_event_for_unknown_agent() {
+        let env = Env::default();
+        let (client, _agent_addr, _provider) = setup_payment_agent(&env);
+
+        let missing = Address::generate(&env);
+        let _ = env.events().all();
+
+        let allowed = client.check_spending_allowed(&missing, &500);
+        assert!(!allowed);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "spending_checked"),
+                missing.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(bool, i128, i128, i128, i128, u64)>::from_val(&env, &event.2),
+            (false, 500i128, 0i128, 0i128, 0i128, 0u64)
+        );
+    }
+
+    #[test]
     fn test_init_emits_event() {
         let env = Env::default();
+        let registry_id = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        client.init(&registry_id);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "initialized"),
+                registry_id.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(<(Address,)>::from_val(&env, &event.2), (registry_id,));
+    }
+
+    /// `init` stores the registry address, extends its TTL, and emits exactly
+    /// one event. This is the typical path; boundary tests below cover the
+    /// edges (re-init, TTL boundary, empty/zero cases).
+    #[test]
+    fn test_init_stores_registry_and_extends_ttl() {
+        let env = Env::default();
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 1;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let registry_id = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        client.init(&registry_id);
+
+        // Stored value is readable and matches the input.
+        let stored: Address = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::RegistryContract)
+                .expect("registry contract must be stored after init")
+        });
+        assert_eq!(stored, registry_id);
+
+        // TTL was extended to MAX_TTL — the entry must still be readable after
+        // advancing the ledger by MAX_TTL - 1 (one ledger before expiry).
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 1 + MAX_TTL - 1;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+        let still_there: Address = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::RegistryContract)
+                .expect("registry contract must survive up to MAX_TTL - 1 ledgers")
+        });
+        assert_eq!(still_there, registry_id);
+    }
+
+    /// `init` must reject a second call — the guard is `has(&RegistryContract)`,
+    /// so the exact boundary is "already present => panic". We verify the
+    /// first call succeeds and the second panics, and that the stored value
+    /// is unchanged after the failed second call.
+    #[test]
+    fn test_init_rejects_reinitialization() {
+        let env = Env::default();
+        let registry_a = env.register(MockRegistry, ());
+        let registry_b = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // First init succeeds.
+        client.init(&registry_a);
+
+        // Second init must panic with "already initialized".
+        let res = client.try_init(&registry_b);
+        assert!(res.is_err(), "second init must fail");
+
+        // Stored value must still be the first registry.
+        let stored: Address = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::RegistryContract)
+                .expect("registry contract must still be stored")
+        });
+        assert_eq!(stored, registry_a);
+    }
+
+    /// Boundary: the `init` guard is a pure existence check, so the very first
+    /// call (storage empty) must succeed. This is the "one value on the empty
+    /// side of the threshold" case for the `has` check.
+    #[test]
+    fn test_init_succeeds_when_storage_empty() {
+        let env = Env::default();
+        let registry_id = env.register(MockRegistry, ());
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // Pre-condition: no RegistryContract entry exists.
+        let pre: bool = env.as_contract(&contract_id, || {
+            env.storage().persistent().has(&DataKey::RegistryContract)
+        });
+        assert!(!pre, "storage must be empty before init");
+
+        client.init(&registry_id);
+
+        let post: bool = env.as_contract(&contract_id, || {
+            env.storage().persistent().has(&DataKey::RegistryContract)
+        });
+        assert!(post, "storage must contain RegistryContract after init");
+    }
+
+    /// `init` emits exactly one event with the expected topics and payload,
+    /// even when called at the maximum ledger sequence. This exercises the
+    /// event-publishing path at a boundary ledger value.
+    #[test]
+    fn test_init_at_max_ledger_emits_event() {
+        let env = Env::default();
+        env.ledger().with_mut(|li| {
+            li.sequence_number = u32::MAX - MAX_TTL;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
         let registry_id = env.register(MockRegistry, ());
         let admin = Address::generate(&env);
         let contract_id = env.register(LodestarAgents, (admin,));
@@ -2057,6 +2747,26 @@ mod test {
                 .into_val(env)
         );
         assert_eq!(<(bool,)>::from_val(env, &event.2), (registered,));
+    }
+
+    #[test]
+    fn test_register_agent_duplicate_returns_typed_error() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Agent Alpha");
+        let description = String::from_str(&env, "Autonomous trading agent");
+
+        client.register_agent(&agent, &name, &description, &owner);
+        assert_eq!(
+            client.try_register_agent(&agent, &name, &description, &owner),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                AgentError::AgentAlreadyRegistered as u32,
+            )))
+        );
     }
 
     #[test]
