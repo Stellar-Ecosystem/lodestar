@@ -258,7 +258,23 @@ impl LodestarAgents {
         new_count
     }
 
-    // Get agent entry
+    /// Retrieves the details of a registered agent.
+    ///
+    /// # Parameters
+    /// - `env`: The contract environment.
+    /// - `agent_address`: The `Address` of the agent to look up.
+    ///
+    /// # Returns
+    /// Returns `Some(AgentEntry)` if the agent exists, or `None` if the agent has not been registered.
+    ///
+    /// # Authorization
+    /// This function does not require authorization.
+    ///
+    /// # Panics
+    /// This function does not panic.
+    ///
+    /// # Storage
+    /// Reads the `DataKey::Agent(agent_address)` key from persistent storage.
     pub fn get_agent(env: Env, agent_address: Address) -> Option<AgentEntry> {
         env.storage()
             .persistent()
