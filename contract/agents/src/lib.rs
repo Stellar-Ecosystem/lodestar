@@ -28,6 +28,10 @@ pub enum AgentError {
     AgentListOverflow = 4,
     AgentCountOverflow = 5,
     AgentNotFound = 6,
+    Unauthorized = 7,
+    PolicyNotFound = 8,
+    NotInitialized = 9,
+    AlreadyInitialized = 10,
 }
 
 #[contracttype]
@@ -132,7 +136,7 @@ impl LodestarAgents {
     // Init — stores the registry contract address for cross-contract verification
     pub fn init(env: Env, registry_contract: Address) {
         if env.storage().persistent().has(&DataKey::RegistryContract) {
-            panic!("already initialized");
+            panic_with_error!(&env, AgentError::AlreadyInitialized);
         }
         env.storage()
             .persistent()
@@ -532,7 +536,7 @@ impl LodestarAgents {
     /// # Panics
     /// - `expect("registry contract not set — call init() first")` if the registry contract
     ///   address has not been initialized.
-    /// - `panic!("unauthorized: caller is not the service provider")` if the registry's provider
+    /// - `panic_with_error!(&env, AgentError::Unauthorized)` if the registry's provider
     ///   does not match `caller`.
     /// - `expect("agent not found")` if `DataKey::Agent(agent_address)` is missing.
     /// - `expect("policy not found")` if `DataKey::Policy(agent_address)` is missing.
@@ -566,14 +570,14 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&DataKey::RegistryContract)
-            .expect("registry contract not set — call init() first");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::NotInitialized));
         let service: ServiceEntry = env.invoke_contract(
             &registry_contract,
             &Symbol::new(&env, "get_service"),
             vec![&env, service_id.into_val(&env)],
         );
         if service.provider != caller {
-            panic!("unauthorized: caller is not the service provider");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         let agent_key = DataKey::Agent(agent_address.clone());
@@ -581,7 +585,7 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&agent_key)
-            .expect("agent not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
         // Load policy for min_score_to_earn enforcement and daily spend update
         let policy_key = DataKey::Policy(agent_address.clone());
@@ -589,7 +593,7 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&policy_key)
-            .expect("policy not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::PolicyNotFound));
 
         let old_score = agent.score;
 
@@ -669,10 +673,10 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("admin not set — call initialize() first");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::NotInitialized));
 
         if caller != admin {
-            panic!("unauthorized");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         let key = DataKey::Agent(agent_address.clone());
@@ -680,7 +684,7 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&key)
-            .expect("agent not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
         let old_score = agent.score;
 
@@ -716,10 +720,10 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&key)
-            .expect("agent not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
         if agent.owner != caller {
-            panic!("unauthorized");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         let owner = agent.owner.clone();
@@ -756,10 +760,10 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("admin not set — call initialize() first");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::NotInitialized));
 
         if caller != admin {
-            panic!("unauthorized");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         let key = DataKey::Agent(agent_address.clone());
@@ -767,7 +771,7 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&key)
-            .expect("agent not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
         let owner = agent.owner.clone();
         let score = agent.score;
@@ -804,10 +808,10 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&key)
-            .expect("agent not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
         if agent.owner != caller {
-            panic!("unauthorized");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         let owner = agent.owner.clone();
@@ -844,10 +848,10 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("admin not set — call initialize() first");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::NotInitialized));
 
         if caller != admin {
-            panic!("unauthorized");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         let key = DataKey::Agent(agent_address.clone());
@@ -855,7 +859,7 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&key)
-            .expect("agent not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
         let owner = agent.owner.clone();
         let score = agent.score;
@@ -888,7 +892,7 @@ impl LodestarAgents {
         env.storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("admin not set — call initialize() first")
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::NotInitialized))
     }
 
     // Transfer admin role to a new address (caller must be current admin)
@@ -899,10 +903,10 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .expect("admin not set — call initialize() first");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::NotInitialized));
 
         if caller != admin {
-            panic!("unauthorized");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
@@ -998,10 +1002,10 @@ impl LodestarAgents {
             .storage()
             .persistent()
             .get(&agent_key)
-            .expect("agent not found");
+            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
         if agent.owner != caller {
-            panic!("unauthorized");
+            panic_with_error!(&env, AgentError::Unauthorized);
         }
 
         let policy_key = DataKey::Policy(agent_address.clone());
@@ -1378,7 +1382,10 @@ mod test {
         let new_admin = Address::generate(&env);
         let impostor = Address::generate(&env);
 
-        assert!(client.try_transfer_admin(&new_admin, &impostor).is_err());
+        assert_eq!(
+            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
+            AgentError::Unauthorized
+        );
     }
 
     #[test]

@@ -30,6 +30,10 @@ export const AGENT_ERROR = Object.freeze({
   AGENT_LIST_FULL: 4,
   AGENT_COUNT_OVERFLOW: 5,
   AGENT_NOT_FOUND: 6,
+  UNAUTHORIZED: 7,
+  POLICY_NOT_FOUND: 8,
+  NOT_INITIALIZED: 9,
+  ALREADY_INITIALIZED: 10,
 });
 
 /**
@@ -48,6 +52,10 @@ export const AGENT_ERROR_CODES = Object.freeze({
   4: { code: 'AGENT_LIST_FULL', status: 503, message: 'Agent registry is full' },
   5: { code: 'AGENT_COUNT_OVERFLOW', status: 503, message: 'Agent registry count overflow' },
   6: { code: 'AGENT_NOT_FOUND', status: 404, message: 'Agent not found' },
+  7: { code: 'UNAUTHORIZED', status: 403, message: 'Unauthorized' },
+  8: { code: 'POLICY_NOT_FOUND', status: 404, message: 'Policy not found' },
+  9: { code: 'NOT_INITIALIZED', status: 500, message: 'Contract not initialized' },
+  10: { code: 'ALREADY_INITIALIZED', status: 500, message: 'Contract already initialized' },
 });
 
 /**
