@@ -505,6 +505,19 @@ impl LodestarRegistry {
 
     /// Cast a reputation vote on a service.
     ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment used to access contract storage.
+    /// * `id` - The registry identifier of the service to vote on.
+    /// * `positive` - `true` to increase the service's reputation, `false` to decrease it.
+    /// * `caller` - The address of the agent casting the vote.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the vote is successfully applied.
+    ///
+    /// # Authorization
+    ///
     /// Authorization (closes the anonymous-write vulnerability):
     /// 1. `caller.require_auth()` — the vote must be signed by `caller`.
     /// 2. `caller` must be a registered agent, checked via a cross-contract
@@ -514,10 +527,23 @@ impl LodestarRegistry {
     ///    repeat votes, preventing a single identity from inflating or tanking a
     ///    score in a tight loop.
     ///
+    /// # Panics
+    ///
+    /// This function returns the following `RegistryError` variants on failure:
+    /// * `RegistryError::AgentsContractNotConfigured` - when the agents contract address is not configured.
+    /// * `RegistryError::CallerNotRegisteredAgent` - when `caller` is not a registered agent.
+    /// * `RegistryError::ServiceNotFound` - when no service exists with the given `id`.
+    /// * `RegistryError::ReputationVoteCooldown` - when the caller has voted on this service too recently.
+    ///
+    /// The Soroban SDK will panic, without a `RegistryError` variant, if stored values cannot be
+    /// converted to their expected types.
+    ///
+    /// # Storage
+    ///
     /// Storage keys touched by this function:
-    /// 1. DataKey::AgentsContract — read to resolve the agents contract; TTL extended.
-    /// 2. DataKey::Service(id) — read, updated, and TTL extended.
-    /// 3. DataKey::LastVote(id, caller) — read for the cooldown check, written
+    /// 1. `DataKey::AgentsContract` — read to resolve the agents contract; TTL extended.
+    /// 2. `DataKey::Service(id)` — read, updated, and TTL extended.
+    /// 3. `DataKey::LastVote(id, caller)` — read for the cooldown check, written
     ///    with the current ledger, and TTL extended.
     pub fn update_reputation(
         env: Env,
