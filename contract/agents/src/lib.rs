@@ -409,11 +409,20 @@ impl LodestarAgents {
             .has(&DataKey::Agent(agent_address))
     }
 
-    // Check if agent is eligible (active, not flagged, score >= min)
+    /// Check whether an agent is eligible (active, not flagged, score >= min).
+    ///
+    /// # Storage
+    /// - Reads and may extend TTL for `DataKey::Agent(agent_address)` in
+    ///   persistent storage. No other storage keys are touched.
     pub fn is_eligible(env: Env, agent_address: Address, min_score: i32) -> bool {
-        env.storage()
-            .persistent()
-            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address))
+        let key = DataKey::Agent(agent_address);
+        let storage = env.storage().persistent();
+        if !storage.has(&key) {
+            return false;
+        }
+        storage.extend_ttl(&key, MAX_TTL, MAX_TTL);
+        storage
+            .get::<DataKey, AgentEntry>(&key)
             .map(|a| a.active && !a.flagged && a.score >= min_score)
             .unwrap_or(false)
     }
@@ -1170,6 +1179,64 @@ mod test {
         let client = LodestarAgentsClient::new(&env, &contract_id);
 
         assert_eq!(client.get_admin(), admin);
+    }
+
+    /// Eligibility reads must renew the agent key's persistent TTL.
+    #[test]
+    fn test_is_eligible_extends_agent_ttl_and_entry_remains_readable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 1;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = 3 * TEST_MAX_TTL;
+            li.max_entry_ttl = 3 * TEST_MAX_TTL;
+        });
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .extend_ttl(3 * TEST_MAX_TTL, 3 * TEST_MAX_TTL);
+        });
+
+        // Read near the original expiry. is_eligible should bump the TTL.
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 1 + MAX_TTL - 1;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = 3 * TEST_MAX_TTL;
+            li.max_entry_ttl = 3 * TEST_MAX_TTL;
+        });
+        assert!(client.is_eligible(&agent_addr, &INITIAL_SCORE));
+
+        // Past the original expiry but before the renewed expiry, the entry
+        // must still be present and readable.
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 1 + MAX_TTL + MAX_TTL - 2;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = 3 * TEST_MAX_TTL;
+            li.max_entry_ttl = 3 * TEST_MAX_TTL;
+        });
+        let stored = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_addr.clone()))
+        });
+        assert!(stored.is_some());
+    }
+
+    #[test]
+    fn test_is_eligible_returns_false_for_unknown_agent() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        assert!(!client.is_eligible(&Address::generate(&env), &0));
     }
 
     #[test]
