@@ -175,7 +175,16 @@ impl LodestarRegistry {
 
     /// Address of the LodestarAgents contract this registry was deployed against.
     pub fn get_agents_contract(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&DataKey::AgentsContract)
+        // Storage keys touched by this function:
+        // 1. DataKey::AgentsContract - read to return the contract address;
+        //    TTL extended so the trust anchor is not archived.
+        let result = env.storage().persistent().get(&DataKey::AgentsContract);
+        if result.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::AgentsContract, MAX_TTL, MAX_TTL);
+        }
+        result
     }
 
     pub fn register_service(
@@ -2898,5 +2907,32 @@ mod test {
         }]);
         let signed_by_stranger = registry.get_agents_contract();
         assert_eq!(signed_by_stranger, Some(agents_id));
+    }
+
+    #[test]
+    fn test_get_agents_contract_extends_ttl() {
+        let env = Env::default();
+        let agents_id = env.register(MockAgents, ());
+        let registry_id = env.register(LodestarRegistry, (agents_id.clone(),));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        // Advance to just before the constructor's TTL expires.
+        env.ledger().with_mut(|li| li.sequence_number += MAX_TTL - 1);
+
+        // Call the read endpoint; this must bump the TTL.
+        let contract = registry.get_agents_contract();
+        assert_eq!(contract, Some(agents_id.clone()));
+
+        // Advance past the original expiration boundary.
+        env.ledger().with_mut(|li| li.sequence_number += 2);
+
+        // If the read did not bump the TTL, the entry is archived and this fails.
+        let contract_after = registry.get_agents_contract();
+        assert_eq!(
+            contract_after,
+            Some(agents_id.clone()),
+            "agents contract must still be readable after original TTL window: \
+             extend_ttl was not called on the touched key"
+        );
     }
 }
