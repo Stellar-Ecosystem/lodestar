@@ -379,7 +379,7 @@ impl LodestarAgents {
     /// `true` if a `DataKey::Agent(agent_address)` entry exists in persistent
     /// storage, `false` otherwise.
     ///
-    /// This is a pure existence check. It does not inspect the entry, so it
+    /// This is an existence check. It does not inspect the entry, so it
     /// still returns `true` for agents that are deactivated (`active == false`)
     /// or flagged (`flagged == true`), since neither operation removes the
     /// record — no function in this contract deletes an agent entry, so once
@@ -399,14 +399,30 @@ impl LodestarAgents {
     ///   persistent storage.
     /// - Writes: none. The entry's TTL is not extended.
     ///
+    /// # Events
+    /// Emits a `("agents", "registration_checked", agent_address)` event with
+    /// `(registered,)` data for every successful check. This is an observation,
+    /// not a registration transition. Simulation events are visible only to
+    /// the calling client.
+    ///
     /// # Cost
     /// A single persistent-storage `has` lookup. The entry's value is not
     /// deserialised, so cost is constant regardless of the size of the
     /// stored `AgentEntry` or the number of registered agents.
     pub fn is_registered(env: Env, agent_address: Address) -> bool {
-        env.storage()
+        let registered = env
+            .storage()
             .persistent()
-            .has(&DataKey::Agent(agent_address))
+            .has(&DataKey::Agent(agent_address.clone()));
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "registration_checked"),
+                agent_address,
+            ),
+            (registered,),
+        );
+        registered
     }
 
     // Check if agent is eligible (active, not flagged, score >= min)
@@ -2741,6 +2757,56 @@ mod test {
             <(Address, String, String, i32)>::from_val(&env, &event.2),
             (owner, name, description, INITIAL_SCORE)
         );
+    }
+
+    #[test]
+    fn test_is_registered_emits_registration_checked_event() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+
+        // Unknown addresses return false and still emit a complete result.
+        assert!(!client.is_registered(&agent_addr));
+        assert_registration_checked_event(&env, &contract_id, &agent_addr, false);
+        assert!(client.get_agent(&agent_addr).is_none());
+
+        setup_agent(&env, &contract_id, &agent_addr, &agent_addr);
+        // Repeated reads report the same result, without creating agents.
+        for _ in 0..2 {
+            assert!(client.is_registered(&agent_addr));
+            assert_registration_checked_event(&env, &contract_id, &agent_addr, true);
+        }
+        assert_eq!(client.get_agent_count(), 1);
+
+        // Registered membership is independent of eligibility.
+        env.mock_all_auths();
+        client.deactivate_agent(&agent_addr, &agent_addr);
+        assert!(client.is_registered(&agent_addr));
+        assert_registration_checked_event(&env, &contract_id, &agent_addr, true);
+    }
+
+    fn assert_registration_checked_event(
+        env: &Env,
+        contract_id: &Address,
+        agent_addr: &Address,
+        registered: bool,
+    ) {
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(event.0, *contract_id);
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(env, "agents"),
+                Symbol::new(env, "registration_checked"),
+                agent_addr.clone(),
+            )
+                .into_val(env)
+        );
+        assert_eq!(<(bool,)>::from_val(env, &event.2), (registered,));
     }
 
     #[test]
