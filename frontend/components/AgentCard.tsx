@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import Link from 'next/link';
 import type { AgentEntry } from '@/lib/types';
 import ScoreBadge from './ScoreBadge';
@@ -13,7 +14,7 @@ interface Props {
   agent: AgentEntry;
 }
 
-export default function AgentCard({ agent }: Props) {
+function AgentCard({ agent }: Props) {
   const totalPayments = Number(agent.total_payments);
   const successRate =
     totalPayments > 0
@@ -101,3 +102,5 @@ function Stat({
     </div>
   );
 }
+
+export default memo(AgentCard);
