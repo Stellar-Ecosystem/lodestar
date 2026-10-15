@@ -245,6 +245,33 @@ export class RpcThrottledError extends ContractError {
 }
 
 /**
+ * Thrown when a raw RPC / network call fails unexpectedly — i.e. not a
+ * Soroban contract error, not a throttle, but a genuine transport or server
+ * error that the retry layer in stellar.js did not handle (e.g. bad config,
+ * non-retryable HTTP error, unexpected SDK throw).
+ *
+ * Carries:
+ *  - `operation` — the logical RPC method name (e.g. `'getAccount'`)
+ *  - `cause`     — the original driver/SDK error so nothing is lost
+ *
+ * Defaults to HTTP 502 so routes can distinguish "our code broke" (500) from
+ * "upstream broke" (502) without special-casing in every handler.
+ */
+export class RpcError extends ContractError {
+  /**
+   * @param {string} message   - Human-readable description
+   * @param {string} operation - RPC method / logical operation that failed
+   * @param {Error}  [cause]   - Original error from the SDK / driver
+   */
+  constructor(message, operation, cause) {
+    super(message, 'RPC_ERROR', 502);
+    this.name = 'RpcError';
+    this.operation = operation;
+    if (cause) this.cause = cause;
+  }
+}
+
+/**
  * Route-level error codes that are not Soroban contract codes but still need
  * to be catalogued so clients can branch on a stable identifier.
  */
