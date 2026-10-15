@@ -369,3 +369,11 @@ This repository is licensed under the Apache License, Version 2.0. See the [LICE
 ### Choice of License and Reasoning
 
 We have chosen the **Apache License, Version 2.0** to align with standard licensing practices in the Stellar ecosystem. The Apache-2.0 license provides an explicit patent grant from contributors to users, providing robust legal protection for everyone building, forking, or contributing to Lodestar. This clarifies downstream use and removes legal ambiguity for open-source contributions.
+
+## Handsoff notes
+
+<!-- handsoff-issue-320 -->
+- #320: Agents: `check_spending_allowed` ignores `allowed_categories` entirely
+
+<!-- handsoff-issue-326 -->
+- #326: Agents: scoring constants are hardcoded and cannot be tuned after deployment
