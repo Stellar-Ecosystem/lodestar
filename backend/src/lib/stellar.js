@@ -144,6 +144,20 @@ function createRetryingServer(server, opts = {}) {
   });
 }
 
+/**
+ * Return the singleton Stellar RPC server, creating it on first call.
+ *
+ * The instance is wrapped with jittered exponential backoff so every method
+ * transparently retries on transient 429 / 5xx failures (see `config.rpcRetry`
+ * for the default limits: up to 4 retries, 200 ms base delay, 5 s cap).
+ *
+ * **Concurrency**: safe to call concurrently. The lazy-init check is
+ * synchronous and single-threaded (Node.js event loop), so two concurrent
+ * callers cannot create two separate server instances — the second caller
+ * will see the instance set by the first.
+ *
+ * @returns {rpc.Server} The retry-wrapped Stellar RPC server instance.
+ */
 export function getStellarServer() {
   if (!_server) {
     const rawServer = new rpc.Server(config.stellar.rpcUrl, {
@@ -154,16 +168,55 @@ export function getStellarServer() {
   return _server;
 }
 
-/** @note Exported for tests — not part of the public API. */
+/**
+ * Reset the singleton server instance back to `null`.
+ *
+ * **Not part of the public API.** Exported exclusively so test suites can
+ * isolate each test case by forcing `getStellarServer` to construct a fresh
+ * instance on its next call. Never call this in production code.
+ *
+ * **Concurrency**: not concurrency-safe. Tests that call this function must
+ * ensure no concurrent code is holding a reference to the old server or
+ * calling `getStellarServer` at the same time.
+ */
 export function __resetStellarServer() {
   _server = null;
 }
 
+/**
+ * Fetch the sequence number of the most recently closed ledger.
+ *
+ * Used by the registry route to compute transaction validity windows (e.g.
+ * checking whether a submitted XDR is approaching ledger expiry).
+ *
+ * **Concurrency**: safe to call concurrently. Each call issues an independent
+ * RPC request; they do not share mutable state.
+ *
+ * @returns {Promise<number>} The current ledger sequence number.
+ * @throws {RpcThrottledError} If the underlying RPC call fails after exhausting
+ *   all retry attempts (transient 429 / 5xx / network errors).
+ * @throws {Error} For any non-retryable RPC error (e.g. malformed response,
+ *   authentication failure) — propagated from the Stellar SDK without wrapping.
+ */
 export async function getCurrentLedgerSequence() {
   const ledger = await getStellarServer().getLatestLedger();
   return ledger.sequence;
 }
 
+/**
+ * Return the Stellar network passphrase for the configured network.
+ *
+ * Reads `config.stellar.network` at call time: `"mainnet"` maps to
+ * `Networks.PUBLIC`; every other value (including `"testnet"`) maps to
+ * `Networks.TESTNET`.
+ *
+ * **Concurrency**: safe to call concurrently — pure computation, no shared
+ * mutable state.
+ *
+ * @returns {string} The network passphrase string (e.g.
+ *   `"Public Global Stellar Network ; September 2015"` or
+ *   `"Test SDF Network ; September 2015"`).
+ */
 export function getNetworkPassphrase() {
   if (config.stellar.network === "mainnet") {
     return Networks.PUBLIC;
@@ -171,13 +224,53 @@ export function getNetworkPassphrase() {
   return Networks.TESTNET;
 }
 
+/**
+ * Return the Stellar contract ID of the USDC token on the configured network.
+ *
+ * The value comes directly from `config.stellar.usdcContractId`, which is
+ * populated from the `USDC_CONTRACT_ID` environment variable. The variable is
+ * listed in the required-vars guard in `config.js`, so the server will not
+ * start without it; this function therefore never returns `undefined` in a
+ * correctly configured environment.
+ *
+ * **Concurrency**: safe to call concurrently — returns a frozen config value,
+ * no shared mutable state.
+ *
+ * @returns {string} The USDC token contract ID (a Stellar contract address).
+ */
 export function getUSDCContractId() {
   return config.stellar.usdcContractId;
 }
 
 /**
- * Check RPC server connectivity and contract reachability.
- * Returns a health status object with connection and contract status.
+ * Probe RPC server connectivity and optional server-account reachability.
+ *
+ * Performs two sequential checks:
+ * 1. **RPC connectivity** — calls `getNetwork()`. If this fails the function
+ *    returns immediately with `status: "unhealthy"`.
+ * 2. **Account reachability** — calls `getAccount()` with the key from
+ *    `config.server.secret`. Skipped (and `status` set to `"degraded"`) when
+ *    `config.server.secret` is not set. A failure here also sets
+ *    `status: "degraded"` rather than `"unhealthy"` because the RPC layer
+ *    itself is still functional.
+ *
+ * **Concurrency**: safe to call concurrently. Each invocation uses the shared
+ * singleton server but creates its own result object; there is no shared
+ * mutable state between concurrent calls. Note that concurrent health checks
+ * each issue their own RPC requests — callers responsible for latency-sensitive
+ * contexts should debounce or cache the result externally.
+ *
+ * **Never throws.** All errors are caught internally and surfaced via the
+ * returned object's `error` / `contract.error` fields. This makes the function
+ * safe to call from health-check middleware without a try/catch.
+ *
+ * @returns {Promise<{
+ *   rpc: { reachable: boolean, latency: number },
+ *   contract: { reachable: boolean | null, latency?: number, message?: string, error?: string },
+ *   status: "healthy" | "degraded" | "unhealthy",
+ *   error: string | null,
+ *   timestamp: string
+ * }>}
  */
 export async function checkRpcHealth() {
   const result = {
