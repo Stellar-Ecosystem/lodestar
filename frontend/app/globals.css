@@ -8,16 +8,35 @@
   --background: #FAFAF7;
   --primary: #1A1A1A;
   --accent: #E85D3A;
+  /* Accessible accent for inline text on light backgrounds (3.31 → 5.27 : 1) */
+  --accent-text: #B5441D;
   --secondary: #6B6B6B;
   --border: #E5E5E5;
+  /* Card surface — same as background in light mode */
+  --card: #FFFFFF;
+  /* Status colours — accessible on --card in light mode */
+  --success: #15803D; /* green-700  — 5.02 : 1 on white */
+  --error:   #B91C1C; /* red-700    — 6.47 : 1 on white */
+  /* Accent button surface — dark enough that white text passes 4.5 : 1 */
+  --accent-btn:      #B5441D; /* 5.51 : 1 against white */
+  --accent-btn-text: #FFFFFF;
 }
 
 .dark {
   --background: #0A0A0A;
   --primary: #FAFAF7;
   --accent: #FF7A50;
+  --accent-text: #FF7A50; /* 7.69 : 1 on #0A0A0A — no change needed */
   --secondary: #A0A0A0;
   --border: #2A2A2A;
+  /* Card surface — slightly lifted so it reads as a distinct surface in dark mode */
+  --card: #111111;
+  /* Status colours — accessible on --card (#111111) in dark mode */
+  --success: #4ADE80; /* green-400  — 10.84 : 1 on #111111 */
+  --error:   #F87171; /* red-400    —  6.83 : 1 on #111111 */
+  /* Accent button — use the bright orange bg with dark text (primary) */
+  --accent-btn:      #FF7A50; /* 7.69 : 1 against dark bg */
+  --accent-btn-text: #1A1A1A; /* near-black on orange: 4.65 : 1 */
 }
 
 * {
@@ -46,11 +65,11 @@ body {
   }
 
   .btn-accent {
-    @apply bg-accent text-white px-5 py-2.5 rounded-full text-sm font-medium hover:opacity-90 transition-opacity;
+    @apply bg-[var(--accent-btn)] text-[var(--accent-btn-text)] px-5 py-2.5 rounded-full text-sm font-medium hover:opacity-90 transition-opacity;
   }
 
   .card {
-    @apply bg-white rounded-xl border border-border shadow-card;
+    @apply bg-[var(--card)] rounded-xl border border-border shadow-card;
   }
 
   .mono {
