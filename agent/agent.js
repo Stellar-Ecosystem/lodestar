@@ -86,9 +86,24 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
-const FETCH_TIMEOUT_MS = Number.isFinite(Number(process.env.AGENT_FETCH_TIMEOUT_MS))
-  ? Math.max(1, Number(process.env.AGENT_FETCH_TIMEOUT_MS))
-  : 5000;
+function intFromEnv(name, defaultValue, { min, max } = {}) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultValue;
+
+  const value = Number(raw);
+  if (!Number.isInteger(value)) {
+    throw new Error(`Invalid ${name}: ${JSON.stringify(raw)} is not an integer`);
+  }
+  if (min !== undefined && value < min) {
+    throw new Error(`Invalid ${name}: ${value} is below the minimum of ${min}`);
+  }
+  if (max !== undefined && value > max) {
+    throw new Error(`Invalid ${name}: ${value} is above the maximum of ${max}`);
+  }
+  return value;
+}
+
+const FETCH_TIMEOUT_MS = intFromEnv('AGENT_FETCH_TIMEOUT_MS', 5000, { min: 1 });
 
 async function fetchWithTimeout(resource, init = {}) {
   const controller = new AbortController();
@@ -312,8 +327,8 @@ function selectWeighted(services) {
 // ── Agent task ────────────────────────────────────────────────────────────────
 
 export async function runTask(category, buildUrl, scoringEnabled, client = httpClient) {
-  const minReputation = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
-  const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
+  const minReputation = intFromEnv('AGENT_MIN_SERVICE_REPUTATION', 0, { min: 0 });
+  const maxRetries    = intFromEnv('AGENT_MAX_SERVICE_RETRIES', 3, { min: 1 });
 
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
