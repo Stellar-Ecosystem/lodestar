@@ -1,3 +1,10 @@
+import { createHash } from "node:crypto";
+import {
+  getEntry,
+  markPending,
+  markComplete,
+  isValidIdempotencyKey,
+} from "../lib/idempotency.js";
 import { Router } from "express";
 import {
   listServices,
@@ -474,6 +481,8 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
 // cooldown, so reputation can no longer be moved by anonymous callers.
 router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   let id;
+  const requestId = req.id || req.headers["x-request-id"] || "unknown";
+  const startTime = Date.now();
   try {
     id = parseInt(req.params.id, 10);
     if (isNaN(id) || id < 1) {
@@ -504,9 +513,45 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
       });
     }
 
-    const newReputation = await updateReputation(id, positive, agent);
+    const timeoutMs = Number(process.env.REPUTATION_UPSTREAM_TIMEOUT_MS) || 10_000;
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new ContractError(
+              "Upstream contract call timed out",
+              "TRANSACTION_TIMEOUT"
+            )
+          ),
+        timeoutMs
+      )
+    );
+
+    const newReputation = await Promise.race([
+      updateReputation(id, positive, agent),
+      timeoutPromise,
+    ]);
+
+    logger.info(
+      {
+        requestId,
+        id,
+        agent,
+        positive,
+        durationMs: Date.now() - startTime,
+        outcome: "success",
+      },
+      "POST /api/reputation/:id completed"
+    );
+
     res.json({ success: true, newReputation });
   } catch (err) {
+    const durationMs = Date.now() - startTime;
+    logger.error(
+      { requestId, err, id, durationMs, outcome: "error" },
+      "POST /api/reputation/:id failed"
+    );
+
     // SIMULATION_FAILED covers on-chain rejections such as the vote cooldown
     // or an unregistered agent — surface it as an actionable 400.
     if (err instanceof ContractError) {
@@ -518,7 +563,6 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
       }
       return res.status(400).json({ error: err.message, code: err.code });
     }
-    logger.error({ err, id }, "POST /api/reputation/:id failed");
     res.status(500).json({ error: "Failed to update reputation", code: "UPDATE_ERROR" });
   }
 });
@@ -531,14 +575,69 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
  * instance whose only problem is a slow upstream — use /api/ready for that.
  */
 router.get("/health", async (req, res) => {
+  const idempotencyKey = req.header("Idempotency-Key");
+  if (idempotencyKey) {
+    if (!isValidIdempotencyKey(idempotencyKey)) {
+      return res.status(400).json({
+        error: "Invalid Idempotency-Key header",
+        code: "INVALID_IDEMPOTENCY_KEY",
+      });
+    }
+    const entry = getEntry(idempotencyKey);
+    if (entry) {
+      if (entry.status === "complete") {
+        res.set("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
+        res.set("ETag", entry.result.etag);
+        res.set("Idempotency-Replayed", "true");
+        if (
+          req
+            .get("If-None-Match")
+            ?.split(",")
+            .map((v) => v.trim())
+            .includes(entry.result.etag)
+        ) {
+          return res.status(304).end();
+        }
+        return res.json(entry.result.payload);
+      }
+      if (entry.status === "pending") {
+        return res.status(409).json({
+          error: "Request in flight with this idempotency key",
+          code: "IDEMPOTENCY_KEY_IN_FLIGHT",
+        });
+      }
+    }
+    markPending(idempotencyKey);
+  }
+
   const { default: config } = await import("../config.js");
-  res.json({
+  const payload = {
     status: "ok",
     network: config.stellar.network,
     contractId: config.contract.id,
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
-  });
+  };
+
+  const etag = `W/"${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}"`;
+  res.set("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
+  res.set("ETag", etag);
+
+  if (idempotencyKey) {
+    markComplete(idempotencyKey, { payload, etag });
+  }
+
+  if (
+    req
+      .get("If-None-Match")
+      ?.split(",")
+      .map((v) => v.trim())
+      .includes(etag)
+  ) {
+    return res.status(304).end();
+  }
+
+  res.json(payload);
 });
 
 /**
