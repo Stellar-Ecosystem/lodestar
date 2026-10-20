@@ -473,10 +473,40 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
 // on-chain contract enforces require_auth + agent registration + a per-agent
 // cooldown, so reputation can no longer be moved by anonymous callers.
 router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
+  const startMs = Date.now();
+  const requestId = req.id ?? req.requestId;
+  const routeLogger =
+    typeof req.log?.child === "function"
+      ? req.log.child({ route: "POST /api/reputation/:id", ...(requestId ? { requestId } : {}) })
+      : typeof logger.child === "function"
+        ? logger.child({ route: "POST /api/reputation/:id", ...(requestId ? { requestId } : {}) })
+        : req.log ?? logger;
+
   let id;
+  let callerAddress;
+  let voteDirection;
+  let contractDurationMs;
+
+  const emitReputationLog = (level, outcome, extra = {}, message = "Reputation update processed") => {
+    const durationMs = Date.now() - startMs;
+    const fields = {
+      ...(requestId ? { requestId } : {}),
+      serviceId: id ?? req.params.id,
+      ...(callerAddress ? { callerAddress, agent: callerAddress } : {}),
+      ...(typeof voteDirection === "boolean" ? { positive: voteDirection } : {}),
+      durationMs,
+      duration: durationMs,
+      ...(contractDurationMs !== undefined ? { contractDurationMs } : {}),
+      outcome,
+      ...extra,
+    };
+    routeLogger[level](fields, message);
+  };
+
   try {
     id = parseInt(req.params.id, 10);
     if (isNaN(id) || id < 1) {
+      emitReputationLog("warn", "rejected", { statusCode: 400, code: "INVALID_ID" }, "POST /api/reputation/:id rejected: invalid service ID");
       return res
         .status(400)
         .json({ error: "Invalid service ID", code: "INVALID_ID" });
@@ -485,18 +515,28 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
     // Default to {} so a missing/non-JSON body yields a 400 INVALID_BODY rather
     // than a TypeError surfacing as a generic 500.
     const { positive, agent } = req.body ?? {};
+    if (typeof positive === "boolean") {
+      voteDirection = positive;
+    }
+    if (typeof agent === "string" && isValidStellarAddress(agent)) {
+      callerAddress = agent;
+    }
+
     if (typeof positive !== "boolean") {
+      emitReputationLog("warn", "rejected", { statusCode: 400, code: "INVALID_BODY" }, "POST /api/reputation/:id rejected: invalid positive flag");
       return res
         .status(400)
         .json({ error: "`positive` must be a boolean", code: "INVALID_BODY" });
     }
     if (!isValidStellarAddress(agent)) {
+      emitReputationLog("warn", "rejected", { statusCode: 400, code: "INVALID_BODY" }, "POST /api/reputation/:id rejected: invalid agent address");
       return res.status(400).json({
         error: "`agent` must be a valid Stellar address",
         code: "INVALID_BODY",
       });
     }
     if (!isAllowedReputationAgent(agent)) {
+      emitReputationLog("warn", "forbidden", { statusCode: 403, code: "AGENT_NOT_ALLOWED" }, "POST /api/reputation/:id rejected: agent not allowlisted");
       return res.status(403).json({
         error:
           "This agent is not permitted to vote through the hosted backend. Only registered demo agents may; other agents must submit a wallet-signed transaction.",
@@ -504,21 +544,37 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
       });
     }
 
-    const newReputation = await updateReputation(id, positive, agent);
-    res.json({ success: true, newReputation });
+    const contractStartMs = Date.now();
+    try {
+      const newReputation = await updateReputation(id, positive, agent);
+      contractDurationMs = Date.now() - contractStartMs;
+      emitReputationLog(
+        "info",
+        "success",
+        { statusCode: 200, newReputation },
+        "POST /api/reputation/:id succeeded",
+      );
+      res.json({ success: true, newReputation });
+    } catch (contractErr) {
+      contractDurationMs = Date.now() - contractStartMs;
+      throw contractErr;
+    }
   } catch (err) {
     // SIMULATION_FAILED covers on-chain rejections such as the vote cooldown
     // or an unregistered agent — surface it as an actionable 400.
     if (err instanceof ContractError) {
       if (err.code === "AGENT_NOT_ALLOWED") {
+        emitReputationLog("warn", "forbidden", { statusCode: 403, code: err.code }, "POST /api/reputation/:id contract rejected: agent not allowed");
         return res.status(403).json({ error: err.message, code: err.code });
       }
       if (err.code === "TRANSACTION_TIMEOUT") {
+        emitReputationLog("error", "timeout", { err, statusCode: 504, code: err.code }, "POST /api/reputation/:id timed out");
         return res.status(504).json({ error: err.message, code: err.code });
       }
+      emitReputationLog("warn", "contract_error", { err, statusCode: 400, code: err.code }, "POST /api/reputation/:id failed with contract error");
       return res.status(400).json({ error: err.message, code: err.code });
     }
-    logger.error({ err, id }, "POST /api/reputation/:id failed");
+    emitReputationLog("error", "error", { err, id, statusCode: 500, code: "UPDATE_ERROR" }, "POST /api/reputation/:id failed");
     res.status(500).json({ error: "Failed to update reputation", code: "UPDATE_ERROR" });
   }
 });

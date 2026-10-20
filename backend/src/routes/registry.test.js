@@ -42,8 +42,16 @@ vi.mock('../lib/reputationHistory.js', () => ({
   getReputationHistory: (...args) => mockGetReputationHistory(...args),
 }));
 
+const mockLogger = {
+  error: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  child: vi.fn(),
+};
+mockLogger.child.mockReturnValue(mockLogger);
+
 vi.mock('../lib/logger.js', () => ({
-  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+  default: mockLogger,
 }));
 
 // Rate limiting is verified in isolation in middleware/rateLimiter.test.js;
@@ -780,6 +788,144 @@ describe('POST /api/reputation/:id — authorization', () => {
 
     expect(res.status).toBe(500);
     expect(res.body.code).toBe('UPDATE_ERROR');
+  });
+});
+
+describe('POST /api/reputation/:id — structured logging & request correlation', () => {
+  const VALID_AGENT = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+  let correlatedApp;
+  let childLogSpy;
+
+  beforeEach(async () => {
+    mockUpdateReputation.mockReset();
+    mockIsAllowedReputationAgent.mockReset();
+    mockLogger.info.mockClear();
+    mockLogger.warn.mockClear();
+    mockLogger.error.mockClear();
+    mockLogger.child.mockClear();
+
+    childLogSpy = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn(),
+    };
+    childLogSpy.child.mockReturnValue(childLogSpy);
+
+    const router = (await import('./registry.js')).default;
+    correlatedApp = express();
+    correlatedApp.use(express.json());
+    correlatedApp.use((req, _res, next) => {
+      req.id = req.headers['x-request-id'] || 'req-corr-123';
+      req.log = childLogSpy;
+      next();
+    });
+    correlatedApp.use('/api', router);
+  });
+
+  it('attaches request-scoped child logger and emits one structured line on success with duration, outcome, callerAddress, and requestId', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(12);
+
+    const res = await request(correlatedApp)
+      .post('/api/reputation/42')
+      .set('X-Request-Id', 'req-success-001')
+      .send({ positive: true, agent: VALID_AGENT, secretToken: 'shh-do-not-log' });
+
+    expect(res.status).toBe(200);
+    expect(childLogSpy.child).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: 'POST /api/reputation/:id',
+        requestId: 'req-success-001',
+      }),
+    );
+
+    const totalEmitted =
+      childLogSpy.info.mock.calls.length +
+      childLogSpy.warn.mock.calls.length +
+      childLogSpy.error.mock.calls.length;
+    expect(totalEmitted).toBe(1);
+
+    const [logFields, logMsg] = childLogSpy.info.mock.calls[0];
+    expect(logMsg).toBe('POST /api/reputation/:id succeeded');
+    expect(logFields).toMatchObject({
+      requestId: 'req-success-001',
+      serviceId: 42,
+      callerAddress: VALID_AGENT,
+      agent: VALID_AGENT,
+      positive: true,
+      outcome: 'success',
+      statusCode: 200,
+      newReputation: 12,
+    });
+    expect(typeof logFields.durationMs).toBe('number');
+    expect(logFields.durationMs).toBeGreaterThanOrEqual(0);
+    expect(typeof logFields.contractDurationMs).toBe('number');
+    expect(logFields.contractDurationMs).toBeGreaterThanOrEqual(0);
+    expect(logFields).not.toHaveProperty('secretToken');
+    expect(logFields).not.toHaveProperty('body');
+  });
+
+  it('emits one structured line with requestId, duration, and outcome on validation failure without logging full body or secrets', async () => {
+    const res = await request(correlatedApp)
+      .post('/api/reputation/7')
+      .set('X-Request-Id', 'req-invalid-002')
+      .send({ positive: 'not-a-bool', agent: VALID_AGENT, apiKey: 'super-secret' });
+
+    expect(res.status).toBe(400);
+
+    const totalEmitted =
+      childLogSpy.info.mock.calls.length +
+      childLogSpy.warn.mock.calls.length +
+      childLogSpy.error.mock.calls.length;
+    expect(totalEmitted).toBe(1);
+
+    const [logFields] = childLogSpy.warn.mock.calls[0];
+    expect(logFields).toMatchObject({
+      requestId: 'req-invalid-002',
+      serviceId: 7,
+      callerAddress: VALID_AGENT,
+      outcome: 'rejected',
+      code: 'INVALID_BODY',
+      statusCode: 400,
+    });
+    expect(typeof logFields.durationMs).toBe('number');
+    expect(logFields).not.toHaveProperty('apiKey');
+    expect(logFields).not.toHaveProperty('body');
+  });
+
+  it('emits one structured line with contractDurationMs and outcome on contract failure', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockRejectedValueOnce(
+      new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT'),
+    );
+
+    const res = await request(correlatedApp)
+      .post('/api/reputation/9')
+      .set('X-Request-Id', 'req-timeout-003')
+      .send({ positive: false, agent: VALID_AGENT });
+
+    expect(res.status).toBe(504);
+
+    const totalEmitted =
+      childLogSpy.info.mock.calls.length +
+      childLogSpy.warn.mock.calls.length +
+      childLogSpy.error.mock.calls.length;
+    expect(totalEmitted).toBe(1);
+
+    const [logFields] = childLogSpy.error.mock.calls[0];
+    expect(logFields).toMatchObject({
+      requestId: 'req-timeout-003',
+      serviceId: 9,
+      callerAddress: VALID_AGENT,
+      positive: false,
+      outcome: 'timeout',
+      code: 'TRANSACTION_TIMEOUT',
+      statusCode: 504,
+    });
+    expect(typeof logFields.durationMs).toBe('number');
+    expect(typeof logFields.contractDurationMs).toBe('number');
   });
 });
 
