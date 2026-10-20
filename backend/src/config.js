@@ -164,6 +164,14 @@ const config = Object.freeze({
     baseDelayMs: parsePositiveInt(process.env.RPC_RETRY_BASE_DELAY_MS, 200, 'RPC_RETRY_BASE_DELAY_MS'),
     maxDelayMs: parsePositiveInt(process.env.RPC_RETRY_MAX_DELAY_MS, 5_000, 'RPC_RETRY_MAX_DELAY_MS'),
   },
+
+  // Upstream call timeouts for read-only Soroban RPC queries (e.g. the
+  // can-spend check). A slow or hanging node must not hold a connection open
+  // indefinitely, so the call is aborted after this many milliseconds and the
+  // route returns 504 with a catalogued code.
+  upstreamTimeouts: {
+    canSpendMs: parsePositiveInt(process.env.CAN_SPEND_TIMEOUT_MS, 5_000, 'CAN_SPEND_TIMEOUT_MS'),
+  },
 });
 
 export default config;

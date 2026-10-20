@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { EventEmitter } from 'events';
 import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
@@ -330,5 +331,32 @@ describe('GET /api/agents/:address/payment-history', () => {
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_PAGINATION');
+  });
+});
+
+describe('GET /api/agents/:address/can-spend timeout', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns 504 UPSTREAM_TIMEOUT when the upstream call exceeds the timeout', async () => {
+    mockCheckSpendingAllowed.mockImplementationOnce(
+      () => new Promise(() => {})
+    );
+
+    const reqPromise = request(app)
+      .get(`/agents/${VALID_ADDR}/can-spend?amount=100`)
+      .then((res) => res);
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const res = await reqPromise;
+    expect(res.status).toBe(504);
+    expect(res.body.code).toBe('UPSTREAM_TIMEOUT');
   });
 });
