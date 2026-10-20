@@ -1,7 +1,8 @@
 import crypto from 'crypto';
-import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { getUpstreamTimeoutMetrics, resetRouteMetrics } from '../lib/routeMetrics.js';
 
 const mockFlagAgentOnChain = vi.fn();
 const mockAdminDeactivateAgentOnChain = vi.fn();
@@ -46,6 +47,7 @@ vi.mock('../config.js', () => ({
     contract: { agentsId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4' },
     server: { address: 'GADMINXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', secret: 'test_admin_secret_key' },
     rateLimit: { payment: { max: 10, windowMs: 60000 } },
+    upstreamTimeout: { agentCheckMs: 8_000 },
   },
 }));
 
@@ -330,5 +332,67 @@ describe('GET /api/agents/:address/payment-history', () => {
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_PAGINATION');
+  });
+});
+
+// #635: the upstream Soroban call behind GET /agents/:address/check has to be
+// bounded. A node that never answers must not hold the request open forever,
+// and the caller has to be able to tell a timeout apart from a denial.
+describe('GET /api/agents/:address/check', () => {
+  const ADDRESS = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+  const TIMEOUT_MS = 8_000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCheckSpendingAllowed.mockReset();
+    resetRouteMetrics();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns the upstream decision when the call completes in time', async () => {
+    mockCheckSpendingAllowed.mockResolvedValueOnce(true);
+
+    const res = await request(app).get(`/agents/${ADDRESS}/check?amount=1000000`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      allowed: true,
+      agentAddress: ADDRESS,
+      amountStroops: '1000000',
+    });
+    expect(getUpstreamTimeoutMetrics().total).toBe(0);
+  });
+
+  it('returns 504 UPSTREAM_TIMEOUT when the call exceeds the deadline', async () => {
+    vi.useFakeTimers();
+
+    // Resolves once the route has reached the upstream call, which is the point
+    // at which the deadline is armed. Awaiting it (rather than a timer) lets the
+    // request reach the handler without needing the clock to move.
+    let onCall;
+    const called = new Promise((resolve) => {
+      onCall = resolve;
+    });
+    mockCheckSpendingAllowed.mockImplementationOnce(() => {
+      onCall();
+      return new Promise(() => {});
+    });
+
+    const resPromise = request(app)
+      .get(`/agents/${ADDRESS}/check?amount=1000000`)
+      .then((r) => r);
+
+    await called;
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+
+    const res = await resPromise;
+
+    expect(res.status).toBe(504);
+    expect(res.body.code).toBe('UPSTREAM_TIMEOUT');
+    expect(getUpstreamTimeoutMetrics().total).toBe(1);
+    expect(getUpstreamTimeoutMetrics().byLabel['agent-check']).toBe(1);
   });
 });
