@@ -11,6 +11,7 @@ vi.mock("../src/lib/contract.js", async (importOriginal) => {
     ...actual,
     registerAgentOnChain: vi.fn(),
     isAgentRegistered: vi.fn(),
+    getAgentPolicy: vi.fn(),
 
   };
 });
@@ -185,5 +186,132 @@ describe('GET /api/agents/:address/payment-history', () => {
     const res = await request(app).get(`/api/agents/${VALID_ADDR}/payment-history?limit=-1`);
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_PAGINATION');
+  });
+});
+describe("GET /api/agents/:address/policy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 200 and policy data for valid agent address", async () => {
+    const mockPolicy = {
+      max_per_tx_stroops: "10000000",
+      max_per_day_stroops: "50000000",
+      daily_spent_stroops: "0",
+      allowed_categories: ["weather", "search"],
+    };
+    contract.getAgentPolicy.mockResolvedValueOnce(mockPolicy);
+
+    const res = await request(app).get(`/api/agents/${VALID_ADDR}/policy`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(mockPolicy);
+    expect(contract.getAgentPolicy).toHaveBeenCalledWith(VALID_ADDR);
+  });
+
+  it("returns 404 NOT_FOUND when policy does not exist", async () => {
+    contract.getAgentPolicy.mockResolvedValueOnce(null);
+
+    const res = await request(app).get(`/api/agents/${VALID_ADDR}/policy`);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Policy not found", code: "NOT_FOUND" });
+    expect(contract.getAgentPolicy).toHaveBeenCalledWith(VALID_ADDR);
+  });
+
+  it("returns 400 with specific code when address param is missing or empty", async () => {
+    const res = await request(app).get("/api/agents/%20/policy");
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_PARAMS");
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("rejects wrong-type address (e.g. non-string) with 400 and INVALID_PARAMS", async () => {
+    const req = { params: { address: 12345 }, query: {}, body: undefined };
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    };
+    const next = vi.fn();
+
+    const { validateGetAgentPolicy } = await import("../src/routes/agents.js");
+    validateGetAgentPolicy(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "INVALID_PARAMS" })
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with specific code when address is out-of-range (too short)", async () => {
+    const tooShort = "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH"; // 55 chars
+    const res = await request(app).get(`/api/agents/${tooShort}/policy`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_ADDRESS");
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with specific code when address is out-of-range (too long)", async () => {
+    const tooLong = "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3A"; // 57 chars
+    const res = await request(app).get(`/api/agents/${tooLong}/policy`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_ADDRESS");
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with specific code when address contains invalid characters", async () => {
+    const invalidChars = "G0189X3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3";
+    const res = await request(app).get(`/api/agents/${invalidChars}/policy`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_ADDRESS");
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with specific code when address has wrong prefix", async () => {
+    const wrongPrefix = "CAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3";
+    const res = await request(app).get(`/api/agents/${wrongPrefix}/policy`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_ADDRESS");
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with specific code when query parameters are supplied", async () => {
+    const res = await request(app).get(`/api/agents/${VALID_ADDR}/policy?unexpected=value`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_QUERY");
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with specific code when body is supplied", async () => {
+    const res = await request(app)
+      .get(`/api/agents/${VALID_ADDR}/policy`)
+      .send({ unexpected: "body" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_BODY");
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("never returns a 500 when input is invalid", async () => {
+    const invalidInputs = [
+      `/api/agents/short/policy`,
+      `/api/agents/123/policy`,
+      `/api/agents/${VALID_ADDR}/policy?foo=bar`,
+    ];
+
+    for (const path of invalidInputs) {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(400);
+      expect(res.status).not.toBe(500);
+    }
+    expect(contract.getAgentPolicy).not.toHaveBeenCalled();
   });
 });
