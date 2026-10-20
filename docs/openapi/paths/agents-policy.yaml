@@ -1,0 +1,391 @@
+# OpenAPI 3.0 path item for PUT /api/agents/{address}/policy
+# (defined at router path PUT /agents/:address/policy in backend/src/routes/agents.js).
+#
+# Source of truth:
+#   - backend/src/routes/agents.js            (validateAgentAddressParam, requireAgentsContract, route handler)
+#   - backend/src/middleware/addressValidator.js (400 INVALID_ADDRESS)
+#   - backend/src/middleware/ownerAuth.js     (400 INVALID_PARAMS, 401 AUTH_MISSING/AUTH_SIGNATURE_MISSING, 403 FORBIDDEN, 404 NOT_FOUND, 500 AUTH_ERROR)
+#   - backend/src/lib/contract.js             (updatePolicyOnChain -> simulateAndSubmit)
+#   - backend/src/lib/ContractError.js        (handleContractError HTTP status mapping)
+#   - backend/src/lib/contractErrors.js       (AGENT_ERROR_CODES & Soroban contract error resolution)
+#   - backend/src/index.js                    (413 PAYLOAD_TOO_LARGE / 500 INTERNAL_ERROR)
+#
+# If you change the handler's request validation, response shape, status codes,
+# or error codes, update this file in the same change.
+#
+# Referenced from docs/openapi/openapi.yaml under `paths`.
+
+put:
+  operationId: updateAgentPolicy
+  summary: Update an agent's on-chain spending policy
+  description: |
+    Updates the on-chain spending policy (`SpendingPolicy`) for an agent on the
+    `LodestarAgents` Soroban contract by invoking
+    `update_policy(agent_address, max_per_tx_stroops, max_per_day_stroops, allowed_categories, min_score_to_earn, caller)`
+    signed with the backend server keypair on behalf of the agent owner.
+
+    ### Execution Order & Guards
+    1. **Body parsing (`express.json`)** — Rejects request payloads exceeding the configured body
+       parser limit with `413 PAYLOAD_TOO_LARGE`.
+    2. **Address validation (`validateAgentAddressParam`)** — The router middleware checks that `{address}`
+       is a valid 56-character Stellar public key matching `^G[A-Z2-7]{55}$`. If not, returns `400 INVALID_ADDRESS`.
+    3. **Contract configuration check (`requireAgentsContract`)** — Verifies `config.contract.agentsId`
+       (`AGENTS_CONTRACT_ID`) is configured; returns `503 AGENTS_NOT_CONFIGURED` if missing.
+    4. **Owner authentication (`ownerAuth`)**:
+       - Ensures `x-caller-address` header is provided (`401 AUTH_MISSING`).
+       - Ensures `x-caller-signature` header is provided (`401 AUTH_SIGNATURE_MISSING`).
+       - Validates that `{address}` exists on-chain via `getAgent(address)` (`404 NOT_FOUND`).
+       - Confirms the authenticated caller address matches the agent's recorded owner (`403 FORBIDDEN`).
+       - Any internal lookup or cryptographic failure returns `500 AUTH_ERROR`.
+    5. **Request body validation**:
+       - `maxPerTxStroops`: Required string or number (`400 INVALID_BODY`).
+       - `maxPerDayStroops`: Required string or number (`400 INVALID_BODY`).
+       - `allowedCategories`: Required array of strings (`400 INVALID_BODY`).
+       - `minScoreToEarn`: Required number (`400 INVALID_BODY`).
+    6. **On-chain execution (`updatePolicyOnChain`)**:
+       - Converts stroop amounts to 128-bit integer ScVals and submits `update_policy` via `simulateAndSubmit`.
+       - Extends storage TTL on the policy key up to `MAX_TTL`.
+       - Emits on-chain `("agents", "policy_updated", agent_address)` event.
+    7. **Error handling (`handleContractError`)**:
+       - Converts contract errors, RPC throttles (`503 RPC_THROTTLED`), or timeouts (`504 TRANSACTION_TIMEOUT`)
+         to mapped HTTP status codes.
+       - Any uncaught exception maps to `500 POLICY_ERROR`.
+  tags:
+    - Agents
+  security:
+    - OwnerAuth: []
+  parameters:
+    - $ref: "../openapi.yaml#/components/parameters/AgentAddress"
+    - $ref: "../openapi.yaml#/components/parameters/CallerAddressHeader"
+    - $ref: "../openapi.yaml#/components/parameters/CallerSignatureHeader"
+  requestBody:
+    required: true
+    description: JSON object containing the spending policy parameters.
+    content:
+      application/json:
+        schema:
+          $ref: "../openapi.yaml#/components/schemas/UpdatePolicyRequest"
+        examples:
+          standardPolicy:
+            summary: Standard policy with dual categories
+            value:
+              maxPerTxStroops: "5000000"
+              maxPerDayStroops: "25000000"
+              allowedCategories:
+                - weather
+                - search
+              minScoreToEarn: 500
+          numericStroops:
+            summary: Numeric stroop representation with single category
+            value:
+              maxPerTxStroops: 10000000
+              maxPerDayStroops: 50000000
+              allowedCategories:
+                - weather
+              minScoreToEarn: 0
+  responses:
+    "200":
+      description: |
+        The policy was successfully validated, submitted, and updated on-chain.
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "../openapi.yaml#/components/schemas/UpdatePolicyResponse"
+          examples:
+            success:
+              summary: Successful policy update
+              value:
+                success: true
+    "400":
+      description: |
+        The request was rejected due to malformed path parameters, invalid body fields, or
+        a 400-level Soroban contract / simulation failure. Possible `code` values:
+
+        | code                        | cause                                                                                                      |
+        |-----------------------------|------------------------------------------------------------------------------------------------------------|
+        | `INVALID_ADDRESS`           | `{address}` does not match Stellar public key format (`^G[A-Z2-7]{55}$`).                                  |
+        | `INVALID_PARAMS`            | `{address}` parameter missing in route handling.                                                          |
+        | `INVALID_BODY`              | `maxPerTxStroops`, `maxPerDayStroops`, `allowedCategories`, or `minScoreToEarn` is missing or wrong type. |
+        | `INVALID_AMOUNT`            | Contract error `#1` (`AgentError::InvalidAmount`).                                                         |
+        | `ARITHMETIC_OVERFLOW`       | Contract error `#2` (`AgentError::ArithmeticOverflow`).                                                    |
+        | `SIMULATION_FAILED`         | Soroban transaction simulation failed without a mapped contract error code.                                |
+        | `TRANSACTION_FAILED`        | Transaction failed during submission or ledger inclusion without a specific status override.               |
+        | `RETURN_VALUE_PARSE_FAILED` | Transaction succeeded on-chain but response XDR could not be parsed.                                      |
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - INVALID_ADDRESS
+                      - INVALID_PARAMS
+                      - INVALID_BODY
+                      - INVALID_AMOUNT
+                      - ARITHMETIC_OVERFLOW
+                      - SIMULATION_FAILED
+                      - TRANSACTION_FAILED
+                      - RETURN_VALUE_PARSE_FAILED
+          examples:
+            invalidBodyMaxTx:
+              summary: Missing or invalid maxPerTxStroops
+              value:
+                error: "`maxPerTxStroops` is required (string or number)"
+                code: INVALID_BODY
+            invalidBodyCategories:
+              summary: Non-array allowedCategories
+              value:
+                error: "`allowedCategories` must be an array of strings"
+                code: INVALID_BODY
+            invalidAddress:
+              summary: Malformed Stellar address in path
+              value:
+                error: Invalid Stellar address format
+                code: INVALID_ADDRESS
+    "401":
+      description: |
+        Missing caller authentication headers required by `ownerAuth`. Possible `code` values:
+
+        | code                    | cause                                                                                   |
+        |-------------------------|-----------------------------------------------------------------------------------------|
+        | `AUTH_MISSING`          | `x-caller-address` header is missing or not a string.                                    |
+        | `AUTH_SIGNATURE_MISSING`| `x-caller-signature` challenge proof header is missing.                                  |
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - AUTH_MISSING
+                      - AUTH_SIGNATURE_MISSING
+          examples:
+            callerMissing:
+              summary: Missing caller address header
+              value:
+                error: Caller address missing
+                code: AUTH_MISSING
+            signatureMissing:
+              summary: Missing caller signature header
+              value:
+                error: Caller signature missing
+                code: AUTH_SIGNATURE_MISSING
+    "403":
+      description: |
+        Authorization failure. The caller is not authorized to modify this agent's policy.
+        Possible `code` values:
+
+        | code           | cause                                                                                     |
+        |----------------|-------------------------------------------------------------------------------------------|
+        | `FORBIDDEN`    | Caller address does not match the registered owner of the agent.                          |
+        | `UNAUTHORIZED` | On-chain contract rejected caller authorization (`AgentError::Unauthorized`, code `#7`).  |
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - FORBIDDEN
+                      - UNAUTHORIZED
+          examples:
+            forbidden:
+              summary: Caller is not the agent owner
+              value:
+                error: Caller is not the owner of this agent
+                code: FORBIDDEN
+    "404":
+      description: |
+        Agent or policy record not found. Possible `code` values:
+
+        | code                | cause                                                                                 |
+        |---------------------|---------------------------------------------------------------------------------------|
+        | `NOT_FOUND`         | Agent record not found on-chain during `ownerAuth` pre-check (`getAgent` returned null).|
+        | `AGENT_NOT_FOUND`   | Contract error `#6` (`AgentError::AgentNotFound`) returned during on-chain execution.  |
+        | `POLICY_NOT_FOUND`  | Contract error `#8` (`AgentError::PolicyNotFound`).                                   |
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - NOT_FOUND
+                      - AGENT_NOT_FOUND
+                      - POLICY_NOT_FOUND
+          examples:
+            agentNotFound:
+              summary: Agent not found
+              value:
+                error: Agent not found
+                code: NOT_FOUND
+    "413":
+      description: |
+        The request payload exceeds the server's JSON body parsing size limit (`JSON_BODY_LIMIT`, default `100kb`).
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - PAYLOAD_TOO_LARGE
+          example:
+            error: Payload too large
+            code: PAYLOAD_TOO_LARGE
+    "500":
+      description: |
+        An unexpected server, internal auth, or unhandled contract error occurred.
+        Possible `code` values:
+
+        | code                  | cause                                                                            |
+        |-----------------------|----------------------------------------------------------------------------------|
+        | `POLICY_ERROR`        | Unmapped error thrown during `updatePolicyOnChain` execution.                   |
+        | `AUTH_ERROR`          | Internal failure during `ownerAuth` execution.                                   |
+        | `NOT_INITIALIZED`     | Contract error `#9` (`AgentError::NotInitialized`).                               |
+        | `ALREADY_INITIALIZED` | Contract error `#10` (`AgentError::AlreadyInitialized`).                          |
+        | `INTERNAL_ERROR`      | Unhandled exception caught by the top-level error handling middleware.           |
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - POLICY_ERROR
+                      - AUTH_ERROR
+                      - NOT_INITIALIZED
+                      - ALREADY_INITIALIZED
+                      - INTERNAL_ERROR
+          examples:
+            policyError:
+              summary: Policy update error
+              value:
+                error: Policy update failed
+                code: POLICY_ERROR
+            authError:
+              summary: Internal authentication failure
+              value:
+                error: Internal auth error
+                code: AUTH_ERROR
+    "503":
+      description: |
+        Service unavailable or backend configuration missing. Possible `code` values:
+
+        | code                     | cause                                                                              |
+        |--------------------------|------------------------------------------------------------------------------------|
+        | `AGENTS_NOT_CONFIGURED`   | `AGENTS_CONTRACT_ID` is not configured in the server environment.                  |
+        | `RPC_THROTTLED`          | Stellar RPC node rate limit reached or throttled during transaction submission.    |
+        | `AGENT_LIST_FULL`        | Contract error `#4` (`AgentError::AgentListFull`).                                  |
+        | `AGENT_COUNT_OVERFLOW`   | Contract error `#5` (`AgentError::AgentCountOverflow`).                             |
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - AGENTS_NOT_CONFIGURED
+                      - RPC_THROTTLED
+                      - AGENT_LIST_FULL
+                      - AGENT_COUNT_OVERFLOW
+          examples:
+            notConfigured:
+              summary: Contract not configured
+              value:
+                error: Agents contract not yet deployed. Set AGENTS_CONTRACT_ID in .env
+                code: AGENTS_NOT_CONFIGURED
+            rpcThrottled:
+              summary: RPC rate limited
+              value:
+                error: RPC node throttled the request
+                code: RPC_THROTTLED
+    "504":
+      description: |
+        Gateway or transaction submission timeout. Possible `code` values:
+
+        | code                  | cause                                                                          |
+        |-----------------------|--------------------------------------------------------------------------------|
+        | `TRANSACTION_TIMEOUT` | Soroban transaction confirmation timed out while polling the network.           |
+        | `UPSTREAM_TIMEOUT`    | Network request to Stellar RPC or Horizon endpoint timed out.                  |
+      headers:
+        X-Request-Id:
+          $ref: "../openapi.yaml#/components/headers/X-Request-Id"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "../openapi.yaml#/components/schemas/ErrorResponse"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - TRANSACTION_TIMEOUT
+                      - UPSTREAM_TIMEOUT
+          examples:
+            timeout:
+              summary: Transaction timed out
+              value:
+                error: Transaction confirmation timed out
+                code: TRANSACTION_TIMEOUT
+  x-codeSamples:
+    - lang: Shell
+      label: curl
+      source: |
+        curl -X PUT \
+          'http://localhost:3001/api/agents/GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H/policy' \
+          -H 'Content-Type: application/json' \
+          -H 'x-caller-address: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H' \
+          -H 'x-caller-signature: 4a2b6c8d0e1f...' \
+          -d '{
+            "maxPerTxStroops": "5000000",
+            "maxPerDayStroops": "25000000",
+            "allowedCategories": ["weather", "search"],
+            "minScoreToEarn": 500
+          }'

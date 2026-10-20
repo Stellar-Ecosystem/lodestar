@@ -1,0 +1,214 @@
+openapi: 3.0.3
+info:
+  title: Lodestar Backend API
+  version: 0.1.0
+  description: |
+    OpenAPI specification for the Lodestar backend (`backend/src`), assembled
+    route by route. Each route lives in its own path-item file under
+    `docs/openapi/paths/` and is referenced from `paths` below; shared
+    schemas, parameters, security schemes, and headers live in `components`.
+
+    All error responses share the `ErrorResponse` envelope
+    (`{ "error": string, "code": string }`); each operation enumerates the
+    `code` values it can emit per status.
+servers:
+  - url: http://localhost:3001
+    description: Local development server (routes mounted under `/api`)
+  - url: http://localhost:3001/api
+    description: Local development server (`/api` base path)
+tags:
+  - name: Agents
+    description: Agent registry, policy, scoring, and payment endpoints (`backend/src/routes/agents.js`).
+
+paths:
+  /api/agents/{address}/policy:
+    $ref: "./paths/agents-policy.yaml"
+  /agents/{address}/policy:
+    $ref: "./paths/agents-policy.yaml"
+
+components:
+  securitySchemes:
+    OwnerAuth:
+      type: apiKey
+      in: header
+      name: x-caller-address
+      description: |
+        Agent owner authentication middleware (`backend/src/middleware/ownerAuth.js`).
+        Requires both `x-caller-address` (caller's Stellar public key) and
+        `x-caller-signature` (signed challenge proof verifying ownership).
+
+  parameters:
+    AgentAddress:
+      name: address
+      in: path
+      required: true
+      description: |
+        Stellar public key (G-address) of the agent. Validated by
+        `validateAgentAddressParam` before the route handler runs, returning
+        `400 INVALID_ADDRESS` if malformed.
+      schema:
+        $ref: "#/components/schemas/StellarAddress"
+      example: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+
+    CallerAddressHeader:
+      name: x-caller-address
+      in: header
+      required: true
+      description: |
+        Stellar public key (G-address) of the caller claiming ownership of the agent.
+        Checked by `ownerAuth` against the on-chain agent record's owner.
+      schema:
+        $ref: "#/components/schemas/StellarAddress"
+      example: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+
+    CallerSignatureHeader:
+      name: x-caller-signature
+      in: header
+      required: true
+      description: |
+        Cryptographic signature proof proving ownership of `x-caller-address`.
+        Missing header results in `401 AUTH_SIGNATURE_MISSING`.
+      schema:
+        type: string
+      example: 4a2b6c8d0e1f...
+
+  headers:
+    X-Request-Id:
+      description: |
+        Correlation ID for the request (`backend/src/lib/requestId.js`). Echoes
+        the inbound `X-Request-Id` header when supplied, otherwise a server-generated UUID v4.
+      schema:
+        type: string
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+  schemas:
+    StellarAddress:
+      type: string
+      pattern: "^G[A-Z2-7]{55}$"
+      minLength: 56
+      maxLength: 56
+      description: 56-character Stellar Ed25519 public key (StrKey G-address).
+      example: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+
+    UpdatePolicyRequest:
+      type: object
+      description: Request payload for `PUT /api/agents/:address/policy`.
+      required:
+        - maxPerTxStroops
+        - maxPerDayStroops
+        - allowedCategories
+        - minScoreToEarn
+      properties:
+        maxPerTxStroops:
+          oneOf:
+            - type: string
+              pattern: "^[0-9]+$"
+              description: Maximum spending limit per transaction in stroops as a numeric string.
+              example: "5000000"
+            - type: number
+              description: Maximum spending limit per transaction in stroops as a number.
+              example: 5000000
+          description: Maximum spending amount allowed per single transaction in stroops (1 USDC = 10,000,000 stroops).
+        maxPerDayStroops:
+          oneOf:
+            - type: string
+              pattern: "^[0-9]+$"
+              description: Maximum spending limit per 24-hour period in stroops as a numeric string.
+              example: "25000000"
+            - type: number
+              description: Maximum spending limit per 24-hour period in stroops as a number.
+              example: 25000000
+          description: Maximum aggregate spending allowed within a 24-hour rolling ledger window in stroops.
+        allowedCategories:
+          type: array
+          description: List of category strings the agent is permitted to invoke payments for.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 32
+            example: weather
+          example:
+            - weather
+            - search
+        minScoreToEarn:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Minimum score threshold required to transact.
+          example: 500
+      example:
+        maxPerTxStroops: "5000000"
+        maxPerDayStroops: "25000000"
+        allowedCategories:
+          - weather
+          - search
+        minScoreToEarn: 500
+
+    UpdatePolicyResponse:
+      type: object
+      description: Successful response payload for `PUT /api/agents/:address/policy`.
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+          enum:
+            - true
+          description: Always `true` when the on-chain policy update completes successfully.
+      example:
+        success: true
+
+    PolicyErrorCode:
+      type: string
+      description: |
+        Machine-readable error codes that `PUT /api/agents/:address/policy`
+        can return across middleware guards, body validation, contract submission,
+        and on-chain Soroban execution.
+      enum:
+        - INVALID_ADDRESS
+        - INVALID_PARAMS
+        - INVALID_BODY
+        - AUTH_MISSING
+        - AUTH_SIGNATURE_MISSING
+        - FORBIDDEN
+        - UNAUTHORIZED
+        - NOT_FOUND
+        - AGENT_NOT_FOUND
+        - POLICY_NOT_FOUND
+        - PAYLOAD_TOO_LARGE
+        - POLICY_ERROR
+        - AUTH_ERROR
+        - NOT_INITIALIZED
+        - ALREADY_INITIALIZED
+        - AGENTS_NOT_CONFIGURED
+        - RPC_THROTTLED
+        - AGENT_LIST_FULL
+        - AGENT_COUNT_OVERFLOW
+        - TRANSACTION_TIMEOUT
+        - UPSTREAM_TIMEOUT
+        - SIMULATION_FAILED
+        - TRANSACTION_FAILED
+        - RETURN_VALUE_PARSE_FAILED
+        - INVALID_AMOUNT
+        - ARITHMETIC_OVERFLOW
+        - INTERNAL_ERROR
+
+    ErrorResponse:
+      type: object
+      description: Standard error envelope returned by every non-2xx JSON response.
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable error message. Not stable; do not branch on it.
+          example: "`maxPerTxStroops` is required (string or number)"
+        code:
+          type: string
+          description: Stable machine-readable error code. Branch on this.
+          example: INVALID_BODY
+        requestId:
+          type: string
+          description: Present on unhandled 500 responses produced by the global error middleware.
+          example: 550e8400-e29b-41d4-a716-446655440000
