@@ -3,6 +3,8 @@ import request from "supertest";
 import express from "express";
 import agentsRouter from "../src/routes/agents.js";
 import * as contract from "../src/lib/contract.js";
+import * as idempotency from "../src/lib/idempotency.js";
+import { ContractError } from "../src/lib/ContractError.js";
 
 // Mock the dependencies
 vi.mock("../src/lib/contract.js", async (importOriginal) => {
@@ -59,12 +61,14 @@ app.use("/api", agentsRouter);
 describe("POST /api/agents/register", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    idempotency._reset();
+    idempotency._startTimer();
   });
 
   it("returns 409 early if agent is already registered", async () => {
     contract.isAgentRegistered.mockResolvedValue(true);
 
-    const response = await request(app).post("/api/agents/register").send({
+    const response = await request(app).post("/api/agents/register").set("Idempotency-Key", "already-registered").send({
       agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
       name: "Test Agent",
       description: "A valid test agent description",
@@ -76,8 +80,33 @@ describe("POST /api/agents/register", () => {
       code: "ALREADY_EXISTS",
       agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
     });
+    const replay = await request(app).post("/api/agents/register").set("Idempotency-Key", "already-registered").send({
+      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      name: "Test Agent",
+      description: "A valid test agent description",
+    });
+    expect(replay.status).toBe(response.status);
+    expect(replay.body).toEqual(response.body);
+    expect(contract.isAgentRegistered).toHaveBeenCalledTimes(1);
 
     // Ensure registerAgentOnChain is never called
+    expect(contract.registerAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it("requires a valid Idempotency-Key", async () => {
+    const body = {
+      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      name: "Test Agent",
+      description: "A valid test agent description",
+    };
+
+    const missing = await request(app).post("/api/agents/register").send(body);
+    const invalid = await request(app).post("/api/agents/register").set("Idempotency-Key", "bad key").send(body);
+
+    expect(missing.status).toBe(400);
+    expect(missing.body.code).toBe("IDEMPOTENCY_KEY_MISSING");
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.code).toBe("IDEMPOTENCY_KEY_INVALID");
     expect(contract.registerAgentOnChain).not.toHaveBeenCalled();
   });
 
@@ -85,11 +114,16 @@ describe("POST /api/agents/register", () => {
     contract.isAgentRegistered.mockResolvedValue(false);
     contract.registerAgentOnChain.mockResolvedValue(1);
 
-    const response = await request(app).post("/api/agents/register").send({
+    const body = {
       agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
       name: "Test Agent",
       description: "A valid test agent description",
-    });
+    };
+    const response = await request(app).post("/api/agents/register").set("Idempotency-Key", "register-success").send(body);
+    const replay = await request(app)
+      .post("/api/agents/register")
+      .set("Idempotency-Key", "register-success")
+      .send({ ...body, name: "Different Agent" });
 
     expect(response.status).toBe(201);
     expect(response.body).toEqual({
@@ -97,11 +131,78 @@ describe("POST /api/agents/register", () => {
       agentCount: 1,
       agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
     });
+    expect(replay.status).toBe(response.status);
+    expect(replay.body).toEqual(response.body);
+    expect(contract.registerAgentOnChain).toHaveBeenCalledTimes(1);
     expect(contract.registerAgentOnChain).toHaveBeenCalledWith(
       "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
       "Test Agent",
       "A valid test agent description"
     );
+  });
+
+  it("replays the original error status and body without retrying registration", async () => {
+    contract.isAgentRegistered.mockResolvedValue(false);
+    contract.registerAgentOnChain.mockRejectedValue(
+      new ContractError("RPC unavailable", "RPC_THROTTLED", 500)
+    );
+    const body = {
+      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      name: "Test Agent",
+      description: "A valid test agent description",
+    };
+
+    const response = await request(app)
+      .post("/api/agents/register")
+      .set("Idempotency-Key", "register-error")
+      .send(body);
+    const replay = await request(app)
+      .post("/api/agents/register")
+      .set("Idempotency-Key", "register-error")
+      .send(body);
+
+    expect(response.status).toBe(503);
+    expect(replay.status).toBe(response.status);
+    expect(replay.body).toEqual(response.body);
+    expect(contract.registerAgentOnChain).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents concurrent requests with the same key from registering twice", async () => {
+    let finishRegistration;
+    let registrationStarted;
+    const started = new Promise((resolve) => {
+      registrationStarted = resolve;
+    });
+    contract.isAgentRegistered.mockResolvedValue(false);
+    contract.registerAgentOnChain.mockImplementation(() => {
+      registrationStarted();
+      return new Promise((resolve) => {
+        finishRegistration = resolve;
+      });
+    });
+
+    const body = {
+      agentAddress: "GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ",
+      name: "Test Agent",
+      description: "A valid test agent description",
+    };
+    const firstPromise = request(app)
+      .post("/api/agents/register")
+      .set("Idempotency-Key", "register-concurrent")
+      .send(body)
+      .then((response) => response);
+    await started;
+    const concurrent = await request(app)
+      .post("/api/agents/register")
+      .set("Idempotency-Key", "register-concurrent")
+      .send(body);
+    finishRegistration(1);
+    const first = await firstPromise;
+
+    expect(first.status).toBe(201);
+    expect(concurrent.status).toBe(409);
+    expect(concurrent.body.code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(contract.registerAgentOnChain).toHaveBeenCalledTimes(1);
   });
 });
 

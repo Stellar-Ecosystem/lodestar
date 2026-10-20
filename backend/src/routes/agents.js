@@ -26,7 +26,7 @@ import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
-import { handleContractError } from '../lib/ContractError.js';
+import { contractErrorResponse, handleContractError } from '../lib/ContractError.js';
 import {
   isValidIdempotencyKey,
   getEntry,
@@ -280,33 +280,76 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
 });
 
 // POST /api/agents/register — Body: { agentAddress, name, description }
+// Requires Idempotency-Key. Repeated keys replay the original response for 24 h.
 router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
+  const idempotencyKey = req.get('Idempotency-Key');
+  if (!idempotencyKey) {
+    return res.status(400).json({
+      error: 'Missing Idempotency-Key header',
+      code: 'IDEMPOTENCY_KEY_MISSING',
+    });
+  }
+  if (!isValidIdempotencyKey(idempotencyKey)) {
+    return res.status(400).json({
+      error: 'Idempotency-Key must be 1–255 printable ASCII characters (no spaces)',
+      code: 'IDEMPOTENCY_KEY_INVALID',
+    });
+  }
+
+  const scopedKey = `register:${idempotencyKey}`;
+  const existing = getEntry(scopedKey);
+  if (existing) {
+    if (existing.status === 'pending') {
+      logger.warn({ idempotencyKey }, 'Duplicate registration request while in-flight');
+      return res.status(409).json({
+        error: 'A registration with this idempotency key is already being processed',
+        code: 'IDEMPOTENCY_CONFLICT',
+      });
+    }
+    if (existing.status === 'complete') {
+      logger.info({ idempotencyKey }, 'Replaying idempotent registration response');
+      return res.status(existing.result.httpStatus).json(existing.result.body);
+    }
+    if (existing.status === 'failed') {
+      logger.info({ idempotencyKey }, 'Replaying failed idempotent registration response');
+      return res.status(existing.result.httpStatus).json(existing.result.body);
+    }
+  }
+
+  // Reserve synchronously before the first await so concurrent retries cannot
+  // both proceed to the contract calls.
+  markPending(scopedKey);
+  const sendResponse = (status, body) => {
+    markComplete(scopedKey, { httpStatus: status, body });
+    return res.status(status).json(body);
+  };
+
   try {
     const { agentAddress, name, description } = req.body;
 
     if (!agentAddress || typeof agentAddress !== 'string') {
-      return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
+      return sendResponse(400, { error: '`agentAddress` is required', code: 'INVALID_BODY' });
     }
     if (!isValidStellarAddress(agentAddress)) {
-      return res.status(400).json({ error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
+      return sendResponse(400, { error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
     }
     if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 64) {
-      return res.status(400).json({ error: '`name` must be 3–64 characters', code: 'INVALID_BODY' });
+      return sendResponse(400, { error: '`name` must be 3–64 characters', code: 'INVALID_BODY' });
     }
     if (!description || typeof description !== 'string' || description.trim().length < 10 || description.trim().length > 256) {
-      return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
+      return sendResponse(400, { error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
     }
 
     const isRegistered = await isAgentRegistered(agentAddress);
     if (isRegistered) {
       logger.info({ agentAddress }, 'Attempted to register an already registered agent');
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+      return sendResponse(409, { error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
     }
 
     const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
     agentsCache = null; // invalidate so next request reflects the new agent
     logger.info({ agentAddress, name }, 'Agent registered on-chain');
-    res.status(201).json({ success: true, agentCount: count, agentAddress });
+    return sendResponse(201, { success: true, agentCount: count, agentAddress });
   } catch (err) {
     logger.error({ err }, 'POST /api/agents/register failed');
     // Soroban returns contract errors as `Error(<u32>)` in simulation failures.
@@ -319,12 +362,13 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
     };
     const mapped = contractError && registerErrorCodes[Number(contractError[1])];
     if (mapped) {
-      return res.status(mapped.status).json({ error: mapped.error, code: mapped.code, agentAddress });
+      return sendResponse(mapped.status, { error: mapped.error, code: mapped.code, agentAddress });
     }
     if (err.message?.includes('already registered')) {
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+      return sendResponse(409, { error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
     }
-    return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
+    const { status, body } = contractErrorResponse(err, 'Registration failed', 'REGISTER_ERROR');
+    return sendResponse(status, body);
   }
 });
 

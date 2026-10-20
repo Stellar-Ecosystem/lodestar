@@ -4,6 +4,8 @@
 
 The backend uses `express-rate-limit` for anti-spam protection on public write endpoints (e.g., `POST /reputation/:id`, `POST /agents/register`).
 
+`POST /api/agents/register` requires an `Idempotency-Key` header containing 1–255 printable ASCII characters without spaces. Reusing a key replays the original HTTP status and JSON response for 24 hours and does not repeat registration work. A same-key request received while the first is processing receives HTTP 409 (`IDEMPOTENCY_CONFLICT`). The idempotency store is in-memory, so this protection is per backend process.
+
 ### Deployment Considerations
 
 By default, rate limiting uses an in-memory store, which means limits are applied per process. When running multiple replicas behind a load balancer, the effective limit is multiplied by the number of replicas.
