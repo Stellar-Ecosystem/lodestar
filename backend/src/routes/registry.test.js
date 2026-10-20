@@ -1,6 +1,7 @@
 import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { _reset as resetIdempotencyStore } from '../lib/idempotency.js';
 
 const mockListServices = vi.fn();
 const mockListServicesByProvider = vi.fn();
@@ -1060,14 +1061,16 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
 
   beforeEach(() => {
     mockGetCurrentLedgerSequence.mockReset();
-
+    resetIdempotencyStore();
   });
 
   it('includes ttl_warning:false for a fresh entry', async () => {
     mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
     mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET - 1);
 
-    const res = await request(app).get('/api/services/1');
+    const res = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'key-fresh');
 
     expect(res.status).toBe(200);
     expect(res.body.ttl_warning).toBe(false);
@@ -1077,7 +1080,9 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
     mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
     mockGetCurrentLedgerSequence.mockResolvedValue(WARN_ONSET);
 
-    const res = await request(app).get('/api/services/1');
+    const res = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'key-warn');
 
     expect(res.status).toBe(200);
     expect(res.body.ttl_warning).toBe(true);
@@ -1087,9 +1092,204 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
     mockGetService.mockResolvedValueOnce(makeService({ registered_at: REGISTERED_AT }));
     mockGetCurrentLedgerSequence.mockRejectedValue(new Error('timeout'));
 
-    const res = await request(app).get('/api/services/1');
+    const res = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'key-omit');
 
     expect(res.status).toBe(200);
     expect('ttl_warning' in res.body).toBe(false);
+  });
+});
+
+describe('GET /api/services/:id — idempotency under client retry', () => {
+  beforeEach(() => {
+    mockGetService.mockReset();
+    mockGetCurrentLedgerSequence.mockReset();
+    resetIdempotencyStore();
+  });
+
+  it('rejects missing Idempotency-Key header with 400', async () => {
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: 'Missing Idempotency-Key header',
+      code: 'IDEMPOTENCY_KEY_MISSING',
+    });
+    expect(mockGetService).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid Idempotency-Key with 400', async () => {
+    const res = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'key with spaces');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: 'Idempotency-Key must be 1–255 printable ASCII characters (no spaces)',
+      code: 'IDEMPOTENCY_KEY_INVALID',
+    });
+    expect(mockGetService).not.toHaveBeenCalled();
+  });
+
+  it('accepts Idempotency-Key and stores/returns service response', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ id: 1 }));
+    mockGetCurrentLedgerSequence.mockResolvedValueOnce(2000);
+
+    const res = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'test-key-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(1);
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays the stored response for a duplicate request without re-executing', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ id: 1, name: 'First Call Result' }));
+    mockGetCurrentLedgerSequence.mockResolvedValueOnce(2000);
+
+    // First request
+    const firstRes = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'retry-key-123');
+
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.body.name).toBe('First Call Result');
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+
+    // Second request (retry) with identical key
+    const secondRes = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'retry-key-123');
+
+    expect(secondRes.status).toBe(200);
+    expect(secondRes.body).toEqual(firstRes.body);
+    // getService and getCurrentLedgerSequence must not be called again
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+    expect(mockGetCurrentLedgerSequence).toHaveBeenCalledTimes(1);
+  });
+
+  it('also supports X-Idempotency-Key header', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ id: 1 }));
+    mockGetCurrentLedgerSequence.mockResolvedValueOnce(2000);
+
+    const firstRes = await request(app)
+      .get('/api/services/1')
+      .set('X-Idempotency-Key', 'x-header-key');
+
+    expect(firstRes.status).toBe(200);
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+
+    const retryRes = await request(app)
+      .get('/api/services/1')
+      .set('X-Idempotency-Key', 'x-header-key');
+
+    expect(retryRes.status).toBe(200);
+    expect(retryRes.body).toEqual(firstRes.body);
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 409 conflict when a concurrent request with same key is in-flight', async () => {
+    const { markPending } = await import('../lib/idempotency.js');
+    markPending('registry:service:1:concurrent-key');
+
+    const res = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'concurrent-key');
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: 'A request with this idempotency key is already being processed',
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+    expect(mockGetService).not.toHaveBeenCalled();
+  });
+
+  it('re-executes when the idempotency key expires (TTL)', async () => {
+    vi.useFakeTimers();
+    try {
+      mockGetService.mockResolvedValue(makeService({ id: 1 }));
+      mockGetCurrentLedgerSequence.mockResolvedValue(2000);
+
+      const firstRes = await request(app)
+        .get('/api/services/1')
+        .set('Idempotency-Key', 'expire-key');
+
+      expect(firstRes.status).toBe(200);
+      expect(mockGetService).toHaveBeenCalledTimes(1);
+
+      // Advance time beyond TTL (24 hours + 1 ms)
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 1);
+
+      // Retry after TTL expiration should re-execute
+      const secondRes = await request(app)
+        .get('/api/services/1')
+        .set('Idempotency-Key', 'expire-key');
+
+      expect(secondRes.status).toBe(200);
+      expect(mockGetService).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replays 404 response on retry without re-fetching', async () => {
+    mockGetService.mockResolvedValueOnce(null);
+    mockGetCurrentLedgerSequence.mockResolvedValueOnce(2000);
+
+    const firstRes = await request(app)
+      .get('/api/services/999')
+      .set('Idempotency-Key', 'not-found-key');
+
+    expect(firstRes.status).toBe(404);
+    expect(firstRes.body.code).toBe('NOT_FOUND');
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+
+    const secondRes = await request(app)
+      .get('/api/services/999')
+      .set('Idempotency-Key', 'not-found-key');
+
+    expect(secondRes.status).toBe(404);
+    expect(secondRes.body.code).toBe('NOT_FOUND');
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays 500 error response on retry without re-fetching', async () => {
+    mockGetService.mockRejectedValueOnce(new Error('Database exploded'));
+    mockGetCurrentLedgerSequence.mockResolvedValueOnce(2000);
+
+    const firstRes = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'error-key');
+
+    expect(firstRes.status).toBe(500);
+    expect(firstRes.body.code).toBe('FETCH_ERROR');
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+
+    const secondRes = await request(app)
+      .get('/api/services/1')
+      .set('Idempotency-Key', 'error-key');
+
+    expect(secondRes.status).toBe(500);
+    expect(secondRes.body.code).toBe('FETCH_ERROR');
+    expect(secondRes.body.idempotent).toBe(true);
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+  });
+
+  it('asserts duplicate request produces exactly one effect', async () => {
+    let sideEffectCount = 0;
+    mockGetService.mockImplementation(async () => {
+      sideEffectCount += 1;
+      return makeService({ id: 1 });
+    });
+    mockGetCurrentLedgerSequence.mockResolvedValue(2000);
+
+    const key = 'effect-key-single';
+    await request(app).get('/api/services/1').set('Idempotency-Key', key);
+    await request(app).get('/api/services/1').set('Idempotency-Key', key);
+    await request(app).get('/api/services/1').set('Idempotency-Key', key);
+
+    expect(sideEffectCount).toBe(1);
   });
 });

@@ -1,5 +1,12 @@
 import { Router } from "express";
 import {
+  isValidIdempotencyKey,
+  getEntry,
+  markPending,
+  markComplete,
+  markFailed,
+} from "../lib/idempotency.js";
+import {
   listServices,
   listServicesByProvider,
   getService,
@@ -146,14 +153,59 @@ router.get("/services", async (req, res) => {
 });
 
 router.get("/services/:id", async (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-      return res
-        .status(400)
-        .json({ error: "Invalid service ID", code: "INVALID_ID" });
-    }
+  const idempotencyKey =
+    req.headers["idempotency-key"] || req.headers["x-idempotency-key"];
+  if (!idempotencyKey) {
+    return res.status(400).json({
+      error: "Missing Idempotency-Key header",
+      code: "IDEMPOTENCY_KEY_MISSING",
+    });
+  }
+  if (!isValidIdempotencyKey(idempotencyKey)) {
+    return res.status(400).json({
+      error:
+        "Idempotency-Key must be 1–255 printable ASCII characters (no spaces)",
+      code: "IDEMPOTENCY_KEY_INVALID",
+    });
+  }
 
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id) || id < 1) {
+    return res
+      .status(400)
+      .json({ error: "Invalid service ID", code: "INVALID_ID" });
+  }
+
+  const scopedKey = `registry:service:${id}:${idempotencyKey}`;
+  const existing = getEntry(scopedKey);
+  if (existing) {
+    if (existing.status === "pending") {
+      logger.warn(
+        { id, idempotencyKey },
+        "Duplicate GET /services/:id request while in-flight",
+      );
+      return res.status(409).json({
+        error:
+          "A request with this idempotency key is already being processed",
+        code: "IDEMPOTENCY_CONFLICT",
+      });
+    }
+    if (existing.status === "complete") {
+      logger.info(
+        { id, idempotencyKey },
+        "Replaying idempotent GET /services/:id response",
+      );
+      return res.status(existing.result.httpStatus || 200).json(existing.result.body);
+    }
+    if (existing.status === "failed") {
+      const { httpStatus, error, code } = existing.result;
+      return res.status(httpStatus).json({ error, code, idempotent: true });
+    }
+  }
+
+  markPending(scopedKey);
+
+  try {
     const [serviceResult, ledgerResult] = await Promise.allSettled([
       getService(id),
       getCurrentLedgerSequence(),
@@ -163,9 +215,9 @@ router.get("/services/:id", async (req, res) => {
 
     const service = serviceResult.value;
     if (!service) {
-      return res
-        .status(404)
-        .json({ error: "Service not found", code: "NOT_FOUND" });
+      const notFoundBody = { error: "Service not found", code: "NOT_FOUND" };
+      markComplete(scopedKey, { httpStatus: 404, body: notFoundBody });
+      return res.status(404).json(notFoundBody);
     }
 
     if (ledgerResult.status === "rejected") {
@@ -177,10 +229,17 @@ router.get("/services/:id", async (req, res) => {
 
     const currentLedger =
       ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
-    res.json(annotateTtlWarning(service, currentLedger));
+    const responseBody = annotateTtlWarning(service, currentLedger);
+
+    markComplete(scopedKey, { httpStatus: 200, body: responseBody });
+    res.json(responseBody);
   } catch (err) {
     logger.error({ err }, "GET /api/services/:id failed");
-    res.status(500).json({ error: "Failed to fetch service", code: "FETCH_ERROR" });
+    const httpStatus = 500;
+    const error = "Failed to fetch service";
+    const code = "FETCH_ERROR";
+    markFailed(scopedKey, { httpStatus, error, code });
+    res.status(httpStatus).json({ error, code });
   }
 });
 
