@@ -134,3 +134,47 @@ describe("_reset", () => {
     expect(idempotency.getEntry("key-1")).toBeNull();
   });
 });
+
+describe("markPending custom ttlMs", () => {
+  beforeEach(() => {
+    idempotency._reset();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    idempotency._reset();
+  });
+
+  it("expires an entry after the supplied ttlMs", () => {
+    idempotency.markPending("short", 1000);
+    vi.advanceTimersByTime(999);
+    expect(idempotency.getEntry("short")).not.toBeNull();
+    vi.advanceTimersByTime(2);
+    expect(idempotency.getEntry("short")).toBeNull();
+  });
+
+  it("defaults to 24 h when ttlMs is omitted", () => {
+    idempotency.markPending("default");
+    vi.advanceTimersByTime(23 * 60 * 60 * 1000);
+    expect(idempotency.getEntry("default")).not.toBeNull();
+    vi.advanceTimersByTime(2 * 60 * 60 * 1000);
+    expect(idempotency.getEntry("default")).toBeNull();
+  });
+});
+
+describe("release", () => {
+  beforeEach(() => idempotency._reset());
+  afterEach(() => idempotency._reset());
+
+  it("removes a pending entry", () => {
+    idempotency.markPending("rel");
+    idempotency.release("rel");
+    expect(idempotency.getEntry("rel")).toBeNull();
+    expect(idempotency._size()).toBe(0);
+  });
+
+  it("is a no-op for unknown keys", () => {
+    expect(() => idempotency.release("nope")).not.toThrow();
+  });
+});

@@ -1,7 +1,9 @@
 /**
  * In-memory idempotency store for the payment route.
  *
- * Keys expire after TTL_MS (default 24 h). Expired entries are pruned by a
+ * Keys expire after TTL_MS (default 24 h) unless the caller passes its own
+ * ttlMs to markPending. Routes can drop a reservation with release so a failed
+ * request may be retried. Expired entries are pruned by a
  * background timer so that every lookup stays O(1). A lazy per-key expiry
  * check on read catches any stragglers between timer ticks.
  *
@@ -94,13 +96,23 @@ export function getEntry(key) {
  * Must only be called after confirming no live entry exists.
  *
  * @param {string} key
+ * @param {number} [ttlMs] entry lifetime; defaults to TTL_MS
  */
-export function markPending(key) {
+export function markPending(key, ttlMs = TTL_MS) {
   store.set(key, {
     status: "pending",
     result: null,
-    expiresAt: Date.now() + TTL_MS,
+    expiresAt: Date.now() + ttlMs,
   });
+}
+
+/**
+ * Drop `key` entirely (e.g. a pending reservation whose request failed).
+ *
+ * @param {string} key
+ */
+export function release(key) {
+  store.delete(key);
 }
 
 /**

@@ -1,6 +1,16 @@
-import { vi, describe, it, expect, beforeAll, beforeEach } from "vitest";
+import {
+  vi,
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  afterEach,
+} from "vitest";
 import express from "express";
 import request from "supertest";
+import { _reset } from "../lib/idempotency.js";
+import { PREPARE_REGISTER_IDEMPOTENCY_TTL_MS } from "./registry.js";
 
 const mockListServices = vi.fn();
 const mockListServicesByProvider = vi.fn();
@@ -318,8 +328,24 @@ describe("GET /api/registry/by-provider/:address", () => {
 describe("POST /api/registry/prepare-register", () => {
   const VALID_PROVIDER = VALID_STELLAR_ADDRESS;
 
+  let keyCounter = 0;
+  const nextKey = () => `test-key-${++keyCounter}`;
+  const VALID_BODY = {
+    name: "Weather Oracle",
+    description: "Real-time weather data for autonomous agents.",
+    endpoint: "https://weather.example.com",
+    priceUsdc: "0.001",
+    category: "weather",
+    providerAddress: VALID_PROVIDER,
+  };
+
   beforeEach(() => {
     mockBuildUnsignedRegistryTx.mockReset();
+    _reset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("returns unsigned XDR for a valid registration request", async () => {
@@ -328,14 +354,17 @@ describe("POST /api/registry/prepare-register", () => {
       submitToken: "submit-token-1",
     });
 
-    const res = await request(app).post("/api/registry/prepare-register").send({
-      name: "Weather Oracle",
-      description: "Real-time weather data for autonomous agents.",
-      endpoint: "https://weather.example.com",
-      priceUsdc: "0.001",
-      category: "weather",
-      providerAddress: VALID_PROVIDER,
-    });
+    const res = await request(app)
+      .post("/api/registry/prepare-register")
+      .set("Idempotency-Key", nextKey())
+      .send({
+        name: "Weather Oracle",
+        description: "Real-time weather data for autonomous agents.",
+        endpoint: "https://weather.example.com",
+        priceUsdc: "0.001",
+        category: "weather",
+        providerAddress: VALID_PROVIDER,
+      });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -461,6 +490,7 @@ describe("POST /api/registry/prepare-register", () => {
     async (_field, body) => {
       const res = await request(app)
         .post("/api/registry/prepare-register")
+        .set("Idempotency-Key", nextKey())
         .send(body);
 
       expect(res.status).toBe(400);
@@ -475,14 +505,17 @@ describe("POST /api/registry/prepare-register", () => {
       submitToken: "submit-token-min-name",
     });
 
-    const res = await request(app).post("/api/registry/prepare-register").send({
-      name: "Abc",
-      description: "Exactly ten chars",
-      endpoint: "https://example.com",
-      priceUsdc: "0.001",
-      category: "weather",
-      providerAddress: VALID_PROVIDER,
-    });
+    const res = await request(app)
+      .post("/api/registry/prepare-register")
+      .set("Idempotency-Key", nextKey())
+      .send({
+        name: "Abc",
+        description: "Exactly ten chars",
+        endpoint: "https://example.com",
+        priceUsdc: "0.001",
+        category: "weather",
+        providerAddress: VALID_PROVIDER,
+      });
 
     expect(res.status).toBe(200);
     expect(mockBuildUnsignedRegistryTx).toHaveBeenCalled();
@@ -496,6 +529,7 @@ describe("POST /api/registry/prepare-register", () => {
 
     const res = await request(app)
       .post("/api/registry/prepare-register")
+      .set("Idempotency-Key", nextKey())
       .send({
         name: "A".repeat(64),
         description: "Exactly ten chars",
@@ -515,14 +549,17 @@ describe("POST /api/registry/prepare-register", () => {
       submitToken: "submit-token-min-desc",
     });
 
-    const res = await request(app).post("/api/registry/prepare-register").send({
-      name: "Weather Oracle",
-      description: "1234567890",
-      endpoint: "https://example.com",
-      priceUsdc: "0.001",
-      category: "weather",
-      providerAddress: VALID_PROVIDER,
-    });
+    const res = await request(app)
+      .post("/api/registry/prepare-register")
+      .set("Idempotency-Key", nextKey())
+      .send({
+        name: "Weather Oracle",
+        description: "1234567890",
+        endpoint: "https://example.com",
+        priceUsdc: "0.001",
+        category: "weather",
+        providerAddress: VALID_PROVIDER,
+      });
 
     expect(res.status).toBe(200);
     expect(mockBuildUnsignedRegistryTx).toHaveBeenCalled();
@@ -536,6 +573,7 @@ describe("POST /api/registry/prepare-register", () => {
 
     const res = await request(app)
       .post("/api/registry/prepare-register")
+      .set("Idempotency-Key", nextKey())
       .send({
         name: "Weather Oracle",
         description: "A".repeat(256),
@@ -558,17 +596,135 @@ describe("POST /api/registry/prepare-register", () => {
       ),
     );
 
-    const res = await request(app).post("/api/registry/prepare-register").send({
-      name: "Weather Oracle",
-      description: "Real-time weather data for autonomous agents.",
-      endpoint: "https://weather.example.com",
-      priceUsdc: "0.001",
-      category: "weather",
-      providerAddress: VALID_PROVIDER,
-    });
+    const res = await request(app)
+      .post("/api/registry/prepare-register")
+      .set("Idempotency-Key", nextKey())
+      .send({
+        name: "Weather Oracle",
+        description: "Real-time weather data for autonomous agents.",
+        endpoint: "https://weather.example.com",
+        priceUsdc: "0.001",
+        category: "weather",
+        providerAddress: VALID_PROVIDER,
+      });
 
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("DUPLICATE_SERVICE");
+  });
+
+  describe("Idempotency-Key (#664)", () => {
+    const post = (key, body = VALID_BODY) => {
+      const r = request(app).post("/api/registry/prepare-register");
+      if (key !== undefined) r.set("Idempotency-Key", key);
+      return r.send(body);
+    };
+
+    it("rejects a missing Idempotency-Key header", async () => {
+      const res = await post(undefined);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("IDEMPOTENCY_KEY_MISSING");
+      expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+    });
+
+    it("rejects an invalid Idempotency-Key header", async () => {
+      const res = await post("has a space");
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("IDEMPOTENCY_KEY_INVALID");
+      expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+    });
+
+    it("replays a repeated request without re-executing", async () => {
+      mockBuildUnsignedRegistryTx.mockResolvedValue({
+        xdr: "XDR_1",
+        submitToken: "tok-1",
+      });
+
+      const first = await post("dup-key");
+      const second = await post("dup-key");
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.body).toEqual(first.body);
+      expect(first.headers["idempotent-replayed"]).toBeUndefined();
+      expect(second.headers["idempotent-replayed"]).toBe("true");
+      expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects the same key with a different body", async () => {
+      mockBuildUnsignedRegistryTx.mockResolvedValue({
+        xdr: "XDR_1",
+        submitToken: "tok-1",
+      });
+
+      await post("reuse-key");
+      const res = await post("reuse-key", {
+        ...VALID_BODY,
+        name: "Other Oracle",
+      });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("IDEMPOTENCY_KEY_REUSED");
+      expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not cache failures, so a retry re-executes", async () => {
+      const { ContractError } = await import("../lib/ContractError.js");
+      mockBuildUnsignedRegistryTx
+        .mockRejectedValueOnce(
+          new ContractError("Timed out", "TRANSACTION_TIMEOUT"),
+        )
+        .mockResolvedValueOnce({ xdr: "XDR_2", submitToken: "tok-2" });
+
+      const first = await post("retry-key");
+      const second = await post("retry-key");
+
+      expect(first.status).toBe(504);
+      expect(second.status).toBe(200);
+      expect(second.body).toEqual({ xdr: "XDR_2", submitToken: "tok-2" });
+      expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledTimes(2);
+    });
+
+    it("re-executes after the 10 minute TTL expires", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      mockBuildUnsignedRegistryTx.mockResolvedValue({
+        xdr: "XDR_1",
+        submitToken: "tok-1",
+      });
+
+      await post("ttl-key");
+      vi.setSystemTime(Date.now() + PREPARE_REGISTER_IDEMPOTENCY_TTL_MS + 1000);
+      const res = await post("ttl-key");
+
+      expect(res.status).toBe(200);
+      expect(res.headers["idempotent-replayed"]).toBeUndefined();
+      expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledTimes(2);
+    });
+
+    it("returns 409 for a concurrent request with the same key", async () => {
+      let resolveBuild;
+      mockBuildUnsignedRegistryTx.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveBuild = resolve;
+          }),
+      );
+
+      const firstPromise = post("conc-key").then((r) => r);
+      await vi.waitFor(() =>
+        expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledTimes(1),
+      );
+      const second = await post("conc-key");
+
+      expect(second.status).toBe(409);
+      expect(second.body.code).toBe("IDEMPOTENCY_CONFLICT");
+
+      resolveBuild({ xdr: "XDR_1", submitToken: "tok-1" });
+      const first = await firstPromise;
+      expect(first.status).toBe(200);
+      expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

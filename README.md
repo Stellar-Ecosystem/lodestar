@@ -91,7 +91,7 @@ Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, 
 ### Provider flow
 
 1. Deploy any HTTP service that returns `402 Payment Required` with x402 headers
-2. Ask the backend for `POST /api/registry/prepare-register`, which builds an unsigned Soroban transaction using your real Stellar address as `provider`. Field limits: `name` 3–64 characters, `description` 10–256 characters, `endpoint` at most 256 characters, `category` 1–32 characters.
+2. Ask the backend for `POST /api/registry/prepare-register`, which builds an unsigned Soroban transaction using your real Stellar address as `provider`. Field limits: `name` 3–64 characters, `description` 10–256 characters, `endpoint` at most 256 characters, `category` 1–32 characters. The request requires an `Idempotency-Key` header; repeats within 10 minutes replay the original response.
 3. Sign that XDR in Freighter (or another wallet) and submit it through `POST /api/registry/submit-signed-tx`
 4. If an active service with the same provider and endpoint already exists, registration is rejected to prevent duplicate active entries
 5. Your service is now permanently discoverable by any agent querying the registry

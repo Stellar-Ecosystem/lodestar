@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import {
   listServices,
   listServicesByProvider,
@@ -16,11 +17,22 @@ import {
 import { getCurrentLedgerSequence } from "../lib/stellar.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
+import {
+  isValidIdempotencyKey,
+  getEntry,
+  markPending,
+  markComplete,
+  release,
+} from "../lib/idempotency.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
 
 const router = Router();
+
+// Must not exceed REGISTRY_SUBMIT_TOKEN_TTL_MS in lib/contract.js (10 min): a replay
+// past that would return a submitToken that can no longer be submitted.
+export const PREPARE_REGISTER_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 
 const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set([
@@ -379,11 +391,38 @@ router.get("/registry/by-provider/:address", async (req, res) => {
   }
 });
 
+/**
+ * POST /api/registry/prepare-register (#664)
+ * Requires an `Idempotency-Key` header (1-255 printable ASCII chars, no spaces).
+ * Successful responses are cached for 10 minutes per provider and key; a repeat
+ * with the same body replays the original response with `Idempotent-Replayed: true`
+ * without rebuilding the transaction. Failed requests are not cached.
+ *
+ * 400 IDEMPOTENCY_KEY_MISSING / IDEMPOTENCY_KEY_INVALID — header absent or malformed
+ * 409 IDEMPOTENCY_CONFLICT — a request with this key is still in flight
+ * 422 IDEMPOTENCY_KEY_REUSED — key was already used with a different body
+ */
 router.post(
   "/registry/prepare-register",
   writeRateLimiter(),
   async (req, res) => {
+    let scopedKey = null;
     try {
+      const idempotencyKey = req.get("Idempotency-Key");
+      if (!idempotencyKey) {
+        return res.status(400).json({
+          error: "Missing Idempotency-Key header",
+          code: "IDEMPOTENCY_KEY_MISSING",
+        });
+      }
+      if (!isValidIdempotencyKey(idempotencyKey)) {
+        return res.status(400).json({
+          error:
+            "Idempotency-Key must be 1-255 printable ASCII characters (no spaces)",
+          code: "IDEMPOTENCY_KEY_INVALID",
+        });
+      }
+
       const {
         name,
         description,
@@ -455,24 +494,60 @@ router.post(
         });
       }
 
+      const registerParams = {
+        name: name.trim(),
+        description: description.trim(),
+        endpoint: endpoint.trim(),
+        priceUsdc: normalizedPriceUsdc,
+        category,
+        payTo: payTo?.trim(),
+      };
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify({ providerAddress, ...registerParams }))
+        .digest("hex");
+      const key = `prepare-register:${providerAddress}:${idempotencyKey}`;
+
+      const existing = getEntry(key);
+      if (existing) {
+        if (existing.status === "pending") {
+          return res.status(409).json({
+            error: "A request with this Idempotency-Key is already in progress",
+            code: "IDEMPOTENCY_CONFLICT",
+          });
+        }
+        if (existing.status === "complete") {
+          if (existing.result.fingerprint !== fingerprint) {
+            return res.status(422).json({
+              error:
+                "Idempotency-Key was already used with a different request body",
+              code: "IDEMPOTENCY_KEY_REUSED",
+            });
+          }
+          logger.info(
+            { providerAddress },
+            "Replayed prepare-register response for repeated Idempotency-Key",
+          );
+          res.set("Idempotent-Replayed", "true");
+          return res.json(existing.result.body);
+        }
+      }
+
+      markPending(key, PREPARE_REGISTER_IDEMPOTENCY_TTL_MS);
+      scopedKey = key;
       const prepared = await buildUnsignedRegistryTx(
         "register",
         providerAddress,
-        {
-          name: name.trim(),
-          description: description.trim(),
-          endpoint: endpoint.trim(),
-          priceUsdc: normalizedPriceUsdc,
-          category,
-          payTo: payTo?.trim(),
-        },
+        registerParams,
       );
+      markComplete(key, { fingerprint, body: prepared });
       logger.info(
         { providerAddress, endpoint, category },
         "Built unsigned registry registration tx",
       );
       res.json(prepared);
     } catch (err) {
+      // Failures are not cached: nothing is on-chain until submit, so a retry must re-execute.
+      if (scopedKey) release(scopedKey);
       if (err instanceof ContractError) {
         const status =
           err.code === "TRANSACTION_TIMEOUT"

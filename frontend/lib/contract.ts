@@ -118,6 +118,11 @@ export async function registerService(
     "/api/registry/prepare-register",
     {
       method: "POST",
+      // init.headers replaces apiFetch's defaults, so Content-Type is repeated here
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": crypto.randomUUID(),
+      },
       body: JSON.stringify({
         name: formData.name,
         description: formData.description,
