@@ -332,3 +332,231 @@ describe('GET /api/agents/:address/payment-history', () => {
     expect(res.body.code).toBe('INVALID_PAGINATION');
   });
 });
+
+describe('POST /agents/:address/submit-signed-tx validation', () => {
+  const VALID_ADDR = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+  const VALID_SIGNED_XDR = 'AAAAAgAAAAA=';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('submits valid signed XDR successfully', async () => {
+    mockSubmitSignedAgentTx.mockResolvedValueOnce('txhash123');
+
+    const res = await request(app)
+      .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+      .send({ signedXdr: VALID_SIGNED_XDR });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, hash: 'txhash123' });
+    expect(mockSubmitSignedAgentTx).toHaveBeenCalledWith(VALID_SIGNED_XDR);
+  });
+
+  describe('missing values', () => {
+    it('returns 400 INVALID_BODY when signedXdr is missing', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when body is empty', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send();
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('fails schema validation when address is missing in params schema', async () => {
+      const agentsModule = await import('./agents.js');
+      const result = agentsModule.submitSignedTxParamsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('wrong-type values', () => {
+    it('returns 400 INVALID_BODY when signedXdr is a number', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: 12345 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when signedXdr is boolean', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: true });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when signedXdr is an array', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: [VALID_SIGNED_XDR] });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when signedXdr is an object', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: { xdr: VALID_SIGNED_XDR } });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when signedXdr is null', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: null });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('fails schema validation when address is not a string in params schema', async () => {
+      const agentsModule = await import('./agents.js');
+      const result = agentsModule.submitSignedTxParamsSchema.safeParse({ address: 12345 });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('out-of-range values', () => {
+    it('returns 400 INVALID_BODY when signedXdr is empty string', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: '' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when signedXdr is only whitespace', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: '   ' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when signedXdr contains invalid base64 characters', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: 'not-valid-base64?!@#' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when signedXdr exceeds maximum length', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: 'A'.repeat(65537) });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when body contains unexpected fields', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx`)
+        .send({ signedXdr: VALID_SIGNED_XDR, unexpectedField: true });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when address format is invalid', async () => {
+      const res = await request(app)
+        .post('/agents/invalid-stellar-address/submit-signed-tx')
+        .send({ signedXdr: VALID_SIGNED_XDR });
+
+      expect(res.status).toBe(400);
+      expect(['INVALID_PARAMS', 'INVALID_ADDRESS']).toContain(res.body.code);
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when address is too short', async () => {
+      const res = await request(app)
+        .post('/agents/GBBD47IF6LWK7P7M/submit-signed-tx')
+        .send({ signedXdr: VALID_SIGNED_XDR });
+
+      expect(res.status).toBe(400);
+      expect(['INVALID_PARAMS', 'INVALID_ADDRESS']).toContain(res.body.code);
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when address does not start with G', async () => {
+      const nonGAddr = 'CBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+      const res = await request(app)
+        .post(`/agents/${nonGAddr}/submit-signed-tx`)
+        .send({ signedXdr: VALID_SIGNED_XDR });
+
+      expect(res.status).toBe(400);
+      expect(['INVALID_PARAMS', 'INVALID_ADDRESS']).toContain(res.body.code);
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+
+    it('fails schema validation when address is out of range or malformed in params schema', async () => {
+      const agentsModule = await import('./agents.js');
+      expect(agentsModule.submitSignedTxParamsSchema.safeParse({ address: 'GBBD47IF6LWK7P7M' }).success).toBe(false);
+      expect(agentsModule.submitSignedTxParamsSchema.safeParse({ address: 'CBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5' }).success).toBe(false);
+      expect(agentsModule.submitSignedTxParamsSchema.safeParse({ address: 'invalid-address' }).success).toBe(false);
+    });
+
+    it('returns 400 INVALID_QUERY when unexpected query parameters are passed', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/submit-signed-tx?extra=query`)
+        .send({ signedXdr: VALID_SIGNED_XDR });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_QUERY');
+      expect(mockSubmitSignedAgentTx).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('exported zod schemas', () => {
+    it('exports submitSignedTxSchema, submitSignedTxParamsSchema, submitSignedTxQuerySchema, submitSignedTxBodySchema', async () => {
+      const agentsModule = await import('./agents.js');
+      expect(agentsModule.submitSignedTxSchema).toBeDefined();
+      expect(agentsModule.submitSignedTxParamsSchema).toBeDefined();
+      expect(agentsModule.submitSignedTxQuerySchema).toBeDefined();
+      expect(agentsModule.submitSignedTxBodySchema).toBeDefined();
+      expect(agentsModule.validateSubmitSignedTx).toBeDefined();
+      expect(agentsModule.SUBMIT_TX_ERROR_CODES).toBeDefined();
+
+      const parseParams = agentsModule.submitSignedTxParamsSchema.safeParse({ address: VALID_ADDR });
+      expect(parseParams.success).toBe(true);
+
+      const parseQuery = agentsModule.submitSignedTxQuerySchema.safeParse({});
+      expect(parseQuery.success).toBe(true);
+
+      const parseBody = agentsModule.submitSignedTxBodySchema.safeParse({ signedXdr: VALID_SIGNED_XDR });
+      expect(parseBody.success).toBe(true);
+    });
+  });
+});
