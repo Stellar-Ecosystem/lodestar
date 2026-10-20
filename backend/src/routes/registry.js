@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import {
   listServices,
   listServicesByProvider,
@@ -16,14 +17,32 @@ import {
 import { getCurrentLedgerSequence } from "../lib/stellar.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
+import {
+  isValidIdempotencyKey,
+  getEntry,
+  markPending,
+  markComplete,
+  release,
+} from "../lib/idempotency.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
 
 const router = Router();
 
+// Must not exceed REGISTRY_SUBMIT_TOKEN_TTL_MS in lib/contract.js (10 min): a replay
+// past that would return a submitToken that can no longer be submitted.
+export const PREPARE_REGISTER_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+
 const PAGE_SIZE = 20;
-const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
+const SERVICE_CATEGORIES = new Set([
+  "search",
+  "weather",
+  "finance",
+  "ai",
+  "data",
+  "compute",
+]);
 const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
 function normalizePriceUsdc(value) {
@@ -36,7 +55,11 @@ function normalizePriceUsdc(value) {
 
   if (typeof value !== "string") return null;
   const normalized = value.trim();
-  if (normalized.length === 0 || normalized !== value || !PRICE_USDC_REGEX.test(normalized)) {
+  if (
+    normalized.length === 0 ||
+    normalized !== value ||
+    !PRICE_USDC_REGEX.test(normalized)
+  ) {
     return null;
   }
 
@@ -98,7 +121,10 @@ router.get("/services", async (req, res) => {
   try {
     const { category, q, offset: offsetStr, limit: limitStr } = req.query;
     const offset = Math.max(0, parseInt(offsetStr, 10) || 0);
-    const limit = Math.min(50, Math.max(1, parseInt(limitStr, 10) || PAGE_SIZE));
+    const limit = Math.min(
+      50,
+      Math.max(1, parseInt(limitStr, 10) || PAGE_SIZE),
+    );
 
     const [servicesResult, ledgerResult] = await Promise.allSettled([
       listServices({ category: category || undefined, offset, limit }),
@@ -141,7 +167,9 @@ router.get("/services", async (req, res) => {
       }
     }
     logger.error({ err }, "GET /api/services failed");
-    res.status(500).json({ error: "Failed to fetch services", code: "FETCH_ERROR" });
+    res
+      .status(500)
+      .json({ error: "Failed to fetch services", code: "FETCH_ERROR" });
   }
 });
 
@@ -180,7 +208,9 @@ router.get("/services/:id", async (req, res) => {
     res.json(annotateTtlWarning(service, currentLedger));
   } catch (err) {
     logger.error({ err }, "GET /api/services/:id failed");
-    res.status(500).json({ error: "Failed to fetch service", code: "FETCH_ERROR" });
+    res
+      .status(500)
+      .json({ error: "Failed to fetch service", code: "FETCH_ERROR" });
   }
 });
 
@@ -195,52 +225,65 @@ router.get("/services/:id", async (req, res) => {
  * Body: { providerAddress: string }
  * Returns: { xdr, submitToken } — unsigned tx ready for wallet signing
  */
-router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => {
-  const parsedId = parsePositiveSafeInteger(req.params.id);
-  if (parsedId == null) {
-    return res
-      .status(400)
-      .json({ error: "Invalid service ID", code: "INVALID_ID" });
-  }
+router.post(
+  "/services/:id/deactivate",
+  writeRateLimiter(),
+  async (req, res) => {
+    const parsedId = parsePositiveSafeInteger(req.params.id);
+    if (parsedId == null) {
+      return res
+        .status(400)
+        .json({ error: "Invalid service ID", code: "INVALID_ID" });
+    }
 
-  try {
-    const { providerAddress } = req.body ?? {};
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({
-        error: "`providerAddress` must be a valid Stellar address",
-        code: "INVALID_BODY",
+    try {
+      const { providerAddress } = req.body ?? {};
+      if (!isValidStellarAddress(providerAddress)) {
+        return res.status(400).json({
+          error: "`providerAddress` must be a valid Stellar address",
+          code: "INVALID_BODY",
+        });
+      }
+
+      const prepared = await deactivateServiceOnChain(
+        parsedId,
+        providerAddress,
+      );
+      logger.info(
+        { id: parsedId, providerAddress },
+        "Built unsigned deactivation tx",
+      );
+      res.json(prepared);
+    } catch (err) {
+      if (err instanceof ContractError) {
+        if (err.code === "SERVICE_NOT_FOUND") {
+          return res.status(404).json({ error: err.message, code: err.code });
+        }
+        if (err.code === "SERVICE_READ_FAILED") {
+          return res.status(502).json({ error: err.message, code: err.code });
+        }
+        if (err.code === "PROVIDER_MISMATCH") {
+          return res.status(403).json({ error: err.message, code: err.code });
+        }
+        if (err.code === "ALREADY_INACTIVE") {
+          return res.status(409).json({ error: err.message, code: err.code });
+        }
+        if (err.code === "TRANSACTION_TIMEOUT") {
+          return res.status(504).json({ error: err.message, code: err.code });
+        }
+        return res.status(400).json({ error: err.message, code: err.code });
+      }
+      logger.error(
+        { err, id: parsedId },
+        "POST /api/services/:id/deactivate failed",
+      );
+      res.status(500).json({
+        error: "Failed to deactivate service",
+        code: "DEACTIVATE_ERROR",
       });
     }
-
-    const prepared = await deactivateServiceOnChain(parsedId, providerAddress);
-    logger.info({ id: parsedId, providerAddress }, "Built unsigned deactivation tx");
-    res.json(prepared);
-  } catch (err) {
-    if (err instanceof ContractError) {
-      if (err.code === "SERVICE_NOT_FOUND") {
-        return res.status(404).json({ error: err.message, code: err.code });
-      }
-      if (err.code === "SERVICE_READ_FAILED") {
-        return res.status(502).json({ error: err.message, code: err.code });
-      }
-      if (err.code === "PROVIDER_MISMATCH") {
-        return res.status(403).json({ error: err.message, code: err.code });
-      }
-      if (err.code === "ALREADY_INACTIVE") {
-        return res.status(409).json({ error: err.message, code: err.code });
-      }
-      if (err.code === "TRANSACTION_TIMEOUT") {
-        return res.status(504).json({ error: err.message, code: err.code });
-      }
-      return res.status(400).json({ error: err.message, code: err.code });
-    }
-    logger.error({ err, id: parsedId }, "POST /api/services/:id/deactivate failed");
-    res.status(500).json({
-      error: "Failed to deactivate service",
-      code: "DEACTIVATE_ERROR",
-    });
-  }
-});
+  },
+);
 
 router.get("/services/:id/history", async (req, res) => {
   let id;
@@ -261,7 +304,10 @@ router.get("/services/:id/history", async (req, res) => {
     res.json({ history });
   } catch (err) {
     logger.error({ err, id }, "GET /api/services/:id/history failed");
-    res.status(500).json({ error: "Failed to fetch reputation history", code: "FETCH_ERROR" });
+    res.status(500).json({
+      error: "Failed to fetch reputation history",
+      code: "FETCH_ERROR",
+    });
   }
 });
 
@@ -271,7 +317,10 @@ router.get("/stats", async (req, res) => {
     const totalPages = Math.ceil(totalServices / PAGE_SIZE);
     let allServices = [];
     for (let i = 0; i < totalPages; i++) {
-      const page = await listServices({ offset: i * PAGE_SIZE, limit: PAGE_SIZE });
+      const page = await listServices({
+        offset: i * PAGE_SIZE,
+        limit: PAGE_SIZE,
+      });
       allServices.push(...page);
     }
 
@@ -285,7 +334,9 @@ router.get("/stats", async (req, res) => {
     res.json({ totalServices, categories, latestService });
   } catch (err) {
     logger.error({ err }, "GET /api/stats failed");
-    res.status(500).json({ error: "Failed to fetch stats", code: "FETCH_ERROR" });
+    res
+      .status(500)
+      .json({ error: "Failed to fetch stats", code: "FETCH_ERROR" });
   }
 });
 
@@ -330,143 +381,315 @@ router.get("/registry/by-provider/:address", async (req, res) => {
         return res.status(504).json({ error: err.message, code: err.code });
       }
     }
-    logger.error({ err, address: req.params.address }, "GET /api/registry/by-provider/:address failed");
-    res.status(500).json({ error: "Failed to fetch services", code: "FETCH_ERROR" });
+    logger.error(
+      { err, address: req.params.address },
+      "GET /api/registry/by-provider/:address failed",
+    );
+    res
+      .status(500)
+      .json({ error: "Failed to fetch services", code: "FETCH_ERROR" });
   }
 });
 
-router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) => {
-  try {
-    const {
-      name,
-      description,
-      endpoint,
-      priceUsdc,
-      category,
-      providerAddress,
-      payTo,
-    } = req.body ?? {};
+/**
+ * POST /api/registry/prepare-register (#664)
+ * Requires an `Idempotency-Key` header (1-255 printable ASCII chars, no spaces).
+ * Successful responses are cached for 10 minutes per provider and key; a repeat
+ * with the same body replays the original response with `Idempotent-Replayed: true`
+ * without rebuilding the transaction. Failed requests are not cached.
+ *
+ * 400 IDEMPOTENCY_KEY_MISSING / IDEMPOTENCY_KEY_INVALID — header absent or malformed
+ * 409 IDEMPOTENCY_CONFLICT — a request with this key is still in flight
+ * 422 IDEMPOTENCY_KEY_REUSED — key was already used with a different body
+ */
+router.post(
+  "/registry/prepare-register",
+  writeRateLimiter(),
+  async (req, res) => {
+    let scopedKey = null;
+    try {
+      const idempotencyKey = req.get("Idempotency-Key");
+      if (!idempotencyKey) {
+        return res.status(400).json({
+          error: "Missing Idempotency-Key header",
+          code: "IDEMPOTENCY_KEY_MISSING",
+        });
+      }
+      if (!isValidIdempotencyKey(idempotencyKey)) {
+        return res.status(400).json({
+          error:
+            "Idempotency-Key must be 1-255 printable ASCII characters (no spaces)",
+          code: "IDEMPOTENCY_KEY_INVALID",
+        });
+      }
 
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
-    if (typeof name !== "string" || name.trim().length < 3 || name.trim().length > 64) {
-      return res.status(400).json({ error: "`name` must be 3-64 characters", code: "INVALID_BODY" });
-    }
-    if (typeof description !== "string" || description.trim().length < 10 || description.trim().length > 256) {
-      return res.status(400).json({ error: "`description` must be 10-256 characters", code: "INVALID_BODY" });
-    }
-    if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
-      return res.status(400).json({ error: "`endpoint` must start with https://", code: "INVALID_BODY" });
-    }
-    if (endpoint.trim().length > 256) {
-      return res.status(400).json({ error: "`endpoint` must be at most 256 characters", code: "INVALID_BODY" });
-    }
-    if (!SERVICE_CATEGORIES.has(category)) {
-      return res.status(400).json({ error: "`category` is invalid", code: "INVALID_BODY" });
-    }
+      const {
+        name,
+        description,
+        endpoint,
+        priceUsdc,
+        category,
+        providerAddress,
+        payTo,
+      } = req.body ?? {};
 
-    const normalizedPriceUsdc = normalizePriceUsdc(priceUsdc);
-    if (!normalizedPriceUsdc) {
-      return res.status(400).json({ error: "`priceUsdc` must be at least 0.0001", code: "INVALID_BODY" });
-    }
-    if (payTo !== undefined && (typeof payTo !== "string" || payTo.trim().length === 0)) {
-      return res.status(400).json({ error: "`payTo` must be a non-empty string when provided", code: "INVALID_BODY" });
-    }
+      if (!isValidStellarAddress(providerAddress)) {
+        return res.status(400).json({
+          error: "`providerAddress` must be a valid Stellar address",
+          code: "INVALID_BODY",
+        });
+      }
+      if (
+        typeof name !== "string" ||
+        name.trim().length < 3 ||
+        name.trim().length > 64
+      ) {
+        return res.status(400).json({
+          error: "`name` must be 3-64 characters",
+          code: "INVALID_BODY",
+        });
+      }
+      if (
+        typeof description !== "string" ||
+        description.trim().length < 10 ||
+        description.trim().length > 256
+      ) {
+        return res.status(400).json({
+          error: "`description` must be 10-256 characters",
+          code: "INVALID_BODY",
+        });
+      }
+      if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
+        return res.status(400).json({
+          error: "`endpoint` must start with https://",
+          code: "INVALID_BODY",
+        });
+      }
+      if (endpoint.trim().length > 256) {
+        return res.status(400).json({
+          error: "`endpoint` must be at most 256 characters",
+          code: "INVALID_BODY",
+        });
+      }
+      if (!SERVICE_CATEGORIES.has(category)) {
+        return res
+          .status(400)
+          .json({ error: "`category` is invalid", code: "INVALID_BODY" });
+      }
 
-    const prepared = await buildUnsignedRegistryTx("register", providerAddress, {
-      name: name.trim(),
-      description: description.trim(),
-      endpoint: endpoint.trim(),
-      priceUsdc: normalizedPriceUsdc,
-      category,
-      payTo: payTo?.trim(),
-    });
-    logger.info({ providerAddress, endpoint, category }, "Built unsigned registry registration tx");
-    res.json(prepared);
-  } catch (err) {
-    if (err instanceof ContractError) {
-      const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : err.code === "DUPLICATE_SERVICE" ? 409 : 400;
-      return res.status(status).json({ error: err.message, code: err.code });
-    }
-    logger.error({ err }, "POST /api/registry/prepare-register failed");
-    res.status(500).json({ error: "Failed to build transaction", code: "BUILD_TX_ERROR" });
-  }
-});
+      const normalizedPriceUsdc = normalizePriceUsdc(priceUsdc);
+      if (!normalizedPriceUsdc) {
+        return res.status(400).json({
+          error: "`priceUsdc` must be at least 0.0001",
+          code: "INVALID_BODY",
+        });
+      }
+      if (
+        payTo !== undefined &&
+        (typeof payTo !== "string" || payTo.trim().length === 0)
+      ) {
+        return res.status(400).json({
+          error: "`payTo` must be a non-empty string when provided",
+          code: "INVALID_BODY",
+        });
+      }
 
-router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res) => {
-  try {
-    const { providerAddress, id } = req.body ?? {};
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
+      const registerParams = {
+        name: name.trim(),
+        description: description.trim(),
+        endpoint: endpoint.trim(),
+        priceUsdc: normalizedPriceUsdc,
+        category,
+        payTo: payTo?.trim(),
+      };
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify({ providerAddress, ...registerParams }))
+        .digest("hex");
+      const key = `prepare-register:${providerAddress}:${idempotencyKey}`;
 
-    const parsedId = parsePositiveSafeInteger(id);
-    if (parsedId == null) {
-      return res.status(400).json({ error: "`id` must be a positive integer", code: "INVALID_BODY" });
-    }
+      const existing = getEntry(key);
+      if (existing) {
+        if (existing.status === "pending") {
+          return res.status(409).json({
+            error: "A request with this Idempotency-Key is already in progress",
+            code: "IDEMPOTENCY_CONFLICT",
+          });
+        }
+        if (existing.status === "complete") {
+          if (existing.result.fingerprint !== fingerprint) {
+            return res.status(422).json({
+              error:
+                "Idempotency-Key was already used with a different request body",
+              code: "IDEMPOTENCY_KEY_REUSED",
+            });
+          }
+          logger.info(
+            { providerAddress },
+            "Replayed prepare-register response for repeated Idempotency-Key",
+          );
+          res.set("Idempotent-Replayed", "true");
+          return res.json(existing.result.body);
+        }
+      }
 
-    const prepared = await buildUnsignedRegistryTx("deactivate", providerAddress, { id: parsedId });
-    logger.info({ providerAddress, id: parsedId }, "Built unsigned registry deactivation tx");
-    res.json(prepared);
-  } catch (err) {
-    if (err instanceof ContractError) {
-      const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
-      return res.status(status).json({ error: err.message, code: err.code });
+      markPending(key, PREPARE_REGISTER_IDEMPOTENCY_TTL_MS);
+      scopedKey = key;
+      const prepared = await buildUnsignedRegistryTx(
+        "register",
+        providerAddress,
+        registerParams,
+      );
+      markComplete(key, { fingerprint, body: prepared });
+      logger.info(
+        { providerAddress, endpoint, category },
+        "Built unsigned registry registration tx",
+      );
+      res.json(prepared);
+    } catch (err) {
+      // Failures are not cached: nothing is on-chain until submit, so a retry must re-execute.
+      if (scopedKey) release(scopedKey);
+      if (err instanceof ContractError) {
+        const status =
+          err.code === "TRANSACTION_TIMEOUT"
+            ? 504
+            : err.code === "DUPLICATE_SERVICE"
+              ? 409
+              : 400;
+        return res.status(status).json({ error: err.message, code: err.code });
+      }
+      logger.error({ err }, "POST /api/registry/prepare-register failed");
+      res
+        .status(500)
+        .json({ error: "Failed to build transaction", code: "BUILD_TX_ERROR" });
     }
-    logger.error({ err }, "POST /api/registry/prepare-deactivate failed");
-    res.status(500).json({ error: "Failed to build transaction", code: "BUILD_TX_ERROR" });
-  }
-});
+  },
+);
 
-router.post("/registry/prepare-reactivate", writeRateLimiter(), async (req, res) => {
-  try {
-    const { providerAddress, id } = req.body ?? {};
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
+router.post(
+  "/registry/prepare-deactivate",
+  writeRateLimiter(),
+  async (req, res) => {
+    try {
+      const { providerAddress, id } = req.body ?? {};
+      if (!isValidStellarAddress(providerAddress)) {
+        return res.status(400).json({
+          error: "`providerAddress` must be a valid Stellar address",
+          code: "INVALID_BODY",
+        });
+      }
 
-    const parsedId = parsePositiveSafeInteger(id);
-    if (parsedId == null) {
-      return res.status(400).json({ error: "`id` must be a positive integer", code: "INVALID_BODY" });
-    }
+      const parsedId = parsePositiveSafeInteger(id);
+      if (parsedId == null) {
+        return res.status(400).json({
+          error: "`id` must be a positive integer",
+          code: "INVALID_BODY",
+        });
+      }
 
-    const prepared = await buildUnsignedRegistryTx("reactivate", providerAddress, { id: parsedId });
-    logger.info({ providerAddress, id: parsedId }, "Built unsigned registry reactivation tx");
-    res.json(prepared);
-  } catch (err) {
-    if (err instanceof ContractError) {
-      const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
-      return res.status(status).json({ error: err.message, code: err.code });
+      const prepared = await buildUnsignedRegistryTx(
+        "deactivate",
+        providerAddress,
+        { id: parsedId },
+      );
+      logger.info(
+        { providerAddress, id: parsedId },
+        "Built unsigned registry deactivation tx",
+      );
+      res.json(prepared);
+    } catch (err) {
+      if (err instanceof ContractError) {
+        const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
+        return res.status(status).json({ error: err.message, code: err.code });
+      }
+      logger.error({ err }, "POST /api/registry/prepare-deactivate failed");
+      res
+        .status(500)
+        .json({ error: "Failed to build transaction", code: "BUILD_TX_ERROR" });
     }
-    logger.error({ err }, "POST /api/registry/prepare-reactivate failed");
-    res.status(500).json({ error: "Failed to build transaction", code: "BUILD_TX_ERROR" });
-  }
-});
+  },
+);
 
-router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) => {
-  try {
-    const { signedXdr, submitToken } = req.body ?? {};
-    if (!signedXdr || typeof signedXdr !== "string") {
-      return res.status(400).json({ error: "`signedXdr` is required", code: "INVALID_BODY" });
-    }
-    if (!submitToken || typeof submitToken !== "string") {
-      return res.status(400).json({ error: "`submitToken` is required", code: "INVALID_BODY" });
-    }
-    validatePreparedRegistrySubmission(submitToken, signedXdr);
+router.post(
+  "/registry/prepare-reactivate",
+  writeRateLimiter(),
+  async (req, res) => {
+    try {
+      const { providerAddress, id } = req.body ?? {};
+      if (!isValidStellarAddress(providerAddress)) {
+        return res.status(400).json({
+          error: "`providerAddress` must be a valid Stellar address",
+          code: "INVALID_BODY",
+        });
+      }
 
-    const result = await submitSignedRegistryTx(signedXdr);
-    logger.info({ hash: result.hash, id: result.id }, "Submitted wallet-signed registry tx");
-    res.json({ success: true, ...result });
-  } catch (err) {
-    if (err instanceof ContractError) {
-      const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
-      return res.status(status).json({ error: err.message, code: err.code });
+      const parsedId = parsePositiveSafeInteger(id);
+      if (parsedId == null) {
+        return res.status(400).json({
+          error: "`id` must be a positive integer",
+          code: "INVALID_BODY",
+        });
+      }
+
+      const prepared = await buildUnsignedRegistryTx(
+        "reactivate",
+        providerAddress,
+        { id: parsedId },
+      );
+      logger.info(
+        { providerAddress, id: parsedId },
+        "Built unsigned registry reactivation tx",
+      );
+      res.json(prepared);
+    } catch (err) {
+      if (err instanceof ContractError) {
+        const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
+        return res.status(status).json({ error: err.message, code: err.code });
+      }
+      logger.error({ err }, "POST /api/registry/prepare-reactivate failed");
+      res
+        .status(500)
+        .json({ error: "Failed to build transaction", code: "BUILD_TX_ERROR" });
     }
-    logger.error({ err }, "POST /api/registry/submit-signed-tx failed");
-    res.status(500).json({ error: "Failed to submit transaction", code: "SUBMIT_TX_ERROR" });
-  }
-});
+  },
+);
+
+router.post(
+  "/registry/submit-signed-tx",
+  writeRateLimiter(),
+  async (req, res) => {
+    try {
+      const { signedXdr, submitToken } = req.body ?? {};
+      if (!signedXdr || typeof signedXdr !== "string") {
+        return res
+          .status(400)
+          .json({ error: "`signedXdr` is required", code: "INVALID_BODY" });
+      }
+      if (!submitToken || typeof submitToken !== "string") {
+        return res
+          .status(400)
+          .json({ error: "`submitToken` is required", code: "INVALID_BODY" });
+      }
+      validatePreparedRegistrySubmission(submitToken, signedXdr);
+
+      const result = await submitSignedRegistryTx(signedXdr);
+      logger.info(
+        { hash: result.hash, id: result.id },
+        "Submitted wallet-signed registry tx",
+      );
+      res.json({ success: true, ...result });
+    } catch (err) {
+      if (err instanceof ContractError) {
+        const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
+        return res.status(status).json({ error: err.message, code: err.code });
+      }
+      logger.error({ err }, "POST /api/registry/submit-signed-tx failed");
+      res.status(500).json({
+        error: "Failed to submit transaction",
+        code: "SUBMIT_TX_ERROR",
+      });
+    }
+  },
+);
 
 // POST /api/reputation/:id — Body: { positive: boolean, agent: string }
 // `agent` must be a registered agent the backend is allowed to sign for. The
@@ -519,7 +742,9 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
       return res.status(400).json({ error: err.message, code: err.code });
     }
     logger.error({ err, id }, "POST /api/reputation/:id failed");
-    res.status(500).json({ error: "Failed to update reputation", code: "UPDATE_ERROR" });
+    res
+      .status(500)
+      .json({ error: "Failed to update reputation", code: "UPDATE_ERROR" });
   }
 });
 
