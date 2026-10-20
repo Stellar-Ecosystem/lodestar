@@ -1,6 +1,12 @@
 import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import {
+  setProviderCacheRedis,
+  resetProviderCacheRedis,
+  resetProviderCacheMetrics,
+  getProviderCacheMetrics,
+} from '../lib/providerCache.js';
 
 const mockListServices = vi.fn();
 const mockListServicesByProvider = vi.fn();
@@ -239,6 +245,8 @@ describe('GET /api/registry/by-provider/:address', () => {
 
   beforeEach(() => {
     mockListServicesByProvider.mockReset();
+    resetProviderCacheMetrics();
+    resetProviderCacheRedis();
   });
 
   it('returns services for the requested provider', async () => {
@@ -261,6 +269,114 @@ describe('GET /api/registry/by-provider/:address', () => {
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_ADDRESS');
     expect(mockListServicesByProvider).not.toHaveBeenCalled();
+  });
+
+  it('carries Cache-Control and ETag headers on 200 response', async () => {
+    mockListServicesByProvider.mockResolvedValueOnce([
+      makeService({ id: 1, provider: PROVIDER }),
+    ]);
+
+    const res = await request(app).get(`/api/registry/by-provider/${PROVIDER}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('public, max-age=30, must-revalidate');
+    expect(res.headers['etag']).toMatch(/^W\/"[a-f0-9]{64}"$/);
+  });
+
+  it('honours conditional requests with 304 when ETag matches', async () => {
+    mockListServicesByProvider.mockResolvedValue([
+      makeService({ id: 1, provider: PROVIDER }),
+    ]);
+
+    const initial = await request(app).get(`/api/registry/by-provider/${PROVIDER}`);
+    expect(initial.status).toBe(200);
+    const etag = initial.headers['etag'];
+
+    const conditional = await request(app)
+      .get(`/api/registry/by-provider/${PROVIDER}`)
+      .set('If-None-Match', etag);
+
+    expect(conditional.status).toBe(304);
+    expect(conditional.text).toBe('');
+    expect(conditional.headers['cache-control']).toBe('public, max-age=30, must-revalidate');
+    expect(conditional.headers['etag']).toBe(etag);
+  });
+
+  it('returns 200 when If-None-Match does not match', async () => {
+    mockListServicesByProvider.mockResolvedValueOnce([
+      makeService({ id: 1, provider: PROVIDER }),
+    ]);
+
+    const res = await request(app)
+      .get(`/api/registry/by-provider/${PROVIDER}`)
+      .set('If-None-Match', 'W/"mismatch"');
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+  });
+
+  it('serves cached responses from Redis and tracks cache hit rate', async () => {
+    const memoryStore = new Map();
+    const mockRedis = {
+      get: vi.fn(async (key) => memoryStore.get(key) ?? null),
+      set: vi.fn(async (key, val) => memoryStore.set(key, val)),
+    };
+    setProviderCacheRedis(mockRedis);
+
+    mockListServicesByProvider.mockResolvedValueOnce([
+      makeService({ id: 1, provider: PROVIDER }),
+    ]);
+
+    // First request: cache miss -> calls RPC
+    const res1 = await request(app).get(`/api/registry/by-provider/${PROVIDER}`);
+    expect(res1.status).toBe(200);
+    expect(mockListServicesByProvider).toHaveBeenCalledTimes(1);
+
+    // Second request: cache hit -> served from Redis, no RPC call
+    const res2 = await request(app).get(`/api/registry/by-provider/${PROVIDER}`);
+    expect(res2.status).toBe(200);
+    expect(res2.body).toEqual(res1.body);
+    expect(mockListServicesByProvider).toHaveBeenCalledTimes(1);
+
+    const metrics = getProviderCacheMetrics();
+    expect(metrics.lookups).toBe(2);
+    expect(metrics.hits).toBe(1);
+    expect(metrics.misses).toBe(1);
+    expect(metrics.hitRate).toBe(0.5);
+
+    // Conditional request on cached entry returns 304 without RPC
+    const res3 = await request(app)
+      .get(`/api/registry/by-provider/${PROVIDER}`)
+      .set('If-None-Match', res1.headers['etag']);
+    expect(res3.status).toBe(304);
+    expect(mockListServicesByProvider).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GET /api/registry/metrics', () => {
+  beforeEach(() => {
+    resetProviderCacheMetrics();
+    resetProviderCacheRedis();
+  });
+
+  it('exposes cache metrics with hit rate and disabled cache-control', async () => {
+    const res = await request(app).get('/api/registry/metrics');
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body).toMatchObject({
+      lookups: expect.any(Number),
+      hits: expect.any(Number),
+      misses: expect.any(Number),
+      hitRate: expect.any(Number),
+      ttlSeconds: expect.any(Number),
+    });
+  });
+
+  it('exposes metrics at /api/registry/by-provider/metrics', async () => {
+    const res = await request(app).get('/api/registry/by-provider/metrics');
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body).toHaveProperty('hitRate');
   });
 });
 

@@ -1,4 +1,10 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
+import config from "../config.js";
+import {
+  getCachedServicesByProvider,
+  getProviderCacheMetrics,
+} from "../lib/providerCache.js";
 import {
   listServices,
   listServicesByProvider,
@@ -289,6 +295,16 @@ router.get("/stats", async (req, res) => {
   }
 });
 
+router.get("/registry/metrics", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(getProviderCacheMetrics());
+});
+
+router.get("/registry/by-provider/metrics", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(getProviderCacheMetrics());
+});
+
 router.get("/registry/by-provider/:address", async (req, res) => {
   try {
     const { address } = req.params;
@@ -299,28 +315,53 @@ router.get("/registry/by-provider/:address", async (req, res) => {
       });
     }
 
-    const [servicesResult, ledgerResult] = await Promise.allSettled([
-      listServicesByProvider(address),
-      getCurrentLedgerSequence(),
-    ]);
+    const payload = await getCachedServicesByProvider(address, async () => {
+      const [servicesResult, ledgerResult] = await Promise.allSettled([
+        listServicesByProvider(address),
+        getCurrentLedgerSequence(),
+      ]);
 
-    if (servicesResult.status === "rejected") throw servicesResult.reason;
+      if (servicesResult.status === "rejected") throw servicesResult.reason;
 
-    if (ledgerResult.status === "rejected") {
-      logger.warn(
-        { err: ledgerResult.reason },
-        "Failed to fetch current ledger for TTL annotation on GET /api/registry/by-provider/:address",
+      if (ledgerResult.status === "rejected") {
+        logger.warn(
+          { err: ledgerResult.reason },
+          "Failed to fetch current ledger for TTL annotation on GET /api/registry/by-provider/:address",
+        );
+      }
+
+      const currentLedger =
+        ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
+
+      const services = servicesResult.value.map((s) =>
+        annotateTtlWarning(s, currentLedger),
       );
+
+      return { services, count: services.length };
+    });
+
+    const ttlSeconds = config.registryCache?.ttlSeconds ?? 30;
+    const etag = `W/"${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}"`;
+
+    res.set("Cache-Control", `public, max-age=${ttlSeconds}, must-revalidate`);
+    res.set("ETag", etag);
+
+    const ifNoneMatch = req.get("If-None-Match");
+    if (ifNoneMatch) {
+      const tokens = ifNoneMatch.split(",").map((v) => v.trim());
+      const cleanEtag = etag.replace(/^W\//, "");
+      const isMatch = tokens.some(
+        (token) =>
+          token === "*" ||
+          token === etag ||
+          token.replace(/^W\//, "") === cleanEtag,
+      );
+      if (isMatch) {
+        return res.status(304).end();
+      }
     }
 
-    const currentLedger =
-      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
-
-    const services = servicesResult.value.map((s) =>
-      annotateTtlWarning(s, currentLedger),
-    );
-
-    res.json({ services, count: services.length });
+    res.json(payload);
   } catch (err) {
     if (err instanceof ContractError) {
       if (err.code === "SIMULATION_FAILED") {

@@ -41,6 +41,7 @@ if (process.argv.includes("--print-config")) {
         trustProxy: config.trustProxy,
         rateLimit: config.rateLimit,
         demoRun: config.demoRun,
+        registryCache: config.registryCache,
       },
       null,
       2,
