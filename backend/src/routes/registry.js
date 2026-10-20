@@ -335,7 +335,29 @@ router.get("/registry/by-provider/:address", async (req, res) => {
   }
 });
 
-router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) => {
+/**
+ * Rate limit ceiling for POST /registry/prepare-register.
+ *
+ * Cost profile reasoning:
+ * Every call to prepare-register triggers on-chain RPC operations: an activeServiceExists
+ * contract lookup followed by Soroban transaction simulation (`server.simulateTransaction`).
+ * Transaction simulation executes the contract in a Soroban VM, consuming significant CPU
+ * and memory on the RPC provider. Stellar RPC endpoints enforce strict rate limits (typically
+ * 10-100 req/min), so an unthrottled or default-inherited endpoint acts as an amplifier where
+ * cheap inbound requests exhaust Lodestar's upstream RPC quota.
+ *
+ * Service registration is an infrequent operational action performed by providers onboarding
+ * a new service, not a high-frequency polling endpoint. A ceiling of 5 requests per minute
+ * per IP allows plenty of leeway for genuine user registrations and retries while capping
+ * RPC amplification risk to protect overall service availability.
+ */
+export const PREPARE_REGISTER_RATE_LIMIT_MAX = 5;
+export const PREPARE_REGISTER_RATE_LIMIT_WINDOW_MS = 60_000;
+
+router.post(
+  "/registry/prepare-register",
+  writeRateLimiter(PREPARE_REGISTER_RATE_LIMIT_MAX, PREPARE_REGISTER_RATE_LIMIT_WINDOW_MS),
+  async (req, res) => {
   try {
     const {
       name,
