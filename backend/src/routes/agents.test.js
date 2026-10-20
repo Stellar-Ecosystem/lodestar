@@ -332,3 +332,393 @@ describe('GET /api/agents/:address/payment-history', () => {
     expect(res.body.code).toBe('INVALID_PAGINATION');
   });
 });
+
+describe('POST /api/agents/:address/payment schema validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function paymentHeaders(body, key = 'idem-test-' + Math.random()) {
+    const raw = typeof body === 'string' ? body : JSON.stringify(body);
+    const sig = crypto.createHmac('sha256', 'test_admin_secret_key').update(raw).digest('hex');
+    return {
+      'X-Lodestar-Signature': sig,
+      'X-Idempotency-Key': key,
+    };
+  }
+
+  const VALID_BODY = {
+    amountUsdc: '1.0',
+    success: true,
+    serviceId: 1,
+  };
+
+  describe('Missing values', () => {
+    it('rejects when amountUsdc is missing', async () => {
+      const body = { success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects when serviceId is missing', async () => {
+      const body = { amountUsdc: '1.0', success: true };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects when success is missing', async () => {
+      const body = { amountUsdc: '1.0', serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects when body is empty', async () => {
+      const body = {};
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Wrong-type values', () => {
+    it('rejects boolean amountUsdc', async () => {
+      const body = { amountUsdc: true, success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects object amountUsdc', async () => {
+      const body = { amountUsdc: { val: 1 }, success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects string serviceId', async () => {
+      const body = { amountUsdc: '1.0', success: true, serviceId: '1' };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects boolean serviceId', async () => {
+      const body = { amountUsdc: '1.0', success: true, serviceId: true };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects string success', async () => {
+      const body = { amountUsdc: '1.0', success: 'true', serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects numeric success', async () => {
+      const body = { amountUsdc: '1.0', success: 1, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Out-of-range values', () => {
+    it('rejects zero numeric amountUsdc', async () => {
+      const body = { amountUsdc: 0, success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects zero string amountUsdc', async () => {
+      const body = { amountUsdc: '0', success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects negative numeric amountUsdc', async () => {
+      const body = { amountUsdc: -10, success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects negative string amountUsdc', async () => {
+      const body = { amountUsdc: '-5.5', success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects sub-stroop precision that truncates to zero stroops', async () => {
+      const body = { amountUsdc: '0.00000001', success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed non-numeric string amountUsdc', async () => {
+      const body = { amountUsdc: 'not_a_number', success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects amountUsdc that exceeds maximum i128 stroops range', async () => {
+      const body = { amountUsdc: '1e40', success: true, serviceId: 1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects zero serviceId', async () => {
+      const body = { amountUsdc: '1.0', success: true, serviceId: 0 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects negative serviceId', async () => {
+      const body = { amountUsdc: '1.0', success: true, serviceId: -1 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-integer float serviceId', async () => {
+      const body = { amountUsdc: '1.0', success: true, serviceId: 2.7 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+
+    it('rejects serviceId exceeding maximum safe range', async () => {
+      const body = { amountUsdc: '1.0', success: true, serviceId: Number.MAX_SAFE_INTEGER + 1000 };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Query validation', () => {
+    it('rejects when unexpected query parameters are provided', async () => {
+      const body = { ...VALID_BODY };
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment?unexpected=true`)
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_QUERY');
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Params validation', () => {
+    it('rejects malformed agent address', async () => {
+      const body = { ...VALID_BODY };
+      const res = await request(app)
+        .post('/agents/not-a-stellar-key/payment')
+        .set(paymentHeaders(body))
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(['INVALID_ADDRESS', 'INVALID_PARAMS']).toContain(res.body.code);
+      expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Happy path', () => {
+    it('accepts valid input, records on chain, and returns new score', async () => {
+      mockRecordPaymentOnChain.mockResolvedValueOnce(true);
+      mockGetAgent.mockResolvedValueOnce({ score: 850 });
+
+      const body = { amountUsdc: '2.5', success: true, serviceId: 42 };
+      const key = 'test-happy-' + Date.now();
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/payment`)
+        .set(paymentHeaders(body, key))
+        .send(body);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true, newScore: 850 });
+      expect(mockRecordPaymentOnChain).toHaveBeenCalledWith(
+        VALID_ADDR,
+        42,
+        25000000n,
+        true
+      );
+    });
+  });
+});
+
+describe('Payment zod schemas unit tests', async () => {
+  const { paymentParamsSchema, paymentQuerySchema, paymentBodySchema } = await import('./agents.js');
+
+  describe('paymentParamsSchema', () => {
+    it('accepts valid Stellar public key', () => {
+      const result = paymentParamsSchema.safeParse({ address: VALID_ADDR });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects missing address', () => {
+      const result = paymentParamsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects non-string address', () => {
+      const result = paymentParamsSchema.safeParse({ address: 12345 });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects invalid address format', () => {
+      const result = paymentParamsSchema.safeParse({ address: 'not-stellar' });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('paymentQuerySchema', () => {
+    it('accepts empty query', () => {
+      const result = paymentQuerySchema.safeParse({});
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects unexpected query parameters', () => {
+      const result = paymentQuerySchema.safeParse({ foo: 'bar' });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('paymentBodySchema', () => {
+    it('accepts valid body with numeric amount', () => {
+      const result = paymentBodySchema.safeParse({ amountUsdc: 1.5, success: true, serviceId: 10 });
+      expect(result.success).toBe(true);
+    });
+
+    it('accepts valid body with string amount', () => {
+      const result = paymentBodySchema.safeParse({ amountUsdc: '0.001', success: false, serviceId: 2 });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects non-finite amount', () => {
+      const result = paymentBodySchema.safeParse({ amountUsdc: Infinity, success: true, serviceId: 1 });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects non-object body', () => {
+      expect(paymentBodySchema.safeParse(null).success).toBe(false);
+      expect(paymentBodySchema.safeParse('string').success).toBe(false);
+    });
+  });
+});

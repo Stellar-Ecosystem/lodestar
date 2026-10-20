@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import {
   listAgentsPage,
   getAgent,
@@ -331,9 +332,126 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
 // POST /api/agents/:address/payment — Body: { amountUsdc, success, serviceId }
 // Requires header: X-Idempotency-Key — a unique key per logical payment (max 255 printable-ASCII chars).
 // Retrying with the same key within 24 h replays the original response without hitting the chain again.
+export const paymentParamsSchema = z.object({
+  address: z
+    .string({
+      required_error: '`address` is required',
+      invalid_type_error: '`address` must be a string',
+    })
+    .regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar address format'),
+});
+
+export const paymentQuerySchema = z
+  .object({})
+  .strict({ message: 'Query parameters are not supported on this route' });
+
+const MAX_I128_STROOPS = 170141183460469231731687303715884105727n;
+
+export const paymentBodySchema = z
+  .object(
+    {
+      amountUsdc: z.union(
+        [
+          z.string().min(1, '`amountUsdc` is required'),
+          z.number({ invalid_type_error: '`amountUsdc` must be a string or number' }),
+        ],
+        {
+          required_error: '`amountUsdc` is required',
+          invalid_type_error: '`amountUsdc` must be a string or number',
+        }
+      ),
+      success: z.boolean({
+        required_error: '`success` is required',
+        invalid_type_error: '`success` must be boolean',
+      }),
+      serviceId: z
+        .number({
+          required_error: '`serviceId` is required',
+          invalid_type_error: '`serviceId` must be a number',
+        })
+        .int('`serviceId` must be an integer')
+        .positive('`serviceId` must be greater than zero')
+        .max(Number.MAX_SAFE_INTEGER, '`serviceId` exceeds maximum supported range'),
+    },
+    {
+      required_error: 'Request body is required',
+      invalid_type_error: 'Request body must be an object',
+    }
+  )
+  .superRefine((data, ctx) => {
+    if (typeof data.amountUsdc === 'number' && !Number.isFinite(data.amountUsdc)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['amountUsdc'],
+        message: '`amountUsdc` must be a finite number',
+      });
+      return;
+    }
+
+    let stroops;
+    try {
+      stroops = usdcToStroops(data.amountUsdc);
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['amountUsdc'],
+        message: `Invalid amountUsdc: "${data.amountUsdc}"`,
+      });
+      return;
+    }
+
+    if (stroops <= 0n) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['amountUsdc'],
+        message: 'Payment amount must be greater than zero',
+      });
+      return;
+    }
+
+    if (stroops > MAX_I128_STROOPS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['amountUsdc'],
+        message: 'Payment amount exceeds maximum supported range',
+      });
+    }
+  });
+
+export function validatePaymentInput(req, res, next) {
+  const paramsResult = paymentParamsSchema.safeParse(req.params);
+  if (!paramsResult.success) {
+    const issue = paramsResult.error.issues[0];
+    return res.status(400).json({
+      error: issue?.message || 'Invalid route parameters',
+      code: 'INVALID_PARAMS',
+    });
+  }
+
+  const queryResult = paymentQuerySchema.safeParse(req.query || {});
+  if (!queryResult.success) {
+    const issue = queryResult.error.issues[0];
+    return res.status(400).json({
+      error: issue?.message || 'Query parameters are not supported on this route',
+      code: 'INVALID_QUERY',
+    });
+  }
+
+  const bodyResult = paymentBodySchema.safeParse(req.body);
+  if (!bodyResult.success) {
+    const issue = bodyResult.error.issues[0];
+    return res.status(400).json({
+      error: issue?.message || 'Invalid request body',
+      code: 'INVALID_BODY',
+    });
+  }
+
+  next();
+}
 router.post(
   '/agents/:address/payment',
   requireAgentsContract,
+  validatePaymentInput,
   hmacAuth,
   paymentRateLimiter(config.rateLimit.payment.max, config.rateLimit.payment.windowMs),
   async (req, res) => {
@@ -379,28 +497,10 @@ router.post(
       }
     }
 
-    // ── 4. Body validation ────────────────────────────────────────────────────
     const { amountUsdc, success, serviceId } = req.body;
+    const amountStroops = usdcToStroops(amountUsdc);
 
-    if (typeof amountUsdc !== 'string' && typeof amountUsdc !== 'number') {
-      return res.status(400).json({ error: '`amountUsdc` is required', code: 'INVALID_BODY' });
-    }
-    if (typeof success !== 'boolean') {
-      return res.status(400).json({ error: '`success` must be boolean', code: 'INVALID_BODY' });
-    }
-    if (!serviceId || typeof serviceId !== 'number') {
-      return res.status(400).json({ error: '`serviceId` is required', code: 'INVALID_BODY' });
-    }
-
-    // ── 5. Validate amount before reserving the idempotency key ──────────────
-    let amountStroops;
-    try {
-      amountStroops = usdcToStroops(amountUsdc);
-    } catch {
-      return res.status(400).json({ error: `Invalid amountUsdc: "${amountUsdc}"`, code: 'INVALID_BODY' });
-    }
-
-    // ── 6. Reserve the key before touching the chain ──────────────────────────
+    // ── 4. Reserve the key before touching the chain ──────────────────────────
     markPending(scopedKey);
 
     try {
