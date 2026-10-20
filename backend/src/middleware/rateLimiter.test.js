@@ -52,6 +52,7 @@ describe('writeRateLimiter', () => {
     expect(res.status).toBe(429);
     expect(res.body.code).toBe('RATE_LIMITED');
     expect(res.body.retryAfterMs).toBe(60_000);
+    expect(res.headers['retry-after']).toBeDefined();
   });
 
   it('uses config defaults when no arguments are supplied', async () => {

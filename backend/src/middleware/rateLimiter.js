@@ -40,6 +40,10 @@ export function writeRateLimiter(
         { ip: req.ip, path: req.originalUrl, max, windowMs },
         'Write rate limit exceeded',
       );
+      if (!res.getHeader('Retry-After')) {
+        const retryAfterSeconds = Math.ceil(windowMs / 1000);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+      }
       res.status(429).json({
         error: 'Too many requests. Please slow down and try again later.',
         code: 'RATE_LIMITED',
