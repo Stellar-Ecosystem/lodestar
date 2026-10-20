@@ -40,6 +40,10 @@ export function writeRateLimiter(
         { ip: req.ip, path: req.originalUrl, max, windowMs },
         'Write rate limit exceeded',
       );
+      // RFC 7231: Retry-After is in seconds. express-rate-limit's standard
+      // headers do not include Retry-After, so set it explicitly so clients
+      // (and proxies) can back off correctly.
+      res.set('Retry-After', Math.ceil(windowMs / 1000));
       res.status(429).json({
         error: 'Too many requests. Please slow down and try again later.',
         code: 'RATE_LIMITED',
@@ -47,6 +51,21 @@ export function writeRateLimiter(
       });
     },
   });
+}
+
+/**
+ * Limiter for POST /agents/register.
+ *
+ * Ceiling rationale: every accepted call reaches the RPC provider (Lodestar
+ * forwards to it), so an unthrottled route is an amplification vector — a
+ * cheap HTTP request becomes an expensive RPC call and the provider throttles
+ * Lodestar. Registration is a rare, one-per-agent action, so a tight ceiling
+ * is appropriate: 10 requests per 10 minutes per IP. This is deliberately
+ * stricter than the generic write limiter and is NOT a default — do not
+ * "fix" it to match config.rateLimit without re-checking the RPC cost.
+ */
+export function agentRegisterRateLimiter() {
+  return writeRateLimiter(10, 10 * 60 * 1000);
 }
 
 /**

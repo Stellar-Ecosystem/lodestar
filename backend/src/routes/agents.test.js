@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
@@ -51,6 +51,10 @@ vi.mock('../config.js', () => ({
 
 vi.mock('../middleware/rateLimiter.js', () => ({
   writeRateLimiter: () => (_req, _res, next) => next(),
+}));
+
+vi.mock('../middleware/registerRateLimiter.js', () => ({
+  registerRateLimiter: () => (_req, _res, next) => next(),
 }));
 
 vi.mock('../middleware/paymentRateLimiter.js', () => ({
@@ -330,5 +334,38 @@ describe('GET /api/agents/:address/payment-history', () => {
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_PAGINATION');
+  });
+});
+
+describe('POST /agents/register rate limiting', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns 429 with Retry-After when the register limit is exceeded', async () => {
+    const { default: rateLimit } = await import('express-rate-limit');
+    const limiter = rateLimit({
+      windowMs: 60000,
+      max: 1,
+      standardHeaders: true,
+      legacyHeaders: false,
+      handler: (_req, res) => {
+        res.set('Retry-After', '60');
+        res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
+      },
+    });
+    const limitedApp = makeApp();
+    limitedApp.use('/agents/register', limiter);
+    limitedApp.use('/', (await import('./agents.js')).default);
+
+    mockRegisterAgentOnChain.mockResolvedValue({ success: true });
+    const body = { address: VALID_ADDR, policy: {} };
+
+    const first = await request(limitedApp).post('/agents/register').send(body);
+    const second = await request(limitedApp).post('/agents/register').send(body);
+
+    expect(first.status).not.toBe(429);
+    expect(second.status).toBe(429);
+    expect(second.headers['retry-after']).toBeDefined();
   });
 });

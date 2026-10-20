@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import {
   listAgentsPage,
   getAgent,
@@ -23,7 +24,6 @@ import { ownerAuth } from '../middleware/ownerAuth.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { hmacAuth } from '../middleware/hmacAuth.js';
 import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
-import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
 import { handleContractError } from '../lib/ContractError.js';
@@ -280,7 +280,23 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
 });
 
 // POST /api/agents/register — Body: { agentAddress, name, description }
-router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
+// Registration is the most expensive unauthenticated write: every call hits
+// RPC (isAgentRegistered + registerAgentOnChain), so an unthrottled route is a
+// cheap-to-trigger amplifier against the RPC provider. Ceiling is deliberately
+// tighter than the generic write limiter: 5 registrations per 10 minutes per IP
+// is far above any legitimate single-operator cadence while capping RPC fan-out.
+const registerRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => {
+    res.set('Retry-After', String(Math.ceil((10 * 60 * 1000) / 1000)));
+    res.status(429).json({ error: 'Too many registration attempts, try again later', code: 'RATE_LIMITED' });
+  },
+});
+
+router.post('/agents/register', requireAgentsContract, registerRateLimiter, async (req, res) => {
   try {
     const { agentAddress, name, description } = req.body;
 
