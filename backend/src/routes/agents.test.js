@@ -332,3 +332,300 @@ describe('GET /api/agents/:address/payment-history', () => {
     expect(res.body.code).toBe('INVALID_PAGINATION');
   });
 });
+
+describe('POST /agents/:address/update-policy validation', () => {
+  const VALID_BODY = {
+    maxPerTxStroops: '1000000',
+    maxPerDayStroops: 5000000,
+    allowedCategories: ['weather', 'search'],
+    minScoreToEarn: 500,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('successfully updates policy with valid inputs', async () => {
+    mockGetAgent.mockResolvedValueOnce({ owner: VALID_ADDR });
+    mockUpdatePolicyOnChain.mockResolvedValueOnce(true);
+
+    const res = await request(app)
+      .post(`/agents/${VALID_ADDR}/update-policy`)
+      .set('x-caller-address', VALID_ADDR)
+      .set('x-caller-signature', 'valid-sig')
+      .send(VALID_BODY);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+    expect(mockUpdatePolicyOnChain).toHaveBeenCalledWith(
+      VALID_ADDR,
+      '1000000',
+      5000000,
+      ['weather', 'search'],
+      500,
+      VALID_ADDR
+    );
+  });
+
+  describe('missing values', () => {
+    it('returns 400 INVALID_BODY when maxPerTxStroops is missing', async () => {
+      const { maxPerTxStroops, ...body } = VALID_BODY;
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .set('x-caller-address', VALID_ADDR)
+        .set('x-caller-signature', 'valid-sig')
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when maxPerDayStroops is missing', async () => {
+      const { maxPerDayStroops, ...body } = VALID_BODY;
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .set('x-caller-address', VALID_ADDR)
+        .set('x-caller-signature', 'valid-sig')
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when allowedCategories is missing', async () => {
+      const { allowedCategories, ...body } = VALID_BODY;
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .set('x-caller-address', VALID_ADDR)
+        .set('x-caller-signature', 'valid-sig')
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when minScoreToEarn is missing', async () => {
+      const { minScoreToEarn, ...body } = VALID_BODY;
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .set('x-caller-address', VALID_ADDR)
+        .set('x-caller-signature', 'valid-sig')
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when body is empty', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .set('x-caller-address', VALID_ADDR)
+        .set('x-caller-signature', 'valid-sig')
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('wrong-type values', () => {
+    it('returns 400 INVALID_BODY when maxPerTxStroops is float number', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, maxPerTxStroops: 12.34 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when maxPerTxStroops is non-numeric string', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, maxPerTxStroops: 'invalid' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when maxPerDayStroops is boolean', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, maxPerDayStroops: true });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when allowedCategories is not an array', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, allowedCategories: 'weather' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when allowedCategories contains non-string elements', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, allowedCategories: ['weather', 123] });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when minScoreToEarn is a string', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, minScoreToEarn: '500' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when minScoreToEarn is float', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, minScoreToEarn: 50.5 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('out-of-range values', () => {
+    it('returns 400 INVALID_BODY when maxPerTxStroops is negative number', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, maxPerTxStroops: -1 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when maxPerTxStroops is negative string', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, maxPerTxStroops: '-500' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when maxPerTxStroops exceeds i128 max', async () => {
+      const overflowI128 = (1n << 128n).toString();
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, maxPerTxStroops: overflowI128 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when maxPerDayStroops is negative', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, maxPerDayStroops: -10 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when minScoreToEarn is below 0', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, minScoreToEarn: -1 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 INVALID_BODY when minScoreToEarn exceeds 1000', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy`)
+        .send({ ...VALID_BODY, minScoreToEarn: 1001 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_BODY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('query and params validation', () => {
+    it('returns 400 INVALID_QUERY when unexpected query parameters are passed', async () => {
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/update-policy?unexpected=param`)
+        .send(VALID_BODY);
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_QUERY');
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when agent address parameter is invalid', async () => {
+      const res = await request(app)
+        .post('/agents/invalid-stellar-address/update-policy')
+        .send(VALID_BODY);
+
+      expect(res.status).toBe(400);
+      expect(['INVALID_PARAMS', 'INVALID_ADDRESS']).toContain(res.body.code);
+      expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('exported zod schemas', () => {
+    it('exports updatePolicySchema, updatePolicyParamsSchema, updatePolicyQuerySchema, updatePolicyBodySchema', async () => {
+      const agentsModule = await import('./agents.js');
+      expect(agentsModule.updatePolicySchema).toBeDefined();
+      expect(agentsModule.updatePolicyParamsSchema).toBeDefined();
+      expect(agentsModule.updatePolicyQuerySchema).toBeDefined();
+      expect(agentsModule.updatePolicyBodySchema).toBeDefined();
+
+      const parseParams = agentsModule.updatePolicyParamsSchema.safeParse({ address: VALID_ADDR });
+      expect(parseParams.success).toBe(true);
+
+      const parseQuery = agentsModule.updatePolicyQuerySchema.safeParse({});
+      expect(parseQuery.success).toBe(true);
+
+      const parseBody = agentsModule.updatePolicyBodySchema.safeParse(VALID_BODY);
+      expect(parseBody.success).toBe(true);
+    });
+  });
+});
