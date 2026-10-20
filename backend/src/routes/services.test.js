@@ -289,3 +289,65 @@ describe('payment header validation — search', () => {
     );
   });
 });
+
+describe('GET /demo/search contract error mapping', () => {
+  const mockSearchFetch = () =>
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ organic: [{ title: 'r', link: 'u', snippet: 's' }] }),
+    });
+
+  const variants = [
+    { code: 'AGENT_NOT_FOUND', status: 404, message: 'Agent not found' },
+    { code: 'UNAUTHORIZED', status: 403, message: 'Unauthorized' },
+    { code: 'RPC_TIMEOUT', status: 503, message: 'RPC timeout' },
+    { code: 'RPC_THROTTLED', status: 503, message: 'RPC throttled' },
+    { code: 'AGENT_LIST_FULL', status: 503, message: 'Agent registry is full' },
+    { code: 'AGENT_COUNT_OVERFLOW', status: 503, message: 'Agent registry count overflow' },
+    { code: 'AGENT_ALREADY_REGISTERED', status: 409, message: 'Agent already registered' },
+    { code: 'POLICY_NOT_FOUND', status: 404, message: 'Policy not found' },
+    { code: 'INVALID_AMOUNT', status: 400, message: 'Payment amount must be greater than zero' },
+    { code: 'ARITHMETIC_OVERFLOW', status: 400, message: 'Payment amount exceeds the supported range' },
+    { code: 'NOT_INITIALIZED', status: 500, message: 'Contract not initialized' },
+    { code: 'ALREADY_INITIALIZED', status: 500, message: 'Contract already initialized' },
+    { code: 'TRANSACTION_TIMEOUT', status: 504, message: 'Transaction timeout' },
+  ];
+
+  for (const { code, status, message } of variants) {
+    it('maps contract error variant ' + code + ' to HTTP ' + status, async () => {
+      const { ContractError } = await import('../lib/ContractError.js');
+      global.fetch = mockSearchFetch();
+      mockGetAgent.mockResolvedValue(MOCK_AGENT);
+      mockRecordPaymentOnChain.mockRejectedValueOnce(new ContractError(message, code));
+
+      const res = await request(app)
+        .get('/demo/search?q=hello')
+        .set('x-payment-address', VALID_STELLAR_ADDRESS)
+        .set('x-payment-transaction', 'searchtx99');
+
+      expect(res.status).toBe(status);
+      expect(res.body).toEqual({ error: message, code });
+    });
+  }
+
+  it('falls through to 500 and logs loudly at error level for unmapped contract error variant', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    global.fetch = mockSearchFetch();
+    mockGetAgent.mockResolvedValue(MOCK_AGENT);
+    mockRecordPaymentOnChain.mockRejectedValueOnce(
+      new ContractError('Some unusual contract issue', 'UNKNOWN_CUSTOM_VARIANT')
+    );
+
+    const res = await request(app)
+      .get('/demo/search?q=hello')
+      .set('x-payment-address', VALID_STELLAR_ADDRESS)
+      .set('x-payment-transaction', 'searchtx99');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Search failed', code: 'SEARCH_ERROR' });
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'UNKNOWN_CUSTOM_VARIANT' }),
+      expect.stringContaining('UNKNOWN_CUSTOM_VARIANT')
+    );
+  });
+});

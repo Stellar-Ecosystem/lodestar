@@ -7,8 +7,20 @@ import logger from '../lib/logger.js';
 import { recordPaymentOnChain, getAgent } from '../lib/contract.js';
 import { usdcToStroops } from '../lib/stroops.js';
 import { isValidStellarAddress } from '../middleware/addressValidator.js';
+import { ContractError } from '../lib/ContractError.js';
+import { AGENT_ERROR_CODES } from '../lib/contractErrors.js';
 
 const router = Router();
+
+const CONTRACT_ERROR_STATUS_MAP = Object.freeze({
+  ...Object.values(AGENT_ERROR_CODES).reduce((acc, entry) => {
+    acc[entry.code] = entry.status;
+    return acc;
+  }, {}),
+  RPC_THROTTLED: 503,
+  RPC_TIMEOUT: 503,
+  TRANSACTION_TIMEOUT: 504,
+});
 
 // Validates and records a payment on-chain. All three guards (txHash presence,
 // address format, and agent registration) must pass before touching the contract,
@@ -211,15 +223,25 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       const priceStroops = usdcToStroops(config.x402.searchPrice);
-      creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search').catch((err) =>
-        logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
-      );
+      await creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search');
     }
 
     logger.info({ q: sanitizedQ }, 'Search request fulfilled');
     if (searchTxHash) res.setHeader('x-payment-transaction', searchTxHash);
     res.json({ query: sanitizedQ, results });
   } catch (err) {
+    if (err instanceof ContractError || err.name === 'ContractError' || err.contractErrorCode !== undefined) {
+      const variant =
+        err.code ||
+        (err.contractErrorCode !== undefined && AGENT_ERROR_CODES[err.contractErrorCode]?.code) ||
+        err.name;
+      const status = variant ? CONTRACT_ERROR_STATUS_MAP[variant] : undefined;
+      if (status) {
+        return res.status(status).json({ error: err.message, code: variant });
+      }
+      logger.error({ err, variant }, "Unmapped contract error variant: " + variant);
+      return res.status(500).json({ error: 'Search failed', code: 'SEARCH_ERROR' });
+    }
     logger.error({ err }, 'GET /demo/search failed');
     res.status(500).json({ error: 'Search failed', code: 'SEARCH_ERROR' });
   }
