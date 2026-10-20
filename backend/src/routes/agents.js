@@ -550,19 +550,29 @@ router.post('/agents/:address/flag', requireAgentsContract, adminAuth, async (re
 
 // POST /api/admin/agents/:address/flag — Admin-only agent flagging
 router.post('/admin/agents/:address/flag', requireAgentsContract, adminAuth, async (req, res) => {
+  const start = Date.now();
+  const { address } = req.params;
+  const caller = req.headers['x-caller-address'] || undefined;
+  const routeLog = (req.log || logger).child({
+    route: 'POST /admin/agents/:address/flag',
+    address,
+    ...(caller ? { caller } : {}),
+  });
+
   try {
-    const { address } = req.params;
     const { reason } = req.body;
     if (!reason || typeof reason !== 'string') {
+      const durationMs = Date.now() - start;
+      routeLog.warn({ durationMs, outcome: 'invalid_body' }, 'Invalid request body for flag agent');
       return res.status(400).json({ error: '`reason` is required', code: 'INVALID_BODY' });
     }
-    const { address: addr } = req.params;
-    await flagAgentOnChain(addr, reason);
-    logger.info({ address: addr, reason }, 'Agent flagged by admin');
+    await flagAgentOnChain(address, reason);
+    const durationMs = Date.now() - start;
+    routeLog.info({ durationMs, outcome: 'success', reason }, 'Agent flagged by admin');
     res.json({ success: true });
   } catch (err) {
-    const { address: addr } = req.params;
-    logger.error({ err, address: addr }, 'POST /api/admin/agents/:address/flag failed');
+    const durationMs = Date.now() - start;
+    routeLog.error({ err, durationMs, outcome: 'failure' }, 'POST /api/admin/agents/:address/flag failed');
     return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
   }
 });
