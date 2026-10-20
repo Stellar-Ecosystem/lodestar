@@ -95,24 +95,26 @@ function annotateTtlWarning(service, currentLedger) {
 }
 
 router.get("/services", async (req, res) => {
+  const requestLogger = req.log ?? logger;
+  const requestStartedAt = process.hrtime.bigint();
+  const getDurationMs = () =>
+    Number(process.hrtime.bigint() - requestStartedAt) / 1e6;
+  let contractDurationMs;
+
   try {
     const { category, q, offset: offsetStr, limit: limitStr } = req.query;
     const offset = Math.max(0, parseInt(offsetStr, 10) || 0);
     const limit = Math.min(50, Math.max(1, parseInt(limitStr, 10) || PAGE_SIZE));
 
+    const contractStartedAt = process.hrtime.bigint();
     const [servicesResult, ledgerResult] = await Promise.allSettled([
       listServices({ category: category || undefined, offset, limit }),
       getCurrentLedgerSequence(),
     ]);
+    contractDurationMs =
+      Number(process.hrtime.bigint() - contractStartedAt) / 1e6;
 
     if (servicesResult.status === "rejected") throw servicesResult.reason;
-
-    if (ledgerResult.status === "rejected") {
-      logger.warn(
-        { err: ledgerResult.reason },
-        "Failed to fetch current ledger for TTL annotation on GET /api/services",
-      );
-    }
 
     const currentLedger =
       ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
@@ -130,18 +132,50 @@ router.get("/services", async (req, res) => {
       );
     }
 
+    requestLogger.info(
+      {
+        outcome: "success",
+        statusCode: 200,
+        durationMs: getDurationMs(),
+        contractDurationMs,
+        category: typeof category === "string" ? category : undefined,
+        offset,
+        limit,
+        count: services.length,
+        ledgerOutcome: ledgerResult.status,
+      },
+      "GET /api/services completed",
+    );
     res.json({ services, count: services.length });
   } catch (err) {
+    let statusCode = 500;
+    let errorResponse = {
+      error: "Failed to fetch services",
+      code: "FETCH_ERROR",
+    };
+
     if (err instanceof ContractError) {
       if (err.code === "SIMULATION_FAILED") {
-        return res.status(400).json({ error: err.message, code: err.code });
+        statusCode = 400;
+        errorResponse = { error: err.message, code: err.code };
       }
       if (err.code === "TRANSACTION_TIMEOUT") {
-        return res.status(504).json({ error: err.message, code: err.code });
+        statusCode = 504;
+        errorResponse = { error: err.message, code: err.code };
       }
     }
-    logger.error({ err }, "GET /api/services failed");
-    res.status(500).json({ error: "Failed to fetch services", code: "FETCH_ERROR" });
+
+    requestLogger.error(
+      {
+        err,
+        outcome: "error",
+        statusCode,
+        durationMs: getDurationMs(),
+        contractDurationMs,
+      },
+      "GET /api/services failed",
+    );
+    res.status(statusCode).json(errorResponse);
   }
 });
 
