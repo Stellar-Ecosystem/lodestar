@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
+import { getCachedCanSpend, getCanSpendCacheMetrics } from '../lib/canSpendCache.js';
 import {
   listAgentsPage,
   getAgent,
@@ -148,6 +150,12 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
 });
 
 // Param middleware for agent address routes
+// GET /api/agents/can-spend/metrics
+router.get('/agents/can-spend/metrics', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(getCanSpendCacheMetrics());
+});
+
 router.use('/agents/:address', validateAgentAddressParam);
 
 // GET /api/agents/:address
@@ -218,61 +226,87 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
   }
 });
 
+// GET /api/agents/:address/can-spend/metrics
+router.get('/agents/:address/can-spend/metrics', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(getCanSpendCacheMetrics());
+});
+
 // GET /api/agents/:address/can-spend?amount=0.001&category=weather
 router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res) => {
   try {
     const { address } = req.params;
     const amountUsdc = req.query.amount ?? '0';
     const category = req.query.category ?? '';
-    const amountStroops = usdcToStroops(amountUsdc);
 
-    const [allowed, policy, agent] = await Promise.all([
-      checkSpendingAllowed(address, amountStroops),
-      getAgentPolicy(address),
-      getAgent(address),
-    ]);
+    const payload = await getCachedCanSpend(address, amountUsdc, category, async () => {
+      const amountStroops = usdcToStroops(amountUsdc);
 
-    if (!agent) {
-      return res.json({ allowed: false, reason: 'Agent not registered' });
-    }
-    if (agent.flagged) {
-      return res.json({ allowed: false, reason: 'Agent is flagged' });
-    }
-    if (!agent.active) {
-      return res.json({ allowed: false, reason: 'Agent is deactivated' });
-    }
+      const [allowed, policy, agent] = await Promise.all([
+        checkSpendingAllowed(address, amountStroops),
+        getAgentPolicy(address),
+        getAgent(address),
+      ]);
 
-    // Category check (backend-level since contract stores policy)
-    if (policy && policy.allowed_categories.length > 0 && category) {
-      if (!policy.allowed_categories.includes(category)) {
-        return res.json({
-          allowed: false,
-          reason: `Category "${category}" not in agent's allowed list`,
-        });
+      if (!agent) {
+        return { allowed: false, reason: 'Agent not registered' };
       }
+      if (agent.flagged) {
+        return { allowed: false, reason: 'Agent is flagged' };
+      }
+      if (!agent.active) {
+        return { allowed: false, reason: 'Agent is deactivated' };
+      }
+
+      // Category check (backend-level since contract stores policy)
+      if (policy && policy.allowed_categories.length > 0 && category) {
+        if (!policy.allowed_categories.includes(category)) {
+          return {
+            allowed: false,
+            reason: `Category "${category}" not in agent's allowed list`,
+          };
+        }
+      }
+
+      if (!allowed) {
+        const maxTx = policy ? BigInt(policy.max_per_tx_stroops) : 0n;
+        const dailySpent = policy ? BigInt(policy.daily_spent_stroops) : 0n;
+        const maxDay = policy ? BigInt(policy.max_per_day_stroops) : 0n;
+
+        if (amountStroops > maxTx) {
+          return {
+            allowed: false,
+            reason: `Amount exceeds per-transaction limit of $${stroopsToUsdcDisplay(maxTx)} USDC`,
+          };
+        }
+        if (dailySpent + amountStroops > maxDay) {
+          return {
+            allowed: false,
+            reason: `Daily spending limit of $${stroopsToUsdcDisplay(maxDay)} USDC reached`,
+          };
+        }
+        return { allowed: false, reason: 'Spending policy violation' };
+      }
+
+      return { allowed: true, reason: 'OK' };
+    });
+
+    const ttl = config.canSpend?.cacheTtlSeconds ?? config.canSpendCacheTtlSeconds ?? 15;
+    const etag = `W/"${createHash('sha256').update(JSON.stringify(payload)).digest('hex')}"`;
+    res.set('Cache-Control', `public, max-age=${ttl}, must-revalidate`);
+    res.set('ETag', etag);
+
+    const ifNoneMatch = req.get('If-None-Match');
+    if (
+      ifNoneMatch &&
+      (ifNoneMatch.split(',').map((v) => v.trim()).includes(etag) ||
+       ifNoneMatch.split(',').map((v) => v.trim()).includes(etag.replace(/^W\//, '')) ||
+       ifNoneMatch.trim() === '*')
+    ) {
+      return res.status(304).end();
     }
 
-    if (!allowed) {
-      const maxTx = policy ? BigInt(policy.max_per_tx_stroops) : 0n;
-      const dailySpent = policy ? BigInt(policy.daily_spent_stroops) : 0n;
-      const maxDay = policy ? BigInt(policy.max_per_day_stroops) : 0n;
-
-      if (amountStroops > maxTx) {
-        return res.json({
-          allowed: false,
-          reason: `Amount exceeds per-transaction limit of $${stroopsToUsdcDisplay(maxTx)} USDC`,
-        });
-      }
-      if (dailySpent + amountStroops > maxDay) {
-        return res.json({
-          allowed: false,
-          reason: `Daily spending limit of $${stroopsToUsdcDisplay(maxDay)} USDC reached`,
-        });
-      }
-      return res.json({ allowed: false, reason: 'Spending policy violation' });
-    }
-
-    res.json({ allowed: true, reason: 'OK' });
+    res.json(payload);
   } catch (err) {
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/can-spend failed');
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');

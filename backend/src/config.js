@@ -152,6 +152,11 @@ const config = Object.freeze({
   // Graceful shutdown: how long (ms) to wait for the submit queue to drain
   // and pending transaction checks before force-exiting. Default is just over
   // the max polling window (30 s) so an in-flight poll can finish.
+  canSpend: {
+    cacheTtlSeconds: parsePositiveInt(process.env.CAN_SPEND_CACHE_TTL_SECONDS, 15, 'CAN_SPEND_CACHE_TTL_SECONDS'),
+  },
+  canSpendCacheTtlSeconds: parsePositiveInt(process.env.CAN_SPEND_CACHE_TTL_SECONDS, 15, 'CAN_SPEND_CACHE_TTL_SECONDS'),
+
   shutdownTimeoutMs: parsePositiveInt(process.env.SHUTDOWN_TIMEOUT_MS, 35_000, 'SHUTDOWN_TIMEOUT_MS'),
 
   // RPC retry with jittered exponential backoff for transient failures.

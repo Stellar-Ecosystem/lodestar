@@ -14,6 +14,10 @@ To enforce limits in aggregate across multiple instances, configure a shared Red
 
 `POST /api/demo-run` caches the on-chain service record in Redis for 15 seconds by default (`DEMO_RUN_CACHE_TTL_SECONDS` overrides the positive-integer TTL). Set `REDIS_URL` to enable the shared cache; if Redis is unavailable, the route falls back to the contract lookup. The paid demo request and activity recording are never cached or skipped. Successful responses include a private `Cache-Control` header and a weak `ETag`; a matching `If-None-Match` receives `304` only after the demo run has executed. Cache lookups and hit rates are emitted as structured `demo_service_cache` logs and are available at `GET /api/demo-run/metrics`.
 
+## Agent can-spend caching
+
+`GET /api/agents/:address/can-spend` caches the spending evaluation result in Redis for 15 seconds by default (`CAN_SPEND_CACHE_TTL_SECONDS` overrides the positive-integer TTL). Set `REDIS_URL` to enable the shared cache; if Redis is unavailable, the route falls back to contract evaluation. Cache keys are scoped to the route and its parameters (`address`, `amount`, and `category`). Successful responses include a `Cache-Control` header (`public, max-age=<TTL>, must-revalidate`) and a weak `ETag`; matching conditional requests (`If-None-Match`) return `304 Not Modified`. Cache lookups, status, and hit rates are emitted as structured `can_spend_cache` logs and are available at `GET /api/agents/can-spend/metrics`.
+
 ## Demo Scripts
 
 `scripts/demo/boost-scores.js` is a demo-only utility that inflates agent scores for UI demonstrations. It refuses to run unless `DEMO_MODE=true` and rejects any contract ID listed in `contract/deployments.json`. Do not use this script against a real deployment.
