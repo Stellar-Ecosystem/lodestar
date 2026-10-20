@@ -583,12 +583,65 @@ router.post('/admin/agents/:address/deactivate', requireAgentsContract, adminAut
 
 router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, async (req, res) => {
   const { address } = req.params;
+
+  // ── 1. Idempotency key validation ─────────────────────────────────────────
+  const idempotencyKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'];
+  if (!idempotencyKey) {
+    return res.status(400).json({
+      error: 'Missing Idempotency-Key header',
+      code: 'IDEMPOTENCY_KEY_MISSING',
+    });
+  }
+  if (!isValidIdempotencyKey(idempotencyKey)) {
+    return res.status(400).json({
+      error: 'Idempotency-Key must be 1–255 printable ASCII characters (no spaces)',
+      code: 'IDEMPOTENCY_KEY_INVALID',
+    });
+  }
+
+  // ── 2. Scope the key to action + agent address so keys cannot collide ───────
+  const scopedKey = `deactivate:${address}:${idempotencyKey}`;
+
+  // ── 3. Check for an existing entry ────────────────────────────────────────
+  const existing = getEntry(scopedKey);
+  if (existing) {
+    if (existing.status === 'pending') {
+      logger.warn({ address, idempotencyKey }, 'Duplicate deactivation request while in-flight');
+      return res.status(409).json({
+        error: 'A deactivation with this idempotency key is already being processed',
+        code: 'IDEMPOTENCY_CONFLICT',
+      });
+    }
+    if (existing.status === 'complete') {
+      logger.info({ address, idempotencyKey }, 'Replaying idempotent deactivation response');
+      return res.json(existing.result);
+    }
+    if (existing.status === 'failed') {
+      const { httpStatus, error, code } = existing.result;
+      return res.status(httpStatus).json({ error, code });
+    }
+  }
+
+  // ── 4. Reserve the key before touching the chain ──────────────────────────
+  markPending(scopedKey);
+
   try {
     await deactivateAgentOnChain(address, req.callerAddress);
     logger.info({ address, caller: req.callerAddress }, 'Agent deactivated by owner');
-    res.json({ success: true });
+    const result = { success: true };
+    markComplete(scopedKey, result);
+    return res.json(result);
   } catch (err) {
-    logger.error({ err, address }, 'POST /agents/:address/deactivate failed');
+    const httpStatus =
+      err.name === 'ContractError' && err.code === 'TRANSACTION_TIMEOUT' ? 504
+      : err.name === 'ContractError' && err.code === 'RPC_THROTTLED' ? 503
+      : err.name === 'ContractError' ? (err.status ?? 400)
+      : 500;
+    const error = err.name === 'ContractError' ? err.message : 'Deactivation failed';
+    const code  = err.name === 'ContractError' ? err.code  : 'DEACTIVATE_ERROR';
+
+    markFailed(scopedKey, { httpStatus, error, code });
+    logger.error({ err, address, idempotencyKey }, 'POST /agents/:address/deactivate failed');
     return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
   }
 });
