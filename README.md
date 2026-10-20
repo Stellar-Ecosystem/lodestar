@@ -1,6 +1,6 @@
 # Lodestar
-### Navigate the agent economy — discover, pay, and build trust.
 
+### Navigate the agent economy — discover, pay, and build trust.
 
 Lodestar solves the missing discovery layer in the x402 agentic payments ecosystem on Stellar — today AI agents can pay for services but cannot find them autonomously because every service URL is hardcoded by a human, so Lodestar ships two Soroban smart contracts: the first is a permanent neutral on-chain registry where any service provider registers their x402 endpoint once with a price and category and it becomes discoverable forever, and the second tracks every AI agent's on-chain identity giving each agent a credit score from 0 to 1000 that rises with successful payments and falls with failures, enforces programmable per-transaction and daily spending limits at the contract level, and allows service providers to gate access to premium services by minimum score — all of this is exposed through an Express backend with real x402-protected demo endpoints for weather and search, a Next.js frontend where providers can register services and agents can view their scores, and a standalone autonomous agent script that starts with zero hardcoded URLs, queries the registry, discovers the best service by reputation, pays via USDC on Stellar testnet through the x402 protocol, receives real data back, and updates its own credit score on-chain — making Lodestar the complete infrastructure layer for the agentic economy covering discovery, payment, and trust in a single production-grade open source project that directly addresses all three requirements the Stellar Hacks judges explicitly called out in the hackathon brief.
 
@@ -13,11 +13,13 @@ If you are new to x402, start with the [x402 primer](docs/x402-primer.md) for a 
 Lodestar is currently an early-stage, demo-ready project for the Stellar ecosystem. It is suitable for evaluation, experimentation, and contributor feedback, but it is not yet a production-grade platform for mission-critical payments or broad public deployment.
 
 ### Current maturity
+
 - The core discovery, payment, and reputation flow is implemented and exercised in the demo app.
 - The project includes live testnet deployments for the frontend, backend API, and Soroban contracts.
 - The codebase is actively evolving and is best treated as a working prototype with room for hardening.
 
 ### Deployment status
+
 - Frontend: https://lodestar-ruddy.vercel.app
 - Backend API: https://lodestar-8na4.onrender.com/api/services
 - Health check: https://lodestar-8na4.onrender.com/healthz
@@ -25,11 +27,13 @@ Lodestar is currently an early-stage, demo-ready project for the Stellar ecosyst
 - Agents contract: [CCT4FUTW54K7BYZFOCBEM5MVLS42ZE25WJ3ONW7RLYXAF3HQS7ZQYA2N](https://stellar.expert/explorer/testnet/contract/CCT4FUTW54K7BYZFOCBEM5MVLS42ZE25WJ3ONW7RLYXAF3HQS7ZQYA2N)
 
 ### Known limitations
+
 - The current deployment targets Stellar testnet and is not yet a mainnet production rollout.
 - The demo experience is useful for validation, but operational hardening, monitoring, and broader real-world testing are still pending.
 - Some UX and onboarding flows are intentionally lightweight and may evolve as contributors shape the roadmap.
 
 ### Roadmap
+
 The short-term direction is to harden the core experience, improve documentation, and expand the set of supported payment and discovery flows. Follow the GitHub milestones for ongoing priorities: https://github.com/harshita4ever/lodestar/milestones
 
 ---
@@ -85,6 +89,7 @@ Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, 
 ## How It Works
 
 ### Provider flow
+
 1. Deploy any HTTP service that returns `402 Payment Required` with x402 headers
 2. Ask the backend for `POST /api/registry/prepare-register`, which builds an unsigned Soroban transaction using your real Stellar address as `provider`. Field limits: `name` 3–64 characters, `description` 10–256 characters, `endpoint` at most 256 characters, `category` 1–32 characters.
 3. Sign that XDR in Freighter (or another wallet) and submit it through `POST /api/registry/submit-signed-tx`
@@ -92,6 +97,7 @@ Lodestar's Service Registry is a Soroban smart contract that acts as a neutral, 
 5. Your service is now permanently discoverable by any agent querying the registry
 
 ### Agent flow
+
 1. Call `list_services(category)` — returns active services sorted by reputation
 2. Pick the top result (highest reputation, lowest price, or newest)
 3. Make an HTTP request to the endpoint — receive a `402 Payment Required` response. For the search endpoint, the `q` query parameter is trimmed and normalized before forwarding. Queries longer than 256 characters are rejected with HTTP 400 `INVALID_QUERY`.
@@ -203,6 +209,7 @@ node agent.js
 ```
 
 The agent will:
+
 - Query the Lodestar registry for weather and search services
 - Select the best by reputation
 - Pay via x402 on Stellar
@@ -230,17 +237,18 @@ Every agent is anonymous. Services cannot distinguish a reliable agent from a br
 
 ### Score Tiers
 
-| Score | Tier | Access |
-|-------|------|--------|
-| 0–299 | New | Basic services only |
-| 300–599 | Building | Standard services |
-| 600–899 | Established | Premium services |
-| 900–999 | Trusted | All services |
-| 1000 | Elite | Elite tier |
+| Score   | Tier        | Access              |
+| ------- | ----------- | ------------------- |
+| 0–299   | New         | Basic services only |
+| 300–599 | Building    | Standard services   |
+| 600–899 | Established | Premium services    |
+| 900–999 | Trusted     | All services        |
+| 1000    | Elite       | Elite tier          |
 
 ### Spending Policies
 
 Each agent has a programmable spending policy:
+
 - Maximum USDC per transaction
 - Maximum USDC per day (resets every ~17,280 ledgers ≈ 24 hours)
 - Allowed service categories
@@ -342,14 +350,14 @@ Lodestar addresses all three brief requirements:
 
 Real x402 payment transactions on Stellar testnet:
 
-| Transaction | Description |
-|-------------|-------------|
-| [2f76a396e640686b9fc426231415fd7786131f7bcc8482250ff6f65c4c28d042](https://stellar.expert/explorer/testnet/tx/2f76a396e640686b9fc426231415fd7786131f7bcc8482250ff6f65c4c28d042) | Agent credit score payment — NewAgent-Alpha |
+| Transaction                                                                                                                                                                     | Description                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| [2f76a396e640686b9fc426231415fd7786131f7bcc8482250ff6f65c4c28d042](https://stellar.expert/explorer/testnet/tx/2f76a396e640686b9fc426231415fd7786131f7bcc8482250ff6f65c4c28d042) | Agent credit score payment — NewAgent-Alpha        |
 | [6f13b95c5470a58f96b3fc43be3a8f0834bab8249e3fc91bc0c4b6627f5b5a59](https://stellar.expert/explorer/testnet/tx/6f13b95c5470a58f96b3fc43be3a8f0834bab8249e3fc91bc0c4b6627f5b5a59) | Agent credit score payment — EstablishedAgent-Beta |
-| [bcf0b4328d8ce3bac0fcd72c88f61c3a29acfcd256e4bf07d6b82393e8f22d2e](https://stellar.expert/explorer/testnet/tx/bcf0b4328d8ce3bac0fcd72c88f61c3a29acfcd256e4bf07d6b82393e8f22d2e) | Agent credit score payment — TrustedAgent-Gamma |
-| [2e6059ffd930106a6db29d0816f504d8afba36f513836f97df68fca71c3e191b](https://stellar.expert/explorer/testnet/tx/2e6059ffd930106a6db29d0816f504d8afba36f513836f97df68fca71c3e191b) | x402 weather payment via Live Agent Demo |
-| [775e5fb93cdd2ece1cef955d34f28c64fe93eaea0bbaaa8607c5ecd937be88e0](https://stellar.expert/explorer/testnet/tx/775e5fb93cdd2ece1cef955d34f28c64fe93eaea0bbaaa8607c5ecd937be88e0) | x402 search payment via Live Agent Demo |
-| [cd95b935fa85ca938b0a3660a7255f17901a25f9c176a60fa94692fb64492beb](https://stellar.expert/explorer/testnet/tx/cd95b935fa85ca938b0a3660a7255f17901a25f9c176a60fa94692fb64492beb) | x402 weather payment — WeatherBot-Alpha agent |
+| [bcf0b4328d8ce3bac0fcd72c88f61c3a29acfcd256e4bf07d6b82393e8f22d2e](https://stellar.expert/explorer/testnet/tx/bcf0b4328d8ce3bac0fcd72c88f61c3a29acfcd256e4bf07d6b82393e8f22d2e) | Agent credit score payment — TrustedAgent-Gamma    |
+| [2e6059ffd930106a6db29d0816f504d8afba36f513836f97df68fca71c3e191b](https://stellar.expert/explorer/testnet/tx/2e6059ffd930106a6db29d0816f504d8afba36f513836f97df68fca71c3e191b) | x402 weather payment via Live Agent Demo           |
+| [775e5fb93cdd2ece1cef955d34f28c64fe93eaea0bbaaa8607c5ecd937be88e0](https://stellar.expert/explorer/testnet/tx/775e5fb93cdd2ece1cef955d34f28c64fe93eaea0bbaaa8607c5ecd937be88e0) | x402 search payment via Live Agent Demo            |
+| [cd95b935fa85ca938b0a3660a7255f17901a25f9c176a60fa94692fb64492beb](https://stellar.expert/explorer/testnet/tx/cd95b935fa85ca938b0a3660a7255f17901a25f9c176a60fa94692fb64492beb) | x402 weather payment — WeatherBot-Alpha agent      |
 
 Full payment history: [GAY42L…KGU3 on Stellar Explorer](https://stellar.expert/explorer/testnet/account/GAY42LBQWN7LSFV3F6AFNEET2NVLY2JJ7KAEN4E5SNNT4RIEJLAQKGU3) — 176+ transactions
 

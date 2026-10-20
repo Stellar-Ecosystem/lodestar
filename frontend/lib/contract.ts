@@ -11,15 +11,15 @@ import type {
   AgentEligibilityResponse,
   AgentSpendCheckResponse,
   AgentSortOption,
-} from './types';
-import { PAGE_SIZE } from './pagination';
-import { CATEGORIES, normalizeCategory } from './categories';
+} from "./types";
+import { PAGE_SIZE } from "./pagination";
+import { CATEGORIES, normalizeCategory } from "./categories";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { "Content-Type": "application/json" },
     // 60s timeout to handle Render cold start (~50s wake time)
     signal: AbortSignal.timeout(60000),
     ...init,
@@ -31,19 +31,21 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function fetchServices(category?: Category): Promise<ServiceEntry[]> {
-  const query = category ? `?category=${category}` : '';
+export async function fetchServices(
+  category?: Category,
+): Promise<ServiceEntry[]> {
+  const query = category ? `?category=${category}` : "";
   const data = await apiFetch<ServicesResponse>(`/api/services${query}`);
   return data.services;
 }
 
 export async function fetchStats(): Promise<StatsResponse> {
-  return apiFetch<StatsResponse>('/api/stats');
+  return apiFetch<StatsResponse>("/api/stats");
 }
 
 // Returns the valid set of service categories from the on-chain registry.
 export async function listCategories(): Promise<Category[]> {
-  const data = await apiFetch<{ categories: Category[] }>('/api/categories');
+  const data = await apiFetch<{ categories: Category[] }>("/api/categories");
   return data.categories;
 }
 
@@ -51,9 +53,11 @@ export async function fetchServiceById(id: number): Promise<ServiceEntry> {
   return apiFetch<ServiceEntry>(`/api/services/${id}`);
 }
 
-export async function fetchServicesByProvider(address: string): Promise<ServiceEntry[]> {
+export async function fetchServicesByProvider(
+  address: string,
+): Promise<ServiceEntry[]> {
   const data = await apiFetch<ServicesResponse>(
-    `/api/registry/by-provider/${encodeURIComponent(address)}`
+    `/api/registry/by-provider/${encodeURIComponent(address)}`,
   );
   return data.services;
 }
@@ -61,20 +65,21 @@ export async function fetchServicesByProvider(address: string): Promise<ServiceE
 // Reputation votes are cast on behalf of a registered demo agent; the backend
 // only signs for agents it holds keys for. Configure the public demo agent
 // address the UI votes as via NEXT_PUBLIC_DEMO_AGENT_ADDRESS.
-export const DEMO_AGENT_ADDRESS = process.env.NEXT_PUBLIC_DEMO_AGENT_ADDRESS ?? '';
+export const DEMO_AGENT_ADDRESS =
+  process.env.NEXT_PUBLIC_DEMO_AGENT_ADDRESS ?? "";
 
 export async function submitReputation(
   id: number,
   positive: boolean,
-  agent: string = DEMO_AGENT_ADDRESS
+  agent: string = DEMO_AGENT_ADDRESS,
 ): Promise<ReputationResponse> {
   if (!agent) {
     throw new Error(
-      'No voting agent configured. Set NEXT_PUBLIC_DEMO_AGENT_ADDRESS to a registered demo agent.'
+      "No voting agent configured. Set NEXT_PUBLIC_DEMO_AGENT_ADDRESS to a registered demo agent.",
     );
   }
   return apiFetch<ReputationResponse>(`/api/reputation/${id}`, {
-    method: 'POST',
+    method: "POST",
     body: JSON.stringify({ positive, agent }),
   });
 }
@@ -100,35 +105,41 @@ interface SubmittedRegistryTxResponse {
 
 export async function registerService(
   formData: RegisterFormData,
-  walletAddress: string
+  walletAddress: string,
 ): Promise<{ txHash: string; id: number }> {
   const category = normalizeCategory(formData.category);
   if (!category) {
     throw new Error(
-      `Invalid category: ${formData.category}. Valid categories: ${CATEGORIES.join(', ')}`
+      `Invalid category: ${formData.category}. Valid categories: ${CATEGORIES.join(", ")}`,
     );
   }
-  const { kitSignTransaction: signTx } = await import('./wallet');
-  const prepared = await apiFetch<PreparedRegistryTxResponse>('/api/registry/prepare-register', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: formData.name,
-      description: formData.description,
-      endpoint: formData.endpoint,
-      priceUsdc: formData.price_usdc,
-      category,
-      providerAddress: walletAddress,
-    }),
-  });
+  const { kitSignTransaction: signTx } = await import("./wallet");
+  const prepared = await apiFetch<PreparedRegistryTxResponse>(
+    "/api/registry/prepare-register",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: formData.name,
+        description: formData.description,
+        endpoint: formData.endpoint,
+        priceUsdc: formData.price_usdc,
+        category,
+        providerAddress: walletAddress,
+      }),
+    },
+  );
 
   const signedXdr = await signTx(prepared.xdr);
-  const result = await apiFetch<SubmittedRegistryTxResponse>('/api/registry/submit-signed-tx', {
-    method: 'POST',
-    body: JSON.stringify({ signedXdr, submitToken: prepared.submitToken }),
-  });
+  const result = await apiFetch<SubmittedRegistryTxResponse>(
+    "/api/registry/submit-signed-tx",
+    {
+      method: "POST",
+      body: JSON.stringify({ signedXdr, submitToken: prepared.submitToken }),
+    },
+  );
 
   if (!result.success || result.id == null) {
-    throw new Error('Registration submitted but no service id was returned');
+    throw new Error("Registration submitted but no service id was returned");
   }
 
   return { txHash: result.hash, id: result.id };
@@ -136,25 +147,31 @@ export async function registerService(
 
 export async function reactivateService(
   id: number,
-  walletAddress: string
+  walletAddress: string,
 ): Promise<{ txHash: string }> {
-  const { kitSignTransaction: signTx } = await import('./wallet');
-  const prepared = await apiFetch<PreparedRegistryTxResponse>('/api/registry/prepare-reactivate', {
-    method: 'POST',
-    body: JSON.stringify({
-      id,
-      providerAddress: walletAddress,
-    }),
-  });
+  const { kitSignTransaction: signTx } = await import("./wallet");
+  const prepared = await apiFetch<PreparedRegistryTxResponse>(
+    "/api/registry/prepare-reactivate",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        id,
+        providerAddress: walletAddress,
+      }),
+    },
+  );
 
   const signedXdr = await signTx(prepared.xdr);
-  const result = await apiFetch<SubmittedRegistryTxResponse>('/api/registry/submit-signed-tx', {
-    method: 'POST',
-    body: JSON.stringify({ signedXdr, submitToken: prepared.submitToken }),
-  });
+  const result = await apiFetch<SubmittedRegistryTxResponse>(
+    "/api/registry/submit-signed-tx",
+    {
+      method: "POST",
+      body: JSON.stringify({ signedXdr, submitToken: prepared.submitToken }),
+    },
+  );
 
   if (!result.success) {
-    throw new Error('Reactivation transaction was not accepted');
+    throw new Error("Reactivation transaction was not accepted");
   }
 
   return { txHash: result.hash };
@@ -166,45 +183,46 @@ export async function reactivateService(
 // All current agent operations flow through the backend API (see apiFetch above).
 // Wire this into a direct contract call if/when the frontend needs to invoke
 // agent operations without a backend intermediary.
-export const AGENTS_CONTRACT_ID = process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ?? '';
+export const AGENTS_CONTRACT_ID =
+  process.env.NEXT_PUBLIC_AGENTS_CONTRACT_ID ?? "";
 
 export async function fetchAgents(
   page = 0,
   pageSize = PAGE_SIZE,
-  sort: AgentSortOption = 'score'
+  sort: AgentSortOption = "score",
 ): Promise<AgentsResponse> {
   return apiFetch<AgentsResponse>(
-    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`
+    `/api/agents?page=${page}&pageSize=${pageSize}&sort=${sort}`,
   );
 }
 
 export async function fetchAgent(
-  address: string
+  address: string,
 ): Promise<{ agent: AgentEntry; policy: SpendingPolicy | null }> {
   return apiFetch<{ agent: AgentEntry; policy: SpendingPolicy | null }>(
-    `/api/agents/${address}`
+    `/api/agents/${address}`,
   );
 }
 
 export async function fetchAgentStats(): Promise<AgentStats> {
-  return apiFetch<AgentStats>('/api/agents/stats');
+  return apiFetch<AgentStats>("/api/agents/stats");
 }
 
 export async function fetchAgentEligibility(
   address: string,
-  minScore: number
+  minScore: number,
 ): Promise<AgentEligibilityResponse> {
   return apiFetch<AgentEligibilityResponse>(
-    `/api/agents/${address}/eligible?min_score=${minScore}`
+    `/api/agents/${address}/eligible?min_score=${minScore}`,
   );
 }
 
 export async function fetchAgentSpendCheck(
   address: string,
   amount: string,
-  category: string
+  category: string,
 ): Promise<AgentSpendCheckResponse> {
   return apiFetch<AgentSpendCheckResponse>(
-    `/api/agents/${address}/can-spend?amount=${encodeURIComponent(amount)}&category=${encodeURIComponent(category)}`
+    `/api/agents/${address}/can-spend?amount=${encodeURIComponent(amount)}&category=${encodeURIComponent(category)}`,
   );
 }

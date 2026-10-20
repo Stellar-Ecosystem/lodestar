@@ -64,7 +64,7 @@ startPurgeTimer();
  */
 export function isValidIdempotencyKey(key) {
   return (
-    typeof key === 'string' &&
+    typeof key === "string" &&
     key.length >= 1 &&
     key.length <= 255 &&
     /^[\x21-\x7E]+$/.test(key) // printable ASCII, no spaces/control chars
@@ -97,7 +97,7 @@ export function getEntry(key) {
  */
 export function markPending(key) {
   store.set(key, {
-    status: 'pending',
+    status: "pending",
     result: null,
     expiresAt: Date.now() + TTL_MS,
   });
@@ -112,7 +112,7 @@ export function markPending(key) {
 export function markComplete(key, result) {
   const entry = store.get(key);
   if (entry) {
-    entry.status = 'complete';
+    entry.status = "complete";
     entry.result = result;
   }
 }
@@ -126,7 +126,7 @@ export function markComplete(key, result) {
 export function markFailed(key, result) {
   const entry = store.get(key);
   if (entry) {
-    entry.status = 'failed';
+    entry.status = "failed";
     entry.result = result;
   }
 }
