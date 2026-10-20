@@ -26,7 +26,7 @@ import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
-import { handleContractError } from '../lib/ContractError.js';
+import { ContractError, handleContractError } from '../lib/ContractError.js';
 import {
   isValidIdempotencyKey,
   getEntry,
@@ -194,8 +194,25 @@ router.get('/agents/:address/score', requireAgentsContract, async (req, res) => 
     }
     res.json({ score });
   } catch (err) {
-    logger.error({ err }, 'GET /api/agents/:address/score failed');
-    return handleContractError(err, res, 'Failed to fetch score', 'FETCH_ERROR');
+    if (err instanceof ContractError) {
+      const variant = err.code || 'UNKNOWN';
+      let status = err.status;
+      if (err.code === 'TRANSACTION_TIMEOUT') {
+        status = 504;
+      } else if (err.code === 'RPC_THROTTLED') {
+        status = 503;
+      }
+
+      if (status && status !== 500) {
+        return res.status(status).json({ error: err.message, code: err.code });
+      }
+
+      logger.error({ err, variant, address: req.params.address }, `Unmapped contract error variant: ${variant}`);
+      return res.status(500).json({ error: err.message || 'Failed to fetch score', code: err.code || 'FETCH_ERROR' });
+    }
+
+    logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/score failed');
+    return res.status(500).json({ error: 'Failed to fetch score', code: 'FETCH_ERROR' });
   }
 });
 
