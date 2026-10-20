@@ -395,8 +395,8 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
 });
 
 router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res) => {
+  const { providerAddress, id } = req.body ?? {};
   try {
-    const { providerAddress, id } = req.body ?? {};
     if (!isValidStellarAddress(providerAddress)) {
       return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
     }
@@ -411,8 +411,28 @@ router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res)
     res.json(prepared);
   } catch (err) {
     if (err instanceof ContractError) {
-      const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
-      return res.status(status).json({ error: err.message, code: err.code });
+      const variant = err.code || "UNKNOWN";
+      let status = err.status;
+      if (err.code === "TRANSACTION_TIMEOUT") {
+        status = 504;
+      } else if (err.code === "RPC_THROTTLED") {
+        status = 503;
+      } else if (err.code === "SERVICE_NOT_FOUND") {
+        status = 404;
+      } else if (err.code === "PROVIDER_MISMATCH") {
+        status = 403;
+      } else if (err.code === "ALREADY_INACTIVE") {
+        status = 409;
+      } else if (err.code === "CATEGORY_INDEX_NOT_FOUND") {
+        status = 404;
+      }
+
+      if (status && status !== 500) {
+        return res.status(status).json({ error: err.message, code: err.code });
+      }
+
+      logger.error({ err, variant, providerAddress, id }, `Unmapped contract error variant: ${variant}`);
+      return res.status(500).json({ error: err.message || "Failed to build transaction", code: err.code || "BUILD_TX_ERROR" });
     }
     logger.error({ err }, "POST /api/registry/prepare-deactivate failed");
     res.status(500).json({ error: "Failed to build transaction", code: "BUILD_TX_ERROR" });
