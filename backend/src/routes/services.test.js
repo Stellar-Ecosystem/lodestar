@@ -133,6 +133,47 @@ describe('GET /demo/weather coordinate validation', () => {
     expect(res.body.latitude).toBe(40.7128);
     expect(res.body.longitude).toBe(-74.006);
   });
+
+  it('returns 400 INVALID_COORDINATES when lat is wrong type (non-numeric string)', async () => {
+    const res = await request(app).get('/demo/weather?lat=not-a-number&lon=0');
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_COORDINATES');
+  });
+
+  it('returns 400 INVALID_COORDINATES when lon is wrong type (non-numeric string)', async () => {
+    const res = await request(app).get('/demo/weather?lat=0&lon=abc');
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_COORDINATES');
+  });
+
+  it('returns 400 INVALID_BODY when a request body is sent to GET /demo/weather', async () => {
+    const res = await request(app)
+      .get('/demo/weather')
+      .send({ malicious: 'payload' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    expect(mockGetAgent).not.toHaveBeenCalled();
+  });
+
+  it('does not reach contract layer when coordinates are out of range or wrong type', async () => {
+    const res1 = await request(app)
+      .get('/demo/weather?lat=999&lon=0')
+      .set('x-payment-address', VALID_STELLAR_ADDRESS)
+      .set('x-payment-transaction', 'abc123tx');
+    expect(res1.status).toBe(400);
+    expect(res1.body.code).toBe('INVALID_COORDINATES');
+
+    const res2 = await request(app)
+      .get('/demo/weather?lat=abc&lon=0')
+      .set('x-payment-address', VALID_STELLAR_ADDRESS)
+      .set('x-payment-transaction', 'abc123tx');
+    expect(res2.status).toBe(400);
+    expect(res2.body.code).toBe('INVALID_COORDINATES');
+
+    expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+    expect(mockGetAgent).not.toHaveBeenCalled();
+  });
 });
 
 describe('payment header validation — weather', () => {
