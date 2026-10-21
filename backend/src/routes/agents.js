@@ -481,33 +481,88 @@ router.get('/agents/:address/check', requireAgentsContract, async (req, res) => 
 
 // POST /api/agents/:address/build-tx
 // Body: { action: 'flag'|'deactivate'|'update_policy', ...actionParams }
+// Requires header: Idempotency-Key (or X-Idempotency-Key) — a unique key per build request (max 255 printable-ASCII chars).
+// Retrying with the same key replays the original response without re-executing.
 router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async (req, res) => {
+  const { address } = req.params;
+
+  // ── 1. Idempotency key validation ─────────────────────────────────────────
+  const idempotencyKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'];
+  if (!idempotencyKey) {
+    return res.status(400).json({
+      error: 'Missing Idempotency-Key header',
+      code: 'IDEMPOTENCY_KEY_MISSING',
+    });
+  }
+  if (!isValidIdempotencyKey(idempotencyKey)) {
+    return res.status(400).json({
+      error: 'Idempotency-Key must be 1–255 printable ASCII characters (no spaces)',
+      code: 'IDEMPOTENCY_KEY_INVALID',
+    });
+  }
+
+  // ── 2. Scope key per agent address and action type ───────────────────────
+  const scopedKey = `${address}:build-tx:${idempotencyKey}`;
+
+  // ── 3. Check for an existing entry ────────────────────────────────────────
+  const existing = getEntry(scopedKey);
+  if (existing) {
+    if (existing.status === 'pending') {
+      logger.warn({ address, idempotencyKey }, 'Duplicate build-tx request while in-flight');
+      return res.status(409).json({
+        error: 'A transaction build with this idempotency key is already being processed',
+        code: 'IDEMPOTENCY_CONFLICT',
+      });
+    }
+    if (existing.status === 'complete') {
+      logger.info({ address, idempotencyKey }, 'Replaying idempotent build-tx response');
+      return res.json({ xdr: existing.result.xdr, idempotent: true });
+    }
+    if (existing.status === 'failed') {
+      const { httpStatus, error, code } = existing.result;
+      return res.status(httpStatus).json({ error, code, idempotent: true });
+    }
+  }
+
+  // ── 4. Body validation ────────────────────────────────────────────────────
+  const { action, ...params } = req.body;
+  if (!action || !['deactivate', 'update_policy'].includes(action)) {
+    return res.status(400).json({ error: '`action` must be deactivate or update_policy', code: 'INVALID_BODY' });
+  }
+  if (action === 'update_policy') {
+    if (!params.maxPerTxStroops || (typeof params.maxPerTxStroops !== 'string' && typeof params.maxPerTxStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
+    }
+    if (!params.maxPerDayStroops || (typeof params.maxPerDayStroops !== 'string' && typeof params.maxPerDayStroops !== 'number')) {
+      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+    }
+    if (!Array.isArray(params.allowedCategories)) {
+      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+    }
+    if (typeof params.minScoreToEarn !== 'number') {
+      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+    }
+  }
+
+  // ── 5. Reserve the key before executing the build ─────────────────────────
+  markPending(scopedKey);
+
   try {
-    const { address } = req.params;
-    const { action, ...params } = req.body;
-    if (!action || !['deactivate', 'update_policy'].includes(action)) {
-      return res.status(400).json({ error: '`action` must be deactivate or update_policy', code: 'INVALID_BODY' });
-    }
-    if (action === 'update_policy') {
-      if (!params.maxPerTxStroops || (typeof params.maxPerTxStroops !== 'string' && typeof params.maxPerTxStroops !== 'number')) {
-        return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
-      }
-      if (!params.maxPerDayStroops || (typeof params.maxPerDayStroops !== 'string' && typeof params.maxPerDayStroops !== 'number')) {
-        return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
-      }
-      if (!Array.isArray(params.allowedCategories)) {
-        return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
-      }
-      if (typeof params.minScoreToEarn !== 'number') {
-        return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
-      }
-    }
     const xdrBase64 = await buildUnsignedAgentTx(action, address, params);
-    logger.info({ address, action }, 'Built unsigned agent tx XDR');
-    res.json({ xdr: xdrBase64 });
+    markComplete(scopedKey, { xdr: xdrBase64 });
+    logger.info({ address, action, idempotencyKey }, 'Built unsigned agent tx XDR');
+    return res.json({ xdr: xdrBase64 });
   } catch (err) {
-    logger.error({ err }, 'POST /agents/:address/build-tx failed');
-    return handleContractError(err, res, 'Failed to build transaction', 'BUILD_TX_ERROR');
+    logger.error({ err, address, idempotencyKey }, 'POST /agents/:address/build-tx failed');
+    const httpStatus =
+      err.name === 'ContractError' && err.code === 'TRANSACTION_TIMEOUT' ? 504
+      : err.name === 'ContractError' ? (err.status ?? 400)
+      : 500;
+    const error = err.name === 'ContractError' ? err.message : 'Failed to build transaction';
+    const code = err.name === 'ContractError' ? err.code : 'BUILD_TX_ERROR';
+
+    markFailed(scopedKey, { httpStatus, error, code });
+    return res.status(httpStatus).json({ error, code });
   }
 });
 
