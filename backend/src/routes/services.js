@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { paymentMiddlewareFromConfig } from '@x402/express';
 import { HTTPFacilitatorClient } from '@x402/core/server';
 import { ExactStellarScheme } from '@x402/stellar/exact/server';
@@ -111,15 +112,45 @@ router.use(
   ])
 );
 
+const weatherQuerySchema = z.object({
+  lat: z
+    .preprocess((val) => (val === undefined ? undefined : parseFloat(val)), z.number().min(-90).max(90))
+    .default(40.7128),
+  lon: z
+    .preprocess((val) => (val === undefined ? undefined : parseFloat(val)), z.number().min(-180).max(180))
+    .default(-74.006),
+  demoRunId: z.string().optional(),
+});
+
+const weatherParamsSchema = z.object({}).strict();
+
+const weatherBodySchema = z
+  .union([
+    z.undefined(),
+    z.null(),
+    z.record(z.never()),
+  ])
+  .optional();
+
 router.get('/weather', async (req, res) => {
   try {
-    const lat = parseFloat(req.query.lat) || 40.7128;
-    const lon = parseFloat(req.query.lon) || -74.006;
+    const paramsResult = weatherParamsSchema.safeParse(req.params ?? {});
+    if (!paramsResult.success) {
+      return res.status(400).json({ error: 'Invalid route parameters', code: 'INVALID_PARAMS' });
+    }
 
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-      logger.warn({ lat, lon }, 'Invalid coordinates supplied to GET /demo/weather');
+    const bodyResult = weatherBodySchema.safeParse(req.body);
+    if (!bodyResult.success) {
+      return res.status(400).json({ error: 'GET request cannot have a body', code: 'INVALID_BODY' });
+    }
+
+    const queryResult = weatherQuerySchema.safeParse(req.query ?? {});
+    if (!queryResult.success) {
+      logger.warn({ query: req.query, errors: queryResult.error.issues }, 'Invalid coordinates supplied to GET /demo/weather');
       return res.status(400).json({ error: 'Coordinates out of range', code: 'INVALID_COORDINATES' });
     }
+
+    const { lat, lon, demoRunId } = queryResult.data;
 
     const url =
       `https://api.open-meteo.com/v1/forecast` +
@@ -153,7 +184,7 @@ router.get('/weather', async (req, res) => {
       service: 'Lodestar Weather Service',
       amount: config.x402.weatherPrice,
       txHash,
-      ...(req.query.demoRunId && { demoRunId: String(req.query.demoRunId) }),
+      ...(demoRunId && { demoRunId: String(demoRunId) }),
     });
 
     if (agentAddress && config.contract.agentsId) {
