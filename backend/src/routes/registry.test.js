@@ -551,6 +551,17 @@ describe('POST /api/registry/prepare-deactivate', () => {
   it.each([
     { providerAddress: VALID_PROVIDER, id: '7abc' },
     { providerAddress: VALID_PROVIDER, id: 7.9 },
+    { providerAddress: VALID_PROVIDER, id: 0 },
+    { providerAddress: VALID_PROVIDER, id: -1 },
+    { providerAddress: VALID_PROVIDER, id: '0' },
+    { providerAddress: VALID_PROVIDER, id: '-5' },
+    { providerAddress: VALID_PROVIDER, id: '' },
+    { providerAddress: VALID_PROVIDER, id: Number.MAX_SAFE_INTEGER + 1 },
+    { providerAddress: VALID_PROVIDER, id: '9007199254740992' },
+    { providerAddress: VALID_PROVIDER, id: null },
+    { providerAddress: VALID_PROVIDER, id: true },
+    { providerAddress: VALID_PROVIDER, id: {} },
+    { providerAddress: VALID_PROVIDER, id: [] },
   ])('rejects invalid deactivation id %o', async (body) => {
     const res = await request(app)
       .post('/api/registry/prepare-deactivate')
@@ -559,6 +570,72 @@ describe('POST /api/registry/prepare-deactivate', () => {
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
     expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['empty body', {}],
+    ['missing providerAddress', { id: 7 }],
+    ['missing id', { providerAddress: VALID_PROVIDER }],
+    ['non-string providerAddress (number)', { providerAddress: 12345, id: 7 }],
+    ['non-string providerAddress (null)', { providerAddress: null, id: 7 }],
+    ['non-string providerAddress (boolean)', { providerAddress: false, id: 7 }],
+    ['non-string providerAddress (object)', { providerAddress: {}, id: 7 }],
+    ['providerAddress too short', { providerAddress: 'G' + 'A'.repeat(54), id: 7 }],
+    ['providerAddress too long', { providerAddress: 'G' + 'A'.repeat(56), id: 7 }],
+    ['providerAddress wrong prefix', { providerAddress: 'S' + 'A'.repeat(55), id: 7 }],
+    ['providerAddress invalid base32 char', { providerAddress: 'G' + '0'.repeat(55), id: 7 }],
+    ['unexpected body field', { providerAddress: VALID_PROVIDER, id: 7, extra: 'nope' }],
+  ])('rejects %s with 400 INVALID_BODY before reaching contract layer', async (_label, body) => {
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+  });
+
+  it('rejects unexpected query parameters with 400 INVALID_QUERY', async () => {
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate?unexpected=1')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_QUERY');
+    expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+  });
+
+  it('rejects unexpected route params with 400 INVALID_PARAMS via schema', async () => {
+    const { prepareDeactivateSchema } = await import('./registry.js');
+    const parsed = prepareDeactivateSchema.safeParse({
+      params: { extraParam: '123' },
+      query: {},
+      body: { providerAddress: VALID_PROVIDER, id: 7 },
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error.issues[0].path[0]).toBe('params');
+  });
+
+  it.each([
+    [1, 1],
+    ['1', 1],
+    [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    [String(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER],
+  ])('accepts boundary valid id %o', async (rawId, expectedId) => {
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
+      xdr: 'AAAA_DEACTIVATE_XDR',
+      submitToken: 'submit-token-bound',
+    });
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: rawId });
+
+    expect(res.status).toBe(200);
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith('deactivate', VALID_PROVIDER, {
+      id: expectedId,
+    });
   });
 });
 

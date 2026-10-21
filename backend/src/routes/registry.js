@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import config from "../config.js";
 import {
   listServices,
@@ -18,6 +19,7 @@ import { getCurrentLedgerSequence } from "../lib/stellar.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
+import { ROUTE_ERROR_CODES } from "../lib/contractErrors.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
 import { withUpstreamTimeout } from "../lib/upstreamTimeout.js";
@@ -36,6 +38,47 @@ const router = Router();
 const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
 const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+export const prepareDeactivateParamsSchema = z.object({}).strict();
+export const prepareDeactivateQuerySchema = z.object({}).strict();
+export const prepareDeactivateBodySchema = z
+  .object({
+    providerAddress: z
+      .string({
+        required_error: "`providerAddress` must be a valid Stellar address",
+        invalid_type_error: "`providerAddress` must be a valid Stellar address",
+      })
+      .length(56, "`providerAddress` must be a valid Stellar address")
+      .refine((val) => isValidStellarAddress(val), {
+        message: "`providerAddress` must be a valid Stellar address",
+      }),
+    id: z.union(
+      [
+        z
+          .number()
+          .int("`id` must be a positive integer")
+          .min(1, "`id` must be a positive integer")
+          .max(Number.MAX_SAFE_INTEGER, "`id` must be a positive integer"),
+        z
+          .string()
+          .regex(/^[1-9]\d*$/, "`id` must be a positive integer")
+          .transform((val) => Number(val))
+          .refine((val) => Number.isSafeInteger(val) && val >= 1, {
+            message: "`id` must be a positive integer",
+          }),
+      ],
+      {
+        errorMap: () => ({ message: "`id` must be a positive integer" }),
+      },
+    ),
+  })
+  .strict();
+
+export const prepareDeactivateSchema = z.object({
+  params: prepareDeactivateParamsSchema,
+  query: prepareDeactivateQuerySchema,
+  body: prepareDeactivateBodySchema,
+});
 
 function normalizePriceUsdc(value) {
   if (typeof value === "number") {
@@ -406,16 +449,30 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
 });
 
 router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res) => {
-  try {
-    const { providerAddress, id } = req.body ?? {};
-    if (!isValidStellarAddress(providerAddress)) {
-      return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
-    }
+  const parsed = prepareDeactivateSchema.safeParse({
+    params: req.params === undefined ? {} : req.params,
+    query: req.query === undefined ? {} : req.query,
+    body: req.body,
+  });
 
-    const parsedId = parsePositiveSafeInteger(id);
-    if (parsedId == null) {
-      return res.status(400).json({ error: "`id` must be a positive integer", code: "INVALID_BODY" });
-    }
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const section = issue?.path?.[0];
+    const routeError =
+      section === "params"
+        ? ROUTE_ERROR_CODES.INVALID_PARAMS
+        : section === "query"
+          ? ROUTE_ERROR_CODES.INVALID_QUERY
+          : ROUTE_ERROR_CODES.INVALID_BODY;
+
+    return res.status(routeError.status).json({
+      error: issue?.message || routeError.message,
+      code: routeError.code,
+    });
+  }
+
+  try {
+    const { providerAddress, id: parsedId } = parsed.data.body;
 
     const prepared = await buildUnsignedRegistryTx("deactivate", providerAddress, { id: parsedId });
     logger.info({ providerAddress, id: parsedId }, "Built unsigned registry deactivation tx");
