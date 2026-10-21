@@ -254,6 +254,21 @@ export const ROUTE_ERROR_CODES = Object.freeze({
     status: 504,
     message: 'Upstream call timed out',
   },
+  INVALID_PARAMS: {
+    code: 'INVALID_PARAMS',
+    status: 400,
+    message: 'Invalid route parameters',
+  },
+  INVALID_QUERY: {
+    code: 'INVALID_QUERY',
+    status: 400,
+    message: 'Invalid query parameters',
+  },
+  INVALID_BODY: {
+    code: 'INVALID_BODY',
+    status: 400,
+    message: 'Invalid request body',
+  },
 });
 
 export class UpstreamTimeoutError extends ContractError {
