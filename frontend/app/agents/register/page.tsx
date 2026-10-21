@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWallet } from '@/components/WalletContext';
 import ScoreBadge from '@/components/ScoreBadge';
@@ -25,6 +25,7 @@ export default function RegisterAgentPage() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const registrationAttemptRef = useRef<{ payload: string; key: string } | null>(null);
 
   const resolvedAddress = useConnected ? (address ?? '') : agentAddress;
 
@@ -72,17 +73,28 @@ export default function RegisterAgentPage() {
 
     setSubmitting(true);
     try {
+      const registrationPayload = {
+        agentAddress: resolvedAddress,
+        name: form.name.trim(),
+        description: form.description.trim(),
+        maxPerTxUsdc: form.maxPerTxUsdc,
+        maxPerDayUsdc: form.maxPerDayUsdc,
+        allowedCategories: selectedCategories,
+      };
+      const serializedPayload = JSON.stringify(registrationPayload);
+      let registrationAttempt = registrationAttemptRef.current;
+      if (!registrationAttempt || registrationAttempt.payload !== serializedPayload) {
+        registrationAttempt = { payload: serializedPayload, key: crypto.randomUUID() };
+        registrationAttemptRef.current = registrationAttempt;
+      }
+
       const res = await fetch(`${API}/api/agents/register`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agentAddress: resolvedAddress,
-          name: form.name.trim(),
-          description: form.description.trim(),
-          maxPerTxUsdc: form.maxPerTxUsdc,
-          maxPerDayUsdc: form.maxPerDayUsdc,
-          allowedCategories: selectedCategories,
-        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': registrationAttempt.key,
+        },
+        body: serializedPayload,
       });
 
       const data = await res.json();

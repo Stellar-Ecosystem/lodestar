@@ -542,6 +542,18 @@ describe('runTask — min reputation threshold', () => {
 });
 
 describe('ensureRegistered — structured event fields', () => {
+  it('sends an Idempotency-Key when registering the agent', async () => {
+    const { ensureRegistered } = await import('./agent.js');
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ ok: false, status: 404 }))
+      .mockResolvedValueOnce(makeResponse({ status: 201 }));
+
+    await ensureRegistered();
+
+    const registrationRequest = global.fetch.mock.calls[1][1];
+    expect(registrationRequest.headers['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
   it('logs agent_registered with scoringEnabled: false when contract is not deployed (503)', async () => {
     const { ensureRegistered } = await import('./agent.js');
     global.fetch = vi.fn().mockResolvedValueOnce(makeResponse({ ok: false, status: 503 }));
