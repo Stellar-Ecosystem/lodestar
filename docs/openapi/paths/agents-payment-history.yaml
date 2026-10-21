@@ -1,0 +1,190 @@
+# OpenAPI 3.0 path item for GET /api/agents/{address}/payment-history.
+#
+# Source of truth: backend/src/routes/agents.js (route handler), plus
+#   - backend/src/middleware/addressValidator.js  (400 INVALID_ADDRESS)
+#   - requireAgentsContract in agents.js           (503 AGENTS_NOT_CONFIGURED)
+#   - backend/src/lib/activityFeed.js              (pagination + entry shape)
+#
+# If you change the handler's response shape, status codes or error codes,
+# update this file in the same change.
+#
+# Referenced from docs/openapi/openapi.yaml under `paths`.
+
+get:
+  operationId: getAgentPaymentHistory
+  summary: List settled payments made by an agent
+  description: |
+    Returns a paginated, newest-first slice of the payments recorded in the
+    backend activity feed for the given agent.
+
+    Only feed entries that satisfy **both** of the following are returned:
+
+    - `agent` equals the `{address}` path parameter, and
+    - `txHash` is a non-empty string (i.e. the payment settled on-chain).
+
+    The activity feed is a bounded, process-local log capped at
+    `ACTIVITY_MAX_ENTRIES` (50) entries shared by **all** agents, so
+    `pagination.total` is never greater than 50 and older payments roll off as
+    new activity is recorded. This endpoint does not read the agents contract;
+    the contract ID is only required to be configured.
+
+    The endpoint takes no request body and requires no authentication.
+  tags:
+    - Agents
+  security: []
+  parameters:
+    - $ref: '../openapi.yaml#/components/parameters/AgentAddress'
+    - name: limit
+      in: query
+      required: false
+      description: |
+        Maximum number of payments to return. Must be an integer `>= 1`.
+        Values above 50 are silently clamped to 50 (not rejected).
+        Defaults to 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+      example: 20
+    - name: offset
+      in: query
+      required: false
+      description: |
+        Number of matching payments to skip before the returned slice. Must be
+        an integer `>= 0`. Defaults to 0. An offset past the end of the list is
+        not an error; it yields an empty `payments` array.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      example: 0
+  responses:
+    '200':
+      description: Payment history page for the agent (may be empty).
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '../openapi.yaml#/components/schemas/AgentPaymentHistoryResponse'
+          examples:
+            page:
+              summary: First page with more results available
+              value:
+                payments:
+                  - timestamp: '2026-10-20T08:41:12.512Z'
+                    agent: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+                    service: Lodestar Weather Service
+                    amount: '0.001'
+                    txHash: 3389e9f0f1a65f19736cacf544c2e825313e8447f569233bb8db39aa607c8889
+                    demoRunId: run-7f3c
+                  - timestamp: '2026-10-20T08:39:57.004Z'
+                    agent: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+                    service: Lodestar Search Service
+                    amount: '0.001'
+                    txHash: a7b1d0e2c3f4958677a8b9c0d1e2f30415263748596a7b8c9d0e1f2a3b4c5d6e
+                pagination:
+                  total: 7
+                  limit: 2
+                  offset: 0
+                  hasMore: true
+            empty:
+              summary: Agent with no settled payments in the feed
+              value:
+                payments: []
+                pagination:
+                  total: 0
+                  limit: 20
+                  offset: 0
+                  hasMore: false
+    '400':
+      description: |
+        The request was rejected before the feed was read. Possible `code`
+        values:
+
+        | code                 | cause                                                                                              |
+        |----------------------|----------------------------------------------------------------------------------------------------|
+        | `INVALID_ADDRESS`    | `{address}` is not a Stellar public key (`^G[A-Z2-7]{55}$`).                                       |
+        | `INVALID_PAGINATION` | `limit` is not an integer `>= 1` and/or `offset` is not an integer `>= 0`. When both are invalid, both messages are joined with `"; "`. |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - INVALID_ADDRESS
+                      - INVALID_PAGINATION
+          examples:
+            invalidAddress:
+              summary: Malformed agent address
+              value:
+                error: Invalid Stellar address format
+                code: INVALID_ADDRESS
+            invalidLimit:
+              summary: '`limit=-1`'
+              value:
+                error: '`limit` must be a positive integer'
+                code: INVALID_PAGINATION
+            invalidBoth:
+              summary: '`limit=0&offset=-5`'
+              value:
+                error: '`limit` must be a positive integer; `offset` must be a non-negative integer'
+                code: INVALID_PAGINATION
+    '500':
+      description: |
+        The activity feed could not be read (e.g. the persisted feed file is
+        unreadable or not a JSON array). `code` is always `FETCH_ERROR`.
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - FETCH_ERROR
+          example:
+            error: Failed to fetch payment history
+            code: FETCH_ERROR
+    '503':
+      description: |
+        The agents contract is not configured on this backend
+        (`AGENTS_CONTRACT_ID` is unset). `code` is always
+        `AGENTS_NOT_CONFIGURED`.
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - AGENTS_NOT_CONFIGURED
+          example:
+            error: Agents contract not yet deployed. Set AGENTS_CONTRACT_ID in .env
+            code: AGENTS_NOT_CONFIGURED
+  x-codeSamples:
+    - lang: Shell
+      label: curl
+      source: |
+        curl -s \
+          'http://localhost:3001/api/agents/GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H/payment-history?limit=2&offset=0'

@@ -1,0 +1,147 @@
+openapi: 3.0.3
+info:
+  title: Lodestar Backend API
+  version: 0.1.0
+  description: |
+    OpenAPI specification for the Lodestar backend (`backend/src`), assembled
+    route by route. Each route lives in its own path-item file under
+    `docs/openapi/paths/` and is referenced from `paths` below; shared
+    schemas, parameters and headers live in `components`.
+
+    All error responses share the `ErrorResponse` envelope
+    (`{ "error": string, "code": string }`); each operation enumerates the
+    `code` values it can emit per status.
+servers:
+  - url: http://localhost:3001
+    description: Local development
+tags:
+  - name: Agents
+    description: Agent registry, policy, scoring and payment endpoints (`backend/src/routes/agents.js`).
+
+paths:
+  /api/agents/{address}/payment-history:
+    $ref: './paths/agents-payment-history.yaml'
+
+components:
+  parameters:
+    AgentAddress:
+      name: address
+      in: path
+      required: true
+      description: |
+        Stellar public key (G-address) of the agent. Validated by
+        `validateAgentAddressParam` before any route handler runs, so a
+        malformed address yields `400 INVALID_ADDRESS` even when other
+        preconditions (such as contract configuration) would also fail.
+      schema:
+        type: string
+        pattern: '^G[A-Z2-7]{55}$'
+      example: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+
+  headers:
+    X-Request-Id:
+      description: |
+        Correlation ID for the request. Echoes the inbound `X-Request-Id`
+        header when supplied, otherwise a server-generated UUID v4.
+      schema:
+        type: string
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: Standard error envelope returned by every non-2xx JSON response.
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable message. Not stable; do not branch on it.
+        code:
+          type: string
+          description: Stable machine-readable error code. Branch on this.
+
+    PaymentHistoryEntry:
+      type: object
+      description: |
+        A settled payment as recorded in the backend activity feed by the x402
+        service routes (`backend/src/routes/services.js`) and the demo runner
+        (`backend/src/routes/demo.js`). Entries are returned verbatim from the
+        feed, so unknown additional properties may appear and must be ignored.
+      required:
+        - timestamp
+        - agent
+        - service
+        - amount
+        - txHash
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC time at which the backend recorded the payment.
+          example: '2026-10-20T08:41:12.512Z'
+        agent:
+          type: string
+          pattern: '^G[A-Z2-7]{55}$'
+          description: Paying agent's Stellar address. Always equals the `{address}` path parameter.
+          example: GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+        service:
+          type: string
+          description: Display name of the paid service.
+          example: Lodestar Weather Service
+        amount:
+          type: string
+          description: |
+            Price paid, as a decimal USDC string (e.g. `"0.001"`), not stroops.
+          example: '0.001'
+        txHash:
+          type: string
+          minLength: 1
+          description: Stellar transaction hash of the settled payment. Never empty in this response.
+          example: 3389e9f0f1a65f19736cacf544c2e825313e8447f569233bb8db39aa607c8889
+        demoRunId:
+          type: string
+          description: Present only when the paid request carried a `demoRunId` query parameter.
+          example: run-7f3c
+      additionalProperties: true
+
+    PaginationMeta:
+      type: object
+      required:
+        - total
+        - limit
+        - offset
+        - hasMore
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          maximum: 50
+          description: Total number of matching payments across all pages (bounded by the feed capacity of 50).
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Effective page size after defaulting and clamping.
+        offset:
+          type: integer
+          minimum: 0
+          description: Effective offset used for this page.
+        hasMore:
+          type: boolean
+          description: '`true` when `offset + payments.length < total`.'
+
+    AgentPaymentHistoryResponse:
+      type: object
+      required:
+        - payments
+        - pagination
+      properties:
+        payments:
+          type: array
+          description: Matching payments, newest first. Empty when none match or `offset >= total`.
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/PaymentHistoryEntry'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
