@@ -37,8 +37,17 @@ vi.mock('../lib/contract.js', () => ({
   submitSignedAgentTx: (...args) => mockSubmitSignedAgentTx(...args),
 }));
 
+const mockLogger = {
+  error: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  debug: vi.fn(),
+  child: vi.fn(),
+};
+mockLogger.child.mockReturnValue(mockLogger);
+
 vi.mock('../lib/logger.js', () => ({
-  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+  default: mockLogger,
 }));
 
 vi.mock('../config.js', () => ({
@@ -131,6 +140,72 @@ describe('POST /admin/agents/:address/flag', () => {
       .send(body);
 
     expect(res.status).toBe(500);
+  });
+
+  it('emits structured logs with duration and outcome on success', async () => {
+    mockFlagAgentOnChain.mockResolvedValueOnce(true);
+
+    const body = { reason: 'terms violation' };
+    const res = await request(app)
+      .post(`/admin/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', adminKey(body))
+      .set('x-caller-address', 'GCALLER1234567890')
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(mockLogger.child).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: 'POST /admin/agents/:address/flag',
+        address: ADDRESS,
+        caller: 'GCALLER1234567890',
+      })
+    );
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        durationMs: expect.any(Number),
+        outcome: 'success',
+        reason: 'terms violation',
+      }),
+      'Agent flagged by admin'
+    );
+  });
+
+  it('emits structured logs with duration and outcome on invalid body', async () => {
+    const body = {};
+    const res = await request(app)
+      .post(`/admin/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', adminKey(body))
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        durationMs: expect.any(Number),
+        outcome: 'invalid_body',
+      }),
+      'Invalid request body for flag agent'
+    );
+  });
+
+  it('emits structured logs with duration and outcome on contract failure', async () => {
+    const err = new Error('Soroban contract error');
+    mockFlagAgentOnChain.mockRejectedValueOnce(err);
+
+    const body = { reason: 'malicious activity' };
+    const res = await request(app)
+      .post(`/admin/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', adminKey(body))
+      .send(body);
+
+    expect(res.status).toBe(500);
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err,
+        durationMs: expect.any(Number),
+        outcome: 'failure',
+      }),
+      'POST /api/admin/agents/:address/flag failed'
+    );
   });
 });
 
