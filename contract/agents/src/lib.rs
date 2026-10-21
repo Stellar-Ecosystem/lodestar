@@ -17,6 +17,11 @@ const MAX_SCORE: i32 = 1_000;
 const INITIAL_SCORE: i32 = 100;
 const SCORE_SUCCESS: i32 = 10;
 const SCORE_FAILURE: i32 = -25;
+/// Points deducted from an agent's score when flagged for misconduct (-200).
+/// Tunability: Fixed compile-time constant rather than admin-tunable to provide
+/// deterministic, predictable penalties across the network without risk of
+/// arbitrary administrative manipulation. It is exposed on-chain via get_scoring_config
+/// so clients and frontends can inspect the current penalty schedule dynamically.
 const FLAG_PENALTY: i32 = -200;
 
 #[contracterror]
@@ -1048,7 +1053,10 @@ impl LodestarAgents {
         );
     }
 
-    // Get the current scoring configuration constants
+    /// Get the current scoring configuration constants.
+    ///
+    /// Exposes initial score, success gain, failure deduction, and flag penalty
+    /// so off-chain callers and client frontends can read scoring parameters dynamically.
     pub fn get_scoring_config(_env: Env) -> ScoringConfig {
         ScoringConfig {
             initial_score: INITIAL_SCORE,
