@@ -3,9 +3,22 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 vi.mock('../config.js', () => ({
   default: {
     contract: { id: 'mock', agentsId: 'mock' },
-    server: { address: 'mock', secret: 'SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2' },
-    stellar: { network: 'testnet', rpcUrl: 'https://mock', networkPassphrase: 'mock', usdcContractId: 'mock' },
-    x402: { facilitatorUrl: 'https://mock', searchPrice: '0.001', weatherPrice: '0.001', payTo: 'G_MOCK_PAYMENT' },
+    server: {
+      address: 'mock',
+      secret: 'SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2',
+    },
+    stellar: {
+      network: 'testnet',
+      rpcUrl: 'https://mock',
+      networkPassphrase: 'mock',
+      usdcContractId: 'mock',
+    },
+    x402: {
+      facilitatorUrl: 'https://mock',
+      searchPrice: '0.001',
+      weatherPrice: '0.001',
+      payTo: 'G_MOCK_PAYMENT',
+    },
     braveApiKey: '',
     corsOrigin: ['http://localhost:3000'],
     jsonBodyLimit: '100kb',
@@ -40,6 +53,7 @@ vi.mock('node:fs', () => ({
 }));
 
 import sdkPkg from '@stellar/stellar-sdk';
+import config from '../config.js';
 import * as contractLib from './contract.js';
 
 const { StrKey } = sdkPkg;
@@ -81,7 +95,9 @@ describe('registerServiceOnChain duplicate checks', () => {
   it('returns false when no matching active service exists', async () => {
     activeServiceExistsSpy.mockResolvedValueOnce(false);
 
-    expect(await contractLib.activeServiceExists('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'https://test.example.com')).toBe(false);
+    expect(
+      await contractLib.activeServiceExists('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'https://test.example.com')
+    ).toBe(false);
   });
 
   it('returns true when an active service exists for the same provider and name', async () => {
@@ -96,15 +112,17 @@ describe('registerServiceOnChain duplicate checks', () => {
   it('returns false when no matching active service name exists', async () => {
     activeServiceExistsByNameSpy.mockResolvedValueOnce(false);
 
-    expect(await contractLib.activeServiceExistsByName('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'Test Service')).toBe(false);
+    expect(await contractLib.activeServiceExistsByName('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'Test Service')).toBe(
+      false
+    );
   });
 
   it('throws when duplicate active service endpoint exists during registration', async () => {
     activeServiceExistsSpy.mockResolvedValueOnce(true);
 
-    await expect(
-      contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')
-    ).rejects.toThrow('Active service with same provider and endpoint already exists');
+    await expect(contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')).rejects.toThrow(
+      'Active service with same provider and endpoint already exists'
+    );
 
     expect(activeServiceExistsSpy).toHaveBeenCalled();
   });
@@ -113,9 +131,9 @@ describe('registerServiceOnChain duplicate checks', () => {
     activeServiceExistsSpy.mockResolvedValueOnce(false);
     activeServiceExistsByNameSpy.mockResolvedValueOnce(true);
 
-    await expect(
-      contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')
-    ).rejects.toThrow('Active service with same provider and name already exists');
+    await expect(contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')).rejects.toThrow(
+      'Active service with same provider and name already exists'
+    );
 
     expect(activeServiceExistsByNameSpy).toHaveBeenCalled();
   });
@@ -123,9 +141,9 @@ describe('registerServiceOnChain duplicate checks', () => {
   it('rejects server-signed registration when seeding mode is disabled', async () => {
     delete process.env.SEEDING_MODE;
 
-    await expect(
-      contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')
-    ).rejects.toThrow('Server-signed service registration is disabled');
+    await expect(contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')).rejects.toThrow(
+      'Server-signed service registration is disabled'
+    );
   });
 });
 
@@ -136,16 +154,10 @@ describe('activeServiceExists pagination', () => {
 
     const fetchServices = vi
       .fn()
-      .mockResolvedValueOnce([
-        { provider: 'GAOTHER', endpoint: 'https://other.example.com' },
-      ])
-      .mockResolvedValueOnce([
-        { provider, endpoint },
-      ]);
+      .mockResolvedValueOnce([{ provider: 'GAOTHER', endpoint: 'https://other.example.com' }])
+      .mockResolvedValueOnce([{ provider, endpoint }]);
 
-    await expect(
-      contractLib.contractHelpers.activeServiceExists(provider, endpoint, fetchServices)
-    ).resolves.toBe(true);
+    await expect(contractLib.contractHelpers.activeServiceExists(provider, endpoint, fetchServices)).resolves.toBe(true);
 
     expect(fetchServices).toHaveBeenNthCalledWith(1, { offset: 0, limit: 20 });
     expect(fetchServices).toHaveBeenNthCalledWith(2, { offset: 20, limit: 20 });
@@ -161,9 +173,7 @@ describe('listServicesByProvider pagination', () => {
         { id: 1, provider },
         { id: 2, provider: 'GAOTHER' },
       ])
-      .mockResolvedValueOnce([
-        { id: 3, provider },
-      ])
+      .mockResolvedValueOnce([{ id: 3, provider }])
       .mockResolvedValueOnce([]);
 
     await expect(contractLib.listServicesByProvider(provider, fetchServices)).resolves.toEqual([
@@ -366,10 +376,14 @@ describe('mapAgent', () => {
 
   it('should handle Address-like objects with toString', () => {
     const raw = {
-      address: { toString: () => 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ' },
+      address: {
+        toString: () => 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ',
+      },
       name: 'Obj Agent',
       description: 'Address as object',
-      owner: { toString: () => 'GBV4ZDEPLQTVPQFJRME2BGYL6VQJLTTRIWJHTJNFGXBVF4WY5DJIQK2K' },
+      owner: {
+        toString: () => 'GBV4ZDEPLQTVPQFJRME2BGYL6VQJLTTRIWJHTJNFGXBVF4WY5DJIQK2K',
+      },
       score: 200n,
       total_payments: 10n,
       successful_payments: 8n,
@@ -528,7 +542,9 @@ describe('mapPolicy', () => {
 
   it('should handle object-like addresses', () => {
     const raw = {
-      agent_address: { toString: () => 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ' },
+      agent_address: {
+        toString: () => 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ',
+      },
       max_per_tx_stroops: 10000000n,
       max_per_day_stroops: 50000000n,
       allowed_categories: ['weather'],
@@ -559,7 +575,6 @@ describe('mapPolicy', () => {
   });
 });
 
-
 describe('simulateAndSubmit transaction polling', () => {
   let contract;
 
@@ -568,9 +583,14 @@ describe('simulateAndSubmit transaction polling', () => {
     contractLib.resetRpcMetrics();
     contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
     mockGetAccount.mockResolvedValue({ sequence: '1' });
-    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    mockSimulateTransaction.mockResolvedValue({
+      result: { retval: sdkPkg.xdr.ScVal.scvVoid() },
+    });
     contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'txhash123' });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'txhash123',
+    });
   });
 
   afterEach(() => {
@@ -578,7 +598,10 @@ describe('simulateAndSubmit transaction polling', () => {
   });
 
   it('throws TransactionFailedError when getTransaction reports FAILED', async () => {
-    mockGetTransaction.mockResolvedValueOnce({ status: 'FAILED', resultXdr: 'raw-failure' });
+    mockGetTransaction.mockResolvedValueOnce({
+      status: 'FAILED',
+      resultXdr: 'raw-failure',
+    });
 
     await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toMatchObject({
       name: 'TransactionFailedError',
@@ -595,7 +618,10 @@ describe('simulateAndSubmit transaction polling', () => {
   });
 
   it('throws ReturnValueParseError when a successful transaction return value cannot be parsed', async () => {
-    mockGetTransaction.mockResolvedValueOnce({ status: 'SUCCESS', returnValue: 'not-an-scval' });
+    mockGetTransaction.mockResolvedValueOnce({
+      status: 'SUCCESS',
+      returnValue: 'not-an-scval',
+    });
 
     await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toMatchObject({
       name: 'ReturnValueParseError',
@@ -622,7 +648,9 @@ describe('simulateReadBatch', () => {
   });
 
   it('throws ContractError on simulation error', async () => {
-    mockSimulateTransaction.mockResolvedValueOnce({ error: 'simulation exploded' });
+    mockSimulateTransaction.mockResolvedValueOnce({
+      error: 'simulation exploded',
+    });
     const ops = [contract.call('get_service_count')];
 
     await expect(contractLib.simulateReadBatch(ops)).rejects.toThrow('Batch simulation failed');
@@ -633,15 +661,45 @@ describe('simulateReadBatch', () => {
       .mockResolvedValueOnce({ result: { retval: 'result_1' } })
       .mockResolvedValueOnce({ result: { retval: 'result_2' } });
 
-    const ops = [
-      contract.call('get_service_count'),
-      contract.call('get_agent_count'),
-    ];
+    const ops = [contract.call('get_service_count'), contract.call('get_agent_count')];
 
     const results = await contractLib.simulateReadBatch(ops);
 
     expect(results).toEqual(['result_1', 'result_2']);
     expect(mockSimulateTransaction).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('updatePolicyOnChain contract errors', () => {
+  let originalAgentsId;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    originalAgentsId = config.contract.agentsId;
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    config.contract.agentsId = VALID_CONTRACT_ID;
+  });
+
+  afterEach(() => {
+    config.contract.agentsId = originalAgentsId;
+  });
+
+  it('resolves overlapping numeric errors against the agents contract map', async () => {
+    mockSimulateTransaction.mockResolvedValueOnce({
+      error: 'Error(Contract, #6)',
+    });
+
+    await expect(
+      contractLib.updatePolicyOnChain(
+        'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3',
+        '1000',
+        '10000',
+        [],
+        0,
+        'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3'
+      )
+    ).rejects.toMatchObject({ code: 'AGENT_NOT_FOUND', status: 404 });
   });
 });
 
@@ -681,7 +739,9 @@ describe('pendingTransactions registry', () => {
     contractLib.__resetPendingTransactions();
     contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
     mockGetAccount.mockResolvedValue({ sequence: '1' });
-    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    mockSimulateTransaction.mockResolvedValue({
+      result: { retval: sdkPkg.xdr.ScVal.scvVoid() },
+    });
     contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
   });
 
@@ -696,12 +756,15 @@ describe('pendingTransactions registry', () => {
   });
 
   it('retains pending transaction on NOT_FOUND timeout (tx may still confirm on-chain)', { timeout: 40000 }, async () => {
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'pending-hash-1' });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'pending-hash-1',
+    });
     mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
 
-    await expect(
-      contractLib.simulateAndSubmit(contract.call('get_service_count'))
-    ).rejects.toThrow('Transaction not confirmed after polling');
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toThrow(
+      'Transaction not confirmed after polling'
+    );
 
     expect(contractLib.getPendingTransactionCount()).toBe(1);
     const pending = contractLib.getPendingTransactions();
@@ -711,8 +774,14 @@ describe('pendingTransactions registry', () => {
   });
 
   it('removes tracked transaction on SUCCESS', async () => {
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'success-hash' });
-    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'success-hash',
+    });
+    mockGetTransaction.mockResolvedValue({
+      status: 'SUCCESS',
+      returnValue: sdkPkg.xdr.ScVal.scvVoid(),
+    });
 
     await contractLib.simulateAndSubmit(contract.call('get_service_count'));
 
@@ -720,18 +789,28 @@ describe('pendingTransactions registry', () => {
   });
 
   it('removes tracked transaction on FAILED', async () => {
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'fail-hash' });
-    mockGetTransaction.mockResolvedValue({ status: 'FAILED', resultXdr: 'raw-failure' });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'fail-hash',
+    });
+    mockGetTransaction.mockResolvedValue({
+      status: 'FAILED',
+      resultXdr: 'raw-failure',
+    });
 
     await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toThrow();
     expect(contractLib.getPendingTransactionCount()).toBe(0);
   });
 
   it('tracks and removes on SUCCESS with one NOT_FOUND retry', async () => {
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'retry-hash' });
-    mockGetTransaction
-      .mockResolvedValueOnce({ status: 'NOT_FOUND' })
-      .mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'retry-hash',
+    });
+    mockGetTransaction.mockResolvedValueOnce({ status: 'NOT_FOUND' }).mockResolvedValue({
+      status: 'SUCCESS',
+      returnValue: sdkPkg.xdr.ScVal.scvVoid(),
+    });
 
     await contractLib.simulateAndSubmit(contract.call('get_service_count'));
     expect(contractLib.getPendingTransactionCount()).toBe(0);
@@ -754,7 +833,9 @@ describe('dumpPendingTransactions', () => {
     fsExistsSync.mockReturnValue(false);
     fsReadFileSync.mockReturnValue('[]');
     mockGetAccount.mockResolvedValue({ sequence: '1' });
-    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    mockSimulateTransaction.mockResolvedValue({
+      result: { retval: sdkPkg.xdr.ScVal.scvVoid() },
+    });
     contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
   });
 
@@ -770,7 +851,10 @@ describe('dumpPendingTransactions', () => {
   });
 
   it('writes pending entries to file', { timeout: 35000 }, async () => {
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'dump-hash' });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'dump-hash',
+    });
     mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
     const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
 
@@ -778,15 +862,14 @@ describe('dumpPendingTransactions', () => {
 
     contractLib.dumpPendingTransactions();
 
-    expect(fsWriteFileSync).toHaveBeenCalledWith(
-      'pending-transactions.json',
-      expect.stringContaining('dump-hash'),
-      'utf-8',
-    );
+    expect(fsWriteFileSync).toHaveBeenCalledWith('pending-transactions.json', expect.stringContaining('dump-hash'), 'utf-8');
   });
 
   it('includes hash and submittedAt in dumped entries', { timeout: 35000 }, async () => {
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'op-hash' });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'op-hash',
+    });
     mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
     const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
 
@@ -830,9 +913,15 @@ describe('resumePendingTransactions', () => {
   it('re-adds unconfirmed entries to pending registry', async () => {
     const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
-    fs.readFileSync.mockReturnValue(JSON.stringify([
-      { hash: 'unconfirmed-hash', operation: 'register_agent', submittedAt: Date.now() },
-    ]));
+    fs.readFileSync.mockReturnValue(
+      JSON.stringify([
+        {
+          hash: 'unconfirmed-hash',
+          operation: 'register_agent',
+          submittedAt: Date.now(),
+        },
+      ])
+    );
     mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
 
     await contractLib.resumePendingTransactions();
@@ -843,9 +932,15 @@ describe('resumePendingTransactions', () => {
   it('removes confirmed SUCCESS entries without re-adding', async () => {
     const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
-    fs.readFileSync.mockReturnValue(JSON.stringify([
-      { hash: 'confirmed-hash', operation: 'record_payment', submittedAt: Date.now() },
-    ]));
+    fs.readFileSync.mockReturnValue(
+      JSON.stringify([
+        {
+          hash: 'confirmed-hash',
+          operation: 'record_payment',
+          submittedAt: Date.now(),
+        },
+      ])
+    );
     mockGetTransaction.mockResolvedValue({ status: 'SUCCESS' });
 
     await contractLib.resumePendingTransactions();
@@ -855,9 +950,15 @@ describe('resumePendingTransactions', () => {
   it('removes confirmed FAILED entries without re-adding', async () => {
     const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
-    fs.readFileSync.mockReturnValue(JSON.stringify([
-      { hash: 'failed-hash', operation: 'record_payment', submittedAt: Date.now() },
-    ]));
+    fs.readFileSync.mockReturnValue(
+      JSON.stringify([
+        {
+          hash: 'failed-hash',
+          operation: 'record_payment',
+          submittedAt: Date.now(),
+        },
+      ])
+    );
     mockGetTransaction.mockResolvedValue({ status: 'FAILED' });
 
     await contractLib.resumePendingTransactions();
@@ -867,9 +968,15 @@ describe('resumePendingTransactions', () => {
   it('deletes the file after processing all entries', async () => {
     const fs = await import('node:fs');
     fs.existsSync.mockReturnValue(true);
-    fs.readFileSync.mockReturnValue(JSON.stringify([
-      { hash: 'done-hash', operation: 'register_agent', submittedAt: Date.now() },
-    ]));
+    fs.readFileSync.mockReturnValue(
+      JSON.stringify([
+        {
+          hash: 'done-hash',
+          operation: 'register_agent',
+          submittedAt: Date.now(),
+        },
+      ])
+    );
     mockGetTransaction.mockResolvedValue({ status: 'SUCCESS' });
     fs.unlinkSync.mockClear();
 
@@ -883,7 +990,9 @@ describe('submitQueue management', () => {
     contractLib.__resetPendingTransactions();
     resetMockServer();
     mockGetAccount.mockResolvedValue({ sequence: '1' });
-    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    mockSimulateTransaction.mockResolvedValue({
+      result: { retval: sdkPkg.xdr.ScVal.scvVoid() },
+    });
     contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
   });
 
@@ -901,8 +1010,14 @@ describe('submitQueue management', () => {
 
   it('reports positive depth while a transaction is in flight', async () => {
     const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
-    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'depth-hash' });
-    mockGetTransaction.mockResolvedValue({ status: 'SUCCESS', returnValue: sdkPkg.xdr.ScVal.scvVoid() });
+    mockSendTransaction.mockResolvedValue({
+      status: 'PENDING',
+      hash: 'depth-hash',
+    });
+    mockGetTransaction.mockResolvedValue({
+      status: 'SUCCESS',
+      returnValue: sdkPkg.xdr.ScVal.scvVoid(),
+    });
 
     const promise = contractLib.simulateAndSubmit(contract.call('get_service_count'));
     expect(contractLib.getSubmitQueueDepth()).toBeGreaterThan(0);

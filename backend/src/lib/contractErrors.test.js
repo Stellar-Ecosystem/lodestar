@@ -16,9 +16,7 @@ import {
 
 describe('registry contract error mapping', () => {
   it('documents every registry contract error code', () => {
-    expect(Object.keys(REGISTRY_ERROR_CODES).map(Number)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    ]);
+    expect(Object.keys(REGISTRY_ERROR_CODES).map(Number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
   it('maps numeric registry codes to API ContractError objects', () => {
@@ -83,8 +81,12 @@ describe('agents contract error mapping', () => {
       AGENT_LIST_FULL: 4,
       AGENT_COUNT_OVERFLOW: 5,
       AGENT_NOT_FOUND: 6,
+      UNAUTHORIZED: 7,
+      POLICY_NOT_FOUND: 8,
+      NOT_INITIALIZED: 9,
+      ALREADY_INITIALIZED: 10,
     });
-    expect(Object.keys(AGENT_ERROR_CODES).map(Number)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(Object.keys(AGENT_ERROR_CODES).map(Number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
   it('maps each agents code to a distinct API ContractError with an HTTP status', () => {
@@ -95,6 +97,10 @@ describe('agents contract error mapping', () => {
       [4, 'AGENT_LIST_FULL', 503],
       [5, 'AGENT_COUNT_OVERFLOW', 503],
       [6, 'AGENT_NOT_FOUND', 404],
+      [7, 'UNAUTHORIZED', 403],
+      [8, 'POLICY_NOT_FOUND', 404],
+      [9, 'NOT_INITIALIZED', 500],
+      [10, 'ALREADY_INITIALIZED', 500],
     ];
 
     for (const [numericCode, code, status] of expected) {

@@ -26,17 +26,33 @@ import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
-import { handleContractError } from '../lib/ContractError.js';
-import {
-  isValidIdempotencyKey,
-  getEntry,
-  markPending,
-  markComplete,
-  markFailed,
-} from '../lib/idempotency.js';
+import { ContractError, handleContractError } from '../lib/ContractError.js';
+import { AGENT_ERROR_CODES } from '../lib/contractErrors.js';
+import { isValidIdempotencyKey, getEntry, markPending, markComplete, markFailed } from '../lib/idempotency.js';
 import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js';
 
 const router = Router();
+
+function handlePolicyUpdateError(err, res, address) {
+  const variant = err?.code ?? err?.name ?? 'UNKNOWN';
+  const agentError = err instanceof ContractError ? Object.values(AGENT_ERROR_CODES).find(({ code }) => code === err.code) : null;
+  const retryableError = err instanceof ContractError && (variant === 'TRANSACTION_TIMEOUT' || variant === 'RPC_THROTTLED');
+
+  logger.error(
+    { err, address, variant },
+    agentError || retryableError
+      ? 'POST /agents/:address/update-policy failed'
+      : 'POST /agents/:address/update-policy failed with unmapped error variant'
+  );
+
+  if (agentError) {
+    return res.status(agentError.status).json({ error: err.message, code: agentError.code });
+  }
+  if (retryableError) {
+    return res.status(503).json({ error: err.message, code: variant });
+  }
+  return res.status(500).json({ error: 'Policy update failed', code: 'POLICY_ERROR' });
+}
 
 // Shared page-size constants — keep in sync with frontend/lib/pagination.ts.
 // CONTRACT_PAGE_SIZE_CAP must match the .min(20u32) clamp in contract/src/lib.rs
@@ -94,9 +110,7 @@ router.get('/agents', requireAgentsContract, async (req, res) => {
     const parsedPageSize = Number.parseInt(String(req.query.pageSize ?? String(PAGE_SIZE)), 10);
     const page = Number.isFinite(parsedPage) ? Math.max(0, parsedPage) : 0;
     const pageSize = Number.isFinite(parsedPageSize) ? Math.min(CONTRACT_PAGE_SIZE_CAP, Math.max(1, parsedPageSize)) : PAGE_SIZE;
-    const sort = ['score', 'payments', 'newest'].includes(req.query.sort)
-      ? req.query.sort
-      : 'score';
+    const sort = ['score', 'payments', 'newest'].includes(req.query.sort) ? req.query.sort : 'score';
 
     const allAgents = await getCachedAgents();
     const sorted = sortAgents(allAgents, sort);
@@ -128,19 +142,28 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
     const totalAgents = agents.length;
 
     if (totalAgents === 0) {
-      return res.json({ totalAgents: 0, avgScore: 0, topAgent: null, totalVolume: '0', totalVolumeStroops: '0' });
+      return res.json({
+        totalAgents: 0,
+        avgScore: 0,
+        topAgent: null,
+        totalVolume: '0',
+        totalVolumeStroops: '0',
+      });
     }
 
     const avgScore = Math.round(agents.reduce((sum, a) => sum + a.score, 0) / totalAgents);
     const topAgent = agents.reduce((best, a) => (a.score > best.score ? a : best), agents[0]);
 
-    const totalVolumeStroops = agents.reduce(
-      (sum, a) => sum + BigInt(a.total_volume_stroops),
-      0n
-    );
+    const totalVolumeStroops = agents.reduce((sum, a) => sum + BigInt(a.total_volume_stroops), 0n);
     const totalVolume = stroopsToUsdcDisplay(totalVolumeStroops);
 
-    res.json({ totalAgents, avgScore, topAgent, totalVolume, totalVolumeStroops: totalVolumeStroops.toString() });
+    res.json({
+      totalAgents,
+      avgScore,
+      topAgent,
+      totalVolume,
+      totalVolumeStroops: totalVolumeStroops.toString(),
+    });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/stats failed');
     return handleContractError(err, res, 'Failed to fetch stats', 'FETCH_ERROR');
@@ -154,10 +177,7 @@ router.use('/agents/:address', validateAgentAddressParam);
 router.get('/agents/:address', requireAgentsContract, async (req, res) => {
   try {
     const { address } = req.params;
-    const [agent, policy] = await Promise.all([
-      getAgent(address),
-      getAgentPolicy(address),
-    ]);
+    const [agent, policy] = await Promise.all([getAgent(address), getAgentPolicy(address)]);
     if (!agent) {
       return res.status(404).json({ error: 'Agent not found', code: 'NOT_FOUND' });
     }
@@ -204,10 +224,7 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
   try {
     const { address } = req.params;
     const minScore = parseInt(req.query.min_score ?? '0', 10);
-    const [score, eligible] = await Promise.all([
-      getAgentScore(address),
-      isAgentEligible(address, minScore),
-    ]);
+    const [score, eligible] = await Promise.all([getAgentScore(address), isAgentEligible(address, minScore)]);
     // `score` is null for an agent that is not registered yet; `eligible` is
     // still reported so the caller can distinguish "not eligible" from
     // "no score to compare against".
@@ -269,7 +286,10 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
           reason: `Daily spending limit of $${stroopsToUsdcDisplay(maxDay)} USDC reached`,
         });
       }
-      return res.json({ allowed: false, reason: 'Spending policy violation' });
+      return res.json({
+        allowed: false,
+        reason: 'Spending policy violation',
+      });
     }
 
     res.json({ allowed: true, reason: 'OK' });
@@ -288,19 +308,32 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
       return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
     }
     if (!isValidStellarAddress(agentAddress)) {
-      return res.status(400).json({ error: 'Invalid Stellar address format', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: 'Invalid Stellar address format',
+        code: 'INVALID_BODY',
+      });
     }
     if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 64) {
-      return res.status(400).json({ error: '`name` must be 3–64 characters', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`name` must be 3–64 characters',
+        code: 'INVALID_BODY',
+      });
     }
     if (!description || typeof description !== 'string' || description.trim().length < 10 || description.trim().length > 256) {
-      return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`description` must be 10–256 characters',
+        code: 'INVALID_BODY',
+      });
     }
 
     const isRegistered = await isAgentRegistered(agentAddress);
     if (isRegistered) {
       logger.info({ agentAddress }, 'Attempted to register an already registered agent');
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+      return res.status(409).json({
+        error: 'Agent already registered',
+        code: 'ALREADY_EXISTS',
+        agentAddress,
+      });
     }
 
     const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
@@ -313,16 +346,32 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
     // Keep the HTTP contract stable while preserving the typed on-chain cause.
     const contractError = String(err.message || '').match(/(?:Error|contract error)\s*\(?([0-9]+)\)?/i);
     const registerErrorCodes = {
-      3: { status: 409, error: 'Agent already registered', code: 'ALREADY_EXISTS' },
-      4: { status: 503, error: 'Agent registry is full', code: 'AGENT_LIST_FULL' },
-      5: { status: 503, error: 'Agent registry count overflow', code: 'AGENT_COUNT_OVERFLOW' },
+      3: {
+        status: 409,
+        error: 'Agent already registered',
+        code: 'ALREADY_EXISTS',
+      },
+      4: {
+        status: 503,
+        error: 'Agent registry is full',
+        code: 'AGENT_LIST_FULL',
+      },
+      5: {
+        status: 503,
+        error: 'Agent registry count overflow',
+        code: 'AGENT_COUNT_OVERFLOW',
+      },
     };
     const mapped = contractError && registerErrorCodes[Number(contractError[1])];
     if (mapped) {
       return res.status(mapped.status).json({ error: mapped.error, code: mapped.code, agentAddress });
     }
     if (err.message?.includes('already registered')) {
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+      return res.status(409).json({
+        error: 'Agent already registered',
+        code: 'ALREADY_EXISTS',
+        agentAddress,
+      });
     }
     return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
   }
@@ -370,7 +419,11 @@ router.post(
       }
       if (existing.status === 'complete') {
         logger.info({ address, idempotencyKey }, 'Replaying idempotent payment response');
-        return res.json({ success: true, newScore: existing.result.newScore, idempotent: true });
+        return res.json({
+          success: true,
+          newScore: existing.result.newScore,
+          idempotent: true,
+        });
       }
       if (existing.status === 'failed') {
         // Replay the original error so the caller can inspect it without re-hitting the chain.
@@ -397,7 +450,10 @@ router.post(
     try {
       amountStroops = usdcToStroops(amountUsdc);
     } catch {
-      return res.status(400).json({ error: `Invalid amountUsdc: "${amountUsdc}"`, code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: `Invalid amountUsdc: "${amountUsdc}"`,
+        code: 'INVALID_BODY',
+      });
     }
 
     // ── 6. Reserve the key before touching the chain ──────────────────────────
@@ -414,11 +470,9 @@ router.post(
     } catch (err) {
       // Derive the HTTP status the error would produce so we can replay it faithfully.
       const httpStatus =
-        err.name === 'ContractError' && err.code === 'TRANSACTION_TIMEOUT' ? 504
-        : err.name === 'ContractError' ? 400
-        : 500;
+        err.name === 'ContractError' && err.code === 'TRANSACTION_TIMEOUT' ? 504 : err.name === 'ContractError' ? 400 : 500;
       const error = err.name === 'ContractError' ? err.message : 'Failed to record payment';
-      const code  = err.name === 'ContractError' ? err.code  : 'RECORD_ERROR';
+      const code = err.name === 'ContractError' ? err.code : 'RECORD_ERROR';
 
       markFailed(scopedKey, { httpStatus, error, code });
       logger.error({ err, address, idempotencyKey }, 'POST /api/agents/:address/payment failed');
@@ -439,9 +493,7 @@ router.get('/agents/:address/payment-history', requireAgentsContract, async (req
     }
 
     const feed = getActivityFeed();
-    const payments = feed.filter(
-      (entry) => entry.agent === address && typeof entry.txHash === 'string' && entry.txHash.length > 0
-    );
+    const payments = feed.filter((entry) => entry.agent === address && typeof entry.txHash === 'string' && entry.txHash.length > 0);
 
     const total = payments.length;
     const items = payments.slice(offset, offset + limit);
@@ -464,7 +516,11 @@ router.get('/agents/:address/check', requireAgentsContract, async (req, res) => 
     const { address } = req.params;
     const amount = BigInt(req.query.amount ?? '0');
     const allowed = await checkSpendingAllowed(address, amount);
-    res.json({ allowed, agentAddress: address, amountStroops: amount.toString() });
+    res.json({
+      allowed,
+      agentAddress: address,
+      amountStroops: amount.toString(),
+    });
   } catch (err) {
     logger.error({ err }, 'GET /api/agents/:address/check failed');
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
@@ -486,20 +542,35 @@ router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async
     const { address } = req.params;
     const { action, ...params } = req.body;
     if (!action || !['deactivate', 'update_policy'].includes(action)) {
-      return res.status(400).json({ error: '`action` must be deactivate or update_policy', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`action` must be deactivate or update_policy',
+        code: 'INVALID_BODY',
+      });
     }
     if (action === 'update_policy') {
       if (!params.maxPerTxStroops || (typeof params.maxPerTxStroops !== 'string' && typeof params.maxPerTxStroops !== 'number')) {
-        return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
+        return res.status(400).json({
+          error: '`maxPerTxStroops` is required (string or number)',
+          code: 'INVALID_BODY',
+        });
       }
       if (!params.maxPerDayStroops || (typeof params.maxPerDayStroops !== 'string' && typeof params.maxPerDayStroops !== 'number')) {
-        return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+        return res.status(400).json({
+          error: '`maxPerDayStroops` is required (string or number)',
+          code: 'INVALID_BODY',
+        });
       }
       if (!Array.isArray(params.allowedCategories)) {
-        return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+        return res.status(400).json({
+          error: '`allowedCategories` must be an array of strings',
+          code: 'INVALID_BODY',
+        });
       }
       if (typeof params.minScoreToEarn !== 'number') {
-        return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+        return res.status(400).json({
+          error: '`minScoreToEarn` must be a number',
+          code: 'INVALID_BODY',
+        });
       }
     }
     const xdrBase64 = await buildUnsignedAgentTx(action, address, params);
@@ -593,7 +664,6 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
   }
 });
 
-
 // POST /api/agents/:address/update-policy
 router.post('/agents/:address/update-policy', requireAgentsContract, ownerAuth, async (req, res) => {
   const { address } = req.params;
@@ -602,24 +672,43 @@ router.post('/agents/:address/update-policy', requireAgentsContract, ownerAuth, 
 
     // Validation
     if (!maxPerTxStroops || (typeof maxPerTxStroops !== 'string' && typeof maxPerTxStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`maxPerTxStroops` is required (string or number)',
+        code: 'INVALID_BODY',
+      });
     }
     if (!maxPerDayStroops || (typeof maxPerDayStroops !== 'string' && typeof maxPerDayStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`maxPerDayStroops` is required (string or number)',
+        code: 'INVALID_BODY',
+      });
     }
     if (!Array.isArray(allowedCategories)) {
-      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`allowedCategories` must be an array of strings',
+        code: 'INVALID_BODY',
+      });
     }
     if (typeof minScoreToEarn !== 'number') {
-      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`minScoreToEarn` must be a number',
+        code: 'INVALID_BODY',
+      });
     }
 
     await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
-    logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
+    logger.info(
+      {
+        address,
+        caller: req.callerAddress,
+        maxPerTxStroops,
+        maxPerDayStroops,
+      },
+      'Agent policy updated'
+    );
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err, address }, 'POST /agents/:address/update-policy failed');
-    return handleContractError(err, res, 'Policy update failed', 'POLICY_ERROR');
+    return handlePolicyUpdateError(err, res, address);
   }
 });
 
@@ -630,20 +719,40 @@ router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (r
 
     // Validation
     if (!maxPerTxStroops || (typeof maxPerTxStroops !== 'string' && typeof maxPerTxStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`maxPerTxStroops` is required (string or number)',
+        code: 'INVALID_BODY',
+      });
     }
     if (!maxPerDayStroops || (typeof maxPerDayStroops !== 'string' && typeof maxPerDayStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`maxPerDayStroops` is required (string or number)',
+        code: 'INVALID_BODY',
+      });
     }
     if (!Array.isArray(allowedCategories)) {
-      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`allowedCategories` must be an array of strings',
+        code: 'INVALID_BODY',
+      });
     }
     if (typeof minScoreToEarn !== 'number') {
-      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
+      return res.status(400).json({
+        error: '`minScoreToEarn` must be a number',
+        code: 'INVALID_BODY',
+      });
     }
 
     await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
-    logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
+    logger.info(
+      {
+        address,
+        caller: req.callerAddress,
+        maxPerTxStroops,
+        maxPerDayStroops,
+      },
+      'Agent policy updated'
+    );
     res.json({ success: true });
   } catch (err) {
     logger.error({ err, address }, 'PUT /agents/:address/policy failed');
