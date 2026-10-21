@@ -511,9 +511,30 @@ router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async
   }
 });
 
+// Rate limit for POST /api/agents/:address/submit-signed-tx.
+//
+// This ceiling is deliberate and is NOT the shared write default. Every request
+// that passes validation is forwarded to Soroban RPC as a sendTransaction plus a
+// getTransaction polling loop, so one cheap call to Lodestar fans out into
+// several calls against the RPC provider. Unthrottled, the route is an
+// amplifier: a single client could get Lodestar throttled by the provider for
+// every user.
+//
+// Legitimate traffic is a human approving a Freighter signature prompt for an
+// owner action (deactivate / update_policy), i.e. a handful per minute at most.
+// 5 requests per IP per minute leaves room for a few retries after a failed
+// submission while capping RPC fan-out per client. Limiting runs before any
+// other work so rejected requests never touch RPC. 429 responses carry a
+// Retry-After header (express-rate-limit standardHeaders).
+export const SUBMIT_SIGNED_TX_RATE_LIMIT = Object.freeze({ max: 5, windowMs: 60_000 });
+const submitSignedTxRateLimiter = writeRateLimiter(
+  SUBMIT_SIGNED_TX_RATE_LIMIT.max,
+  SUBMIT_SIGNED_TX_RATE_LIMIT.windowMs,
+);
+
 // POST /api/agents/:address/submit-signed-tx
 // Body: { signedXdr: string }
-router.post('/agents/:address/submit-signed-tx', requireAgentsContract, async (req, res) => {
+router.post('/agents/:address/submit-signed-tx', submitSignedTxRateLimiter, requireAgentsContract, async (req, res) => {
   try {
     const { address } = req.params;
     const { signedXdr } = req.body;
