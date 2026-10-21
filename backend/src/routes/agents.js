@@ -27,6 +27,7 @@ import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
 import { handleContractError } from '../lib/ContractError.js';
+import { UpstreamTimeoutError } from '../lib/contractErrors.js';
 import {
   isValidIdempotencyKey,
   getEntry,
@@ -49,6 +50,18 @@ const CONTRACT_PAGE_SIZE_CAP = 20;
 let agentsCache = null;
 let agentsCacheTime = 0;
 const AGENTS_CACHE_TTL = 30_000;
+
+let adminDeactivateTimeoutCount = 0;
+
+export function getAdminDeactivateMetrics() {
+  return {
+    timeouts: adminDeactivateTimeoutCount,
+  };
+}
+
+export function resetAdminDeactivateMetrics() {
+  adminDeactivateTimeoutCount = 0;
+}
 
 const CACHE_BATCH_SIZE = 50;
 
@@ -569,15 +582,39 @@ router.post('/admin/agents/:address/flag', requireAgentsContract, adminAuth, asy
 
 // POST /api/admin/agents/:address/deactivate — Admin-only agent deactivation
 router.post('/admin/agents/:address/deactivate', requireAgentsContract, adminAuth, async (req, res) => {
+  const timeoutMs = config.admin?.deactivateTimeoutMs ?? 5000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const { address: addr } = req.params;
-    await adminDeactivateAgentOnChain(addr);
+    await Promise.race([
+      adminDeactivateAgentOnChain(addr),
+      new Promise((_, reject) => {
+        controller.signal.addEventListener('abort', () => {
+          reject(new UpstreamTimeoutError(`Upstream call timed out after ${timeoutMs}ms`, timeoutMs));
+        });
+      }),
+    ]);
     logger.info({ address: addr }, 'Agent deactivated by admin');
     res.json({ success: true });
   } catch (err) {
     const { address: addr } = req.params;
+    if (err instanceof UpstreamTimeoutError || err.code === 'UPSTREAM_TIMEOUT') {
+      adminDeactivateTimeoutCount += 1;
+      logger.warn(
+        { address: addr, timeoutMs, timeoutCount: adminDeactivateTimeoutCount },
+        'POST /api/admin/agents/:address/deactivate timed out',
+      );
+      return res.status(504).json({
+        error: err.message || 'Upstream call timed out',
+        code: 'UPSTREAM_TIMEOUT',
+      });
+    }
     logger.error({ err, address: addr }, 'POST /api/admin/agents/:address/deactivate failed');
     return handleContractError(err, res, 'Deactivation failed', 'DEACTIVATE_ERROR');
+  } finally {
+    clearTimeout(timer);
   }
 });
 
