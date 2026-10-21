@@ -1,0 +1,225 @@
+openapi: 3.0.3
+info:
+  title: Lodestar Backend API
+  version: 0.1.0
+  description: |
+    OpenAPI specification for the Lodestar backend (`backend/src`), assembled
+    route by route. Each route lives in its own path-item file under
+    `docs/openapi/paths/` and is referenced from `paths` below; shared
+    schemas, parameters, and headers live in `components`.
+
+    All error responses share the `ErrorResponse` envelope
+    (`{ "error": string, "code": string, "requestId"?: string }`); each
+    operation enumerates the `code` values it can emit per status.
+servers:
+  - url: http://localhost:3001
+    description: Local development server (routes mounted under `/api`)
+  - url: http://localhost:3001/api
+    description: Local development server (`/api` base path)
+tags:
+  - name: Registry
+    description: Service registry discovery, lifecycle, reputation, and aggregate statistics endpoints (`backend/src/routes/registry.js`).
+
+paths:
+  /api/stats:
+    $ref: './paths/stats.yaml'
+  /stats:
+    $ref: './paths/stats.yaml'
+
+components:
+  parameters:
+    RequestIdHeader:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: |
+        Optional client-supplied correlation ID (`backend/src/middleware/requestContext.js`
+        and `backend/src/lib/requestId.js`). When provided as a non-empty string,
+        it is echoed in the `X-Request-Id` response header and included as
+        `requestId` on error responses (`status >= 400`); otherwise the server
+        generates a fresh UUID v4.
+      schema:
+        type: string
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+  headers:
+    X-Request-Id:
+      description: |
+        Correlation ID for the request (`backend/src/middleware/requestContext.js`
+        and `backend/src/lib/requestId.js`). Echoes the inbound `X-Request-Id`
+        header when supplied, otherwise a server-generated UUID v4.
+      schema:
+        type: string
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+  schemas:
+    StellarAddress:
+      type: string
+      pattern: '^G[A-Z2-7]{55}$'
+      minLength: 56
+      maxLength: 56
+      description: 56-character Stellar Ed25519 public key (StrKey G-address).
+      example: GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3
+
+    ServiceCategory:
+      type: string
+      description: |
+        Canonical lowercase category identifier enforced by the `LodestarRegistry`
+        Soroban contract (`VALID_CATEGORIES` in `contract/src/lib.rs` and
+        `SERVICE_CATEGORIES` in `backend/src/routes/registry.js`).
+      enum:
+        - search
+        - weather
+        - finance
+        - ai
+        - data
+        - compute
+      example: weather
+
+    ServiceEntry:
+      type: object
+      description: |
+        On-chain service listing returned by `listServices()` (`backend/src/lib/contract.js:384-421`).
+        Note that `GET /api/stats` returns the raw `listServices()` entry for
+        `latestService` without calling `annotateTtlWarning()`, so `ttl_warning`
+        is not present on `latestService`.
+      required:
+        - id
+        - name
+        - description
+        - endpoint
+        - price_usdc
+        - pay_to
+        - category
+        - provider
+        - reputation
+        - active
+        - registered_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          description: Unique positive integer identifier assigned by the registry contract.
+          example: 4
+        name:
+          type: string
+          minLength: 3
+          maxLength: 64
+          description: Human-readable service name (3-64 characters).
+          example: Stellar Weather Oracle
+        description:
+          type: string
+          minLength: 10
+          maxLength: 256
+          description: Summary of what the service provides (10-256 characters).
+          example: Real-time global weather forecasts for autonomous AI agents.
+        endpoint:
+          type: string
+          format: uri
+          maxLength: 256
+          description: HTTPS x402-protected endpoint URL (at most 256 characters).
+          example: https://lodestar-8na4.onrender.com/demo/weather
+        price_usdc:
+          type: string
+          pattern: '^(?:0|[1-9]\d*)(?:\.\d+)?$'
+          description: Price per request in USDC formatted as a decimal string.
+          example: '0.001'
+        pay_to:
+          type: string
+          description: Stellar address that receives x402 USDC payments for this service.
+          example: GAY42LBQWN7LSFV3F6AFNEET2NVLY2JJ7KAEN4E5SNNT4RIEJLAQKGU3
+        category:
+          $ref: '#/components/schemas/ServiceCategory'
+        provider:
+          $ref: '#/components/schemas/StellarAddress'
+        reputation:
+          type: integer
+          minimum: -10000
+          maximum: 10000
+          description: Net on-chain reputation score clamped to `[-10000, 10000]`.
+          example: 12
+        active:
+          type: boolean
+          description: Whether the service is currently active in the registry (`true` for entries returned by `list_services`).
+          example: true
+        registered_at:
+          type: integer
+          minimum: 0
+          description: Stellar ledger sequence number at which the service was registered.
+          example: 514280
+
+    StatsResponse:
+      type: object
+      description: |
+        Aggregate registry statistics returned by `GET /api/stats`
+        (`backend/src/routes/registry.js:279-301`) and consumed by the frontend
+        `StatsBar` component (`frontend/components/StatsBar.tsx` via
+        `fetchStats()` in `frontend/lib/contract.ts`).
+      required:
+        - totalServices
+        - categories
+        - latestService
+      properties:
+        totalServices:
+          type: integer
+          minimum: 0
+          description: |
+            Total number of services registered on-chain as reported by
+            `getServiceCount()` (`get_service_count` contract call). Defaults to
+            `0` when no services are registered or when `getServiceCount()` falls
+            back on an empty/failed read.
+          example: 4
+        categories:
+          type: array
+          uniqueItems: true
+          description: |
+            Deduplicated list of categories present across all active services
+            returned by paginated `listServices()` calls, preserving first-seen
+            order. Empty when no active services are returned.
+          items:
+            $ref: '#/components/schemas/ServiceCategory'
+          example:
+            - weather
+            - search
+            - data
+        latestService:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ServiceEntry'
+          description: |
+            The active service with the highest `registered_at` ledger sequence
+            number (`s.registered_at > (latest?.registered_at ?? 0)`), or `null`
+            when there are no active services.
+
+    StatsErrorCode:
+      type: string
+      description: |
+        Machine-readable error codes that `GET /api/stats` can emit across the
+        route handler and Express error middleware.
+      enum:
+        - FETCH_ERROR
+        - PAYLOAD_TOO_LARGE
+        - INTERNAL_ERROR
+
+    ErrorResponse:
+      type: object
+      description: Standard error envelope returned by every non-2xx JSON response.
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable error message. Not stable; do not branch on it.
+          example: Failed to fetch stats
+        code:
+          type: string
+          description: Stable machine-readable error code. Branch on this.
+          example: FETCH_ERROR
+        requestId:
+          type: string
+          description: |
+            Request correlation ID attached by `requestContextMiddleware`
+            (`backend/src/middleware/requestContext.js`) on responses with HTTP
+            status `>= 400` and by the top-level 500 error middleware (`backend/src/index.js`).
+          example: 550e8400-e29b-41d4-a716-446655440000
