@@ -1,5 +1,5 @@
 /**
- * In-memory idempotency store for the payment route.
+ * In-memory idempotency store for mutating routes (payment, agent build-tx).
  *
  * Keys expire after TTL_MS (default 24 h). Expired entries are pruned by a
  * background timer so that every lookup stays O(1). A lazy per-key expiry
@@ -11,13 +11,13 @@
  *   'failed'   — request threw; replays the error response
  */
 
-const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const PURGE_INTERVAL_MS = 60_000; // sweep every 60 s
 
 /**
  * @type {Map<string, {
  *   status: 'pending' | 'complete' | 'failed',
- *   result: { newScore?: number, error?: string, code?: string, httpStatus?: number } | null,
+ *   result: { newScore?: number, xdr?: string, error?: string, code?: string, httpStatus?: number } | null,
  *   expiresAt: number
  * }>}
  */
