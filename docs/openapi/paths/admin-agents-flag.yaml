@@ -1,0 +1,410 @@
+# OpenAPI 3.0 path item for POST /api/admin/agents/{address}/flag
+# (defined at router path POST /admin/agents/:address/flag in backend/src/routes/agents.js).
+#
+# Source of truth:
+#   - backend/src/routes/agents.js            (requireAgentsContract + route handler)
+#   - backend/src/middleware/adminAuth.js     (401 ADMIN_KEY_MISSING / ADMIN_KEY_INVALID)
+#   - backend/src/lib/contract.js             (flagAgentOnChain -> simulateAndSubmit)
+#   - backend/src/lib/ContractError.js        (handleContractError status mapping)
+#   - backend/src/lib/contractErrors.js       (ContractError subclasses & error code tables)
+#   - backend/src/index.js                    (413 PAYLOAD_TOO_LARGE / 500 INTERNAL_ERROR)
+#
+# If you change the handler's request validation, response shape, status codes,
+# or error codes, update this file in the same change.
+#
+# Referenced from docs/openapi/openapi.yaml under `paths`.
+
+post:
+  operationId: flagAgentByAdmin
+  summary: Flag an agent on-chain (admin-only)
+  description: |
+    Flags a registered agent on the `LodestarAgents` Soroban contract by invoking
+    `flag_agent(agent_address, reason, caller)` signed with the backend server keypair.
+
+    ### Execution Order & Guards
+    1. **Body parsing (`express.json`)** — Rejects payloads larger than `JSON_BODY_LIMIT`
+       (default `100kb`) with `413 PAYLOAD_TOO_LARGE`.
+    2. **`requireAgentsContract`** — Verifies `config.contract.agentsId` (`AGENTS_CONTRACT_ID`)
+       is set; otherwise returns `503 AGENTS_NOT_CONFIGURED`.
+    3. **`adminAuth`** — Verifies the `X-Admin-Key` header is present (`401 ADMIN_KEY_MISSING`)
+       and equals the hex-encoded HMAC-SHA256 digest of the raw request body
+       (`req.rawBody ?? JSON.stringify(req.body)`) keyed with `SERVER_STELLAR_SECRET`
+       (`401 ADMIN_KEY_INVALID`).
+    4. **Request body validation** — Requires `req.body.reason` to be a non-empty string
+       (`!reason || typeof reason !== 'string'`); otherwise returns `400 INVALID_BODY`.
+    5. **On-chain invocation (`flagAgentOnChain`)** — Decodes `{address}` with
+       `Address.fromString(address)` (note: `validateAgentAddressParam` is mounted on
+       `/agents/:address`, not `/admin/agents/:address`, so a malformed Stellar address
+       throws inside `Address.fromString` and is caught as `500 FLAG_ERROR`) and submits
+       `flag_agent(address, reason, serverPublicKey)` via `simulateAndSubmit`.
+    6. **Error mapping (`handleContractError`)** — Maps `ContractError` instances to their
+       configured HTTP status (`TRANSACTION_TIMEOUT` -> `504`, `RPC_THROTTLED` -> `503`,
+       or `err.status ?? 400`) and any other thrown error to `500 FLAG_ERROR`.
+  tags:
+    - Agents
+    - Admin
+  security:
+    - AdminHmacAuth: []
+  parameters:
+    - $ref: '../openapi.yaml#/components/parameters/AdminAgentAddress'
+    - $ref: '../openapi.yaml#/components/parameters/AdminKeyHeader'
+  requestBody:
+    required: true
+    description: JSON object containing the non-empty `reason` for flagging the agent.
+    content:
+      application/json:
+        schema:
+          $ref: '../openapi.yaml#/components/schemas/FlagAgentRequest'
+        examples:
+          violationOfTerms:
+            summary: Flag agent for terms violation
+            value:
+              reason: violation of terms
+          paymentAbuse:
+            summary: Flag agent for repeated payment settlement failures
+            value:
+              reason: Repeated failed x402 payment settlement attempts
+  responses:
+    '200':
+      description: |
+        The `flag_agent` Soroban transaction was simulated, submitted, and confirmed
+        on-chain. The agent's record now has `flagged = true`, `flag_reason = reason`,
+        and its credit score penalized by `FLAG_PENALTY`.
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '../openapi.yaml#/components/schemas/FlagAgentResponse'
+          examples:
+            flagged:
+              summary: Agent flagged on-chain
+              value:
+                success: true
+    '400':
+      description: |
+        The request body failed validation or the Soroban transaction failed with a
+        400-status `ContractError`. Possible `code` values:
+
+        | code                        | cause                                                                                                                      |
+        |-----------------------------|----------------------------------------------------------------------------------------------------------------------------|
+        | `INVALID_BODY`              | `reason` is missing, empty (`""`), or not a string (`error: "\`reason\` is required"`).                                    |
+        | `SIMULATION_FAILED`         | `simulateTransaction` returned a simulation error without a mapped contract code.                                          |
+        | `TRANSACTION_FAILED`        | `sendTransaction` returned `ERROR` or `getTransaction` settled with `FAILED` without a mapped status override.             |
+        | `RETURN_VALUE_PARSE_FAILED` | The transaction succeeded on-chain, but its `returnValue` XDR could not be decoded by `scValToNative`.                     |
+        | `INVALID_AMOUNT`            | Contract error `#1` (`AgentError::InvalidAmount`, HTTP 400 in `AGENT_ERROR_CODES`).                                        |
+        | `ARITHMETIC_OVERFLOW`       | Contract error `#2` (`AgentError::ArithmeticOverflow`, HTTP 400 in `AGENT_ERROR_CODES`).                                   |
+        | `INVALID_NAME` / `INVALID_DESCRIPTION` / `DUPLICATE_SERVICE` / `SERVICE_NOT_FOUND` / `AGENTS_CONTRACT_NOT_CONFIGURED` / `CALLER_NOT_REGISTERED_AGENT` / `REPUTATION_VOTE_COOLDOWN` / `PROVIDER_MISMATCH` / `CATEGORY_INDEX_NOT_FOUND` / `INVALID_ENDPOINT` / `INVALID_CATEGORY` / `REGISTRY_NOT_INITIALIZED` / `REGISTRY_PAUSED` / `REGISTRY_COUNT_OVERFLOW` / `REGISTRY_STORAGE_CORRUPTED` | Emitted when `_simulateAndSubmit` resolves a numeric `Error(Contract, #N)` against `REGISTRY_ERROR_SCOPE` (which leaves `err.status` undefined, defaulting to `400`). For example, `AgentError::AgentNotFound` (`#6`), `AgentError::Unauthorized` (`#7`), and `AgentError::NotInitialized` (`#9`) map to `#6` `CALLER_NOT_REGISTERED_AGENT`, `#7` `REPUTATION_VOTE_COOLDOWN`, and `#9` `CATEGORY_INDEX_NOT_FOUND` under `REGISTRY_ERROR_SCOPE`. |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - INVALID_BODY
+                      - SIMULATION_FAILED
+                      - TRANSACTION_FAILED
+                      - RETURN_VALUE_PARSE_FAILED
+                      - INVALID_AMOUNT
+                      - ARITHMETIC_OVERFLOW
+                      - INVALID_NAME
+                      - INVALID_DESCRIPTION
+                      - DUPLICATE_SERVICE
+                      - SERVICE_NOT_FOUND
+                      - AGENTS_CONTRACT_NOT_CONFIGURED
+                      - CALLER_NOT_REGISTERED_AGENT
+                      - REPUTATION_VOTE_COOLDOWN
+                      - PROVIDER_MISMATCH
+                      - CATEGORY_INDEX_NOT_FOUND
+                      - INVALID_ENDPOINT
+                      - INVALID_CATEGORY
+                      - REGISTRY_NOT_INITIALIZED
+                      - REGISTRY_PAUSED
+                      - REGISTRY_COUNT_OVERFLOW
+                      - REGISTRY_STORAGE_CORRUPTED
+          examples:
+            missingReason:
+              summary: Missing or empty reason in request body
+              value:
+                error: '`reason` is required'
+                code: INVALID_BODY
+            simulationFailed:
+              summary: Unmapped Soroban simulation error
+              value:
+                error: 'Simulation failed: HostError: Error(Storage, MissingValue)'
+                code: SIMULATION_FAILED
+            transactionFailed:
+              summary: On-chain transaction execution failed
+              value:
+                error: 'Transaction failed on-chain: 2f76a396e640686b9fc426231415fd7786131f7bcc8482250ff6f65c4c28d042'
+                code: TRANSACTION_FAILED
+    '401':
+      description: |
+        Admin HMAC authentication failed in `adminAuth` (`backend/src/middleware/adminAuth.js`).
+        Possible `code` values:
+
+        | code                | cause                                                                                              |
+        |---------------------|----------------------------------------------------------------------------------------------------|
+        | `ADMIN_KEY_MISSING` | `X-Admin-Key` request header is absent or not a string (`error: "Missing X-Admin-Key header"`).    |
+        | `ADMIN_KEY_INVALID` | `X-Admin-Key` does not match the hex HMAC-SHA256 digest of the raw body (`error: "Invalid admin key"`). |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - ADMIN_KEY_MISSING
+                      - ADMIN_KEY_INVALID
+          examples:
+            missingAdminKey:
+              summary: Missing X-Admin-Key header
+              value:
+                error: Missing X-Admin-Key header
+                code: ADMIN_KEY_MISSING
+            invalidAdminKey:
+              summary: Invalid X-Admin-Key HMAC digest
+              value:
+                error: Invalid admin key
+                code: ADMIN_KEY_INVALID
+    '403':
+      description: |
+        `flagAgentOnChain` rejected with a `ContractError` carrying `status: 403`
+        (`AgentError::Unauthorized`, `#7` in `AGENT_ERROR_CODES`), indicating the
+        caller address does not match the contract's stored `DataKey::Admin`.
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - UNAUTHORIZED
+          examples:
+            unauthorized:
+              summary: Backend signer is not the contract admin
+              value:
+                error: Unauthorized
+                code: UNAUTHORIZED
+    '404':
+      description: |
+        `flagAgentOnChain` rejected with a `ContractError` carrying `status: 404`
+        from `AGENT_ERROR_CODES`:
+
+        | code               | cause                                                                                     |
+        |--------------------|-------------------------------------------------------------------------------------------|
+        | `AGENT_NOT_FOUND`  | Contract error `#6` (`AgentError::AgentNotFound`): no `DataKey::Agent(address)` exists.   |
+        | `POLICY_NOT_FOUND` | Contract error `#8` (`AgentError::PolicyNotFound`): no `DataKey::Policy(address)` exists. |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - AGENT_NOT_FOUND
+                      - POLICY_NOT_FOUND
+          examples:
+            agentNotFound:
+              summary: Agent is not registered on-chain
+              value:
+                error: Agent not found
+                code: AGENT_NOT_FOUND
+    '409':
+      description: |
+        `flagAgentOnChain` rejected with a `ContractError` carrying `status: 409`
+        (`AgentError::AgentAlreadyRegistered`, `#3` in `AGENT_ERROR_CODES`).
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - AGENT_ALREADY_REGISTERED
+          examples:
+            agentAlreadyRegistered:
+              summary: Contract conflict error
+              value:
+                error: Agent already registered
+                code: AGENT_ALREADY_REGISTERED
+    '413':
+      description: |
+        Request body exceeds `config.jsonBodyLimit` (`JSON_BODY_LIMIT`, default `100kb`).
+        Handled by the Express error middleware in `backend/src/index.js`.
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - PAYLOAD_TOO_LARGE
+          examples:
+            payloadTooLarge:
+              summary: Request body exceeds JSON_BODY_LIMIT
+              value:
+                error: Request body too large. Maximum size is 100kb.
+                code: PAYLOAD_TOO_LARGE
+    '500':
+      description: |
+        Internal server, RPC, address decoding, or contract initialization failure.
+        Possible `code` values:
+
+        | code                  | cause                                                                                                                   |
+        |-----------------------|-------------------------------------------------------------------------------------------------------------------------|
+        | `FLAG_ERROR`          | Any non-`ContractError` thrown in the handler (e.g. malformed `{address}` rejected by `Address.fromString`, RPC network error, or invalid `SERVER_STELLAR_SECRET`). |
+        | `NOT_INITIALIZED`     | Contract error `#9` (`AgentError::NotInitialized`, HTTP 500 in `AGENT_ERROR_CODES`): `DataKey::Admin` not set on-chain. |
+        | `ALREADY_INITIALIZED` | Contract error `#10` (`AgentError::AlreadyInitialized`, HTTP 500 in `AGENT_ERROR_CODES`).                               |
+        | `INTERNAL_ERROR`      | Unhandled Express middleware error before reaching the route handler (e.g. malformed JSON body). Includes `requestId`.  |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - FLAG_ERROR
+                      - NOT_INITIALIZED
+                      - ALREADY_INITIALIZED
+                      - INTERNAL_ERROR
+          examples:
+            flagError:
+              summary: Unhandled error during flagging (default handleContractError fallback)
+              value:
+                error: Flagging failed
+                code: FLAG_ERROR
+            notInitialized:
+              summary: Contract admin not initialized
+              value:
+                error: Contract not initialized
+                code: NOT_INITIALIZED
+            internalError:
+              summary: Global Express error handler fallback
+              value:
+                error: Internal server error
+                code: INTERNAL_ERROR
+                requestId: 550e8400-e29b-41d4-a716-446655440000
+    '503':
+      description: |
+        The agents contract is not configured, the Stellar RPC endpoint is throttled,
+        or a 503-mapped `ContractError` was raised. Possible `code` values:
+
+        | code                    | cause                                                                                                 |
+        |-------------------------|-------------------------------------------------------------------------------------------------------|
+        | `AGENTS_NOT_CONFIGURED` | `config.contract.agentsId` (`AGENTS_CONTRACT_ID`) is unset (`requireAgentsContract` middleware).      |
+        | `RPC_THROTTLED`         | `RpcThrottledError` thrown when Stellar RPC retries are exhausted (`handleContractError` maps to 503). |
+        | `AGENT_LIST_FULL`       | Contract error `#4` (`AgentError::AgentListFull`, HTTP 503 in `AGENT_ERROR_CODES`).                   |
+        | `AGENT_COUNT_OVERFLOW`  | Contract error `#5` (`AgentError::AgentCountOverflow`, HTTP 503 in `AGENT_ERROR_CODES`).              |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - AGENTS_NOT_CONFIGURED
+                      - RPC_THROTTLED
+                      - AGENT_LIST_FULL
+                      - AGENT_COUNT_OVERFLOW
+          examples:
+            agentsNotConfigured:
+              summary: AGENTS_CONTRACT_ID is not set
+              value:
+                error: Agents contract not yet deployed. Set AGENTS_CONTRACT_ID in .env
+                code: AGENTS_NOT_CONFIGURED
+            rpcThrottled:
+              summary: Stellar RPC endpoint throttled
+              value:
+                error: RPC request throttled after 3 attempts
+                code: RPC_THROTTLED
+    '504':
+      description: |
+        Transaction confirmation polling or an upstream call timed out. Possible `code` values:
+
+        | code                  | cause                                                                                                           |
+        |-----------------------|-----------------------------------------------------------------------------------------------------------------|
+        | `TRANSACTION_TIMEOUT` | `TransactionTimeoutError`: `getTransaction` did not confirm the submitted tx within 20 polls (30 s).            |
+        | `UPSTREAM_TIMEOUT`    | `UpstreamTimeoutError`: upstream call exceeded its configured timeout (`status: 504` in `ROUTE_ERROR_CODES`).   |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - TRANSACTION_TIMEOUT
+                      - UPSTREAM_TIMEOUT
+          examples:
+            transactionTimeout:
+              summary: Soroban transaction confirmation timed out
+              value:
+                error: 'Transaction not confirmed after polling: 6f13b95c5470a58f96b3fc43be3a8f0834bab8249e3fc91bc0c4b6627f5b5a59'
+                code: TRANSACTION_TIMEOUT
+  x-codeSamples:
+    - lang: Shell
+      label: curl
+      source: |
+        BODY='{"reason":"violation of terms"}'
+        ADMIN_KEY=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SERVER_STELLAR_SECRET" -hex | awk '{print $NF}')
+        curl -s -X POST \
+          'http://localhost:3001/api/admin/agents/GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3/flag' \
+          -H 'Content-Type: application/json' \
+          -H "X-Admin-Key: $ADMIN_KEY" \
+          -d "$BODY"
