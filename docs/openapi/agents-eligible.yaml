@@ -1,0 +1,155 @@
+openapi: 3.0.3
+info:
+  title: Lodestar Agent API - Eligibility Endpoint
+  version: 1.0.0
+  description: OpenAPI fragment specifying the GET /agents/{address}/eligible route in Lodestar backend.
+paths:
+  /agents/{address}/eligible:
+    get:
+      summary: Check agent service eligibility
+      description: |
+        Evaluates whether a registered agent meets a minimum credit score requirement.
+        Returns the agent's current score (or null if unregistered) alongside an eligibility boolean flag.
+      operationId: getAgentEligibility
+      tags:
+        - Agents
+      parameters:
+        - name: address
+          in: path
+          required: true
+          description: Stellar public address of the agent (56-character G... address).
+          schema:
+            type: string
+            pattern: '^G[A-Z2-7]{55}$'
+            example: 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3'
+        - name: min_score
+          in: query
+          required: false
+          description: Minimum score required for eligibility. Defaults to 0 if omitted or unparseable.
+          schema:
+            type: integer
+            default: 0
+            example: 500
+      responses:
+        '200':
+          description: Eligibility check result returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentEligibilityResponse'
+              examples:
+                eligibleAgent:
+                  summary: Eligible agent with score meeting threshold
+                  value:
+                    eligible: true
+                    score: 750
+                    required: 500
+                unregisteredOrNoScoreAgent:
+                  summary: Agent not yet registered or has no on-chain score
+                  value:
+                    eligible: false
+                    score: null
+                    required: 500
+                ineligibleAgent:
+                  summary: Registered agent with score below threshold
+                  value:
+                    eligible: false
+                    score: 350
+                    required: 500
+        '400':
+          description: Invalid request parameters, such as an invalid Stellar address format.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidAddress:
+                  summary: Invalid Stellar address format
+                  value:
+                    error: 'Invalid Stellar address format'
+                    code: 'INVALID_ADDRESS'
+        '500':
+          description: Internal server error or unhandled contract read failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                fetchError:
+                  summary: Failed to read from contract
+                  value:
+                    error: 'Failed to check eligibility'
+                    code: 'FETCH_ERROR'
+        '503':
+          description: Service unavailable due to unconfigured contract or RPC throttling.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                contractNotConfigured:
+                  summary: Agents contract ID is not configured
+                  value:
+                    error: 'Agents contract not yet deployed. Set AGENTS_CONTRACT_ID in .env'
+                    code: 'AGENTS_NOT_CONFIGURED'
+                rpcThrottled:
+                  summary: RPC endpoint throttling or exhausted retry budget
+                  value:
+                    error: 'RPC request failed after max attempts'
+                    code: 'RPC_THROTTLED'
+        '504':
+          description: Gateway timeout during on-chain RPC simulation/call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                transactionTimeout:
+                  summary: RPC invocation timed out
+                  value:
+                    error: 'Transaction simulation or submission timed out'
+                    code: 'TRANSACTION_TIMEOUT'
+components:
+  schemas:
+    AgentEligibilityResponse:
+      type: object
+      required:
+        - eligible
+        - score
+        - required
+      properties:
+        eligible:
+          type: boolean
+          description: Whether the agent is eligible (active, unflagged, and score >= required threshold).
+          example: true
+        score:
+          type: integer
+          nullable: true
+          description: |
+            The agent's current on-chain credit score (0-1000).
+            `null` when the agent is not registered or has no on-chain score yet.
+          example: 750
+        required:
+          type: integer
+          description: The minimum score threshold evaluated against.
+          example: 500
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+          example: 'Invalid Stellar address format'
+        code:
+          type: string
+          description: Machine-readable error code.
+          enum:
+            - INVALID_ADDRESS
+            - AGENTS_NOT_CONFIGURED
+            - FETCH_ERROR
+            - RPC_THROTTLED
+            - TRANSACTION_TIMEOUT
+          example: 'INVALID_ADDRESS'
