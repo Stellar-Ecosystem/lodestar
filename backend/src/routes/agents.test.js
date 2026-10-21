@@ -18,6 +18,7 @@ const mockDeactivateAgentOnChain = vi.fn();
 const mockUpdatePolicyOnChain = vi.fn();
 const mockBuildUnsignedAgentTx = vi.fn();
 const mockSubmitSignedAgentTx = vi.fn();
+const mockRequestLog = { info: vi.fn(), error: vi.fn() };
 
 vi.mock('../lib/contract.js', () => ({
   flagAgentOnChain: (...args) => mockFlagAgentOnChain(...args),
@@ -43,8 +44,13 @@ vi.mock('../lib/logger.js', () => ({
 
 vi.mock('../config.js', () => ({
   default: {
-    contract: { agentsId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4' },
-    server: { address: 'GADMINXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', secret: 'test_admin_secret_key' },
+    contract: {
+      agentsId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+    },
+    server: {
+      address: 'GADMINXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+      secret: 'test_admin_secret_key',
+    },
     rateLimit: { payment: { max: 10, windowMs: 60000 } },
   },
 }));
@@ -64,6 +70,11 @@ function adminKey(body) {
 
 function makeApp() {
   const app = express();
+  app.use((req, _res, next) => {
+    req.id = 'route-check-request';
+    req.log = mockRequestLog;
+    next();
+  });
   app.use(express.json());
   return app;
 }
@@ -87,10 +98,7 @@ describe('POST /admin/agents/:address/flag', () => {
     mockFlagAgentOnChain.mockResolvedValueOnce(true);
 
     const body = { reason: 'violation of terms' };
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/flag`)
-      .set('X-Admin-Key', adminKey(body))
-      .send(body);
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/flag`).set('X-Admin-Key', adminKey(body)).send(body);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true });
@@ -99,10 +107,7 @@ describe('POST /admin/agents/:address/flag', () => {
 
   it('returns 400 when reason is missing', async () => {
     const body = {};
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/flag`)
-      .set('X-Admin-Key', adminKey(body))
-      .send(body);
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/flag`).set('X-Admin-Key', adminKey(body)).send(body);
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
@@ -110,25 +115,18 @@ describe('POST /admin/agents/:address/flag', () => {
   });
 
   it('returns 401 when X-Admin-Key is missing', async () => {
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/flag`)
-      .send({ reason: 'test' });
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/flag`).send({ reason: 'test' });
 
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('ADMIN_KEY_MISSING');
     expect(mockFlagAgentOnChain).not.toHaveBeenCalled();
   });
 
- 
-
   it('handles contract errors gracefully', async () => {
     mockFlagAgentOnChain.mockRejectedValueOnce(new Error('Chain error'));
 
     const body = { reason: 'test' };
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/flag`)
-      .set('X-Admin-Key', adminKey(body))
-      .send(body);
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/flag`).set('X-Admin-Key', adminKey(body)).send(body);
 
     expect(res.status).toBe(500);
   });
@@ -156,9 +154,7 @@ describe('POST /admin/agents/:address/deactivate', () => {
   });
 
   it('returns 401 when X-Admin-Key is missing', async () => {
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/deactivate`)
-      .send({});
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/deactivate`).send({});
 
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('ADMIN_KEY_MISSING');
@@ -166,10 +162,7 @@ describe('POST /admin/agents/:address/deactivate', () => {
   });
 
   it('returns 401 when X-Admin-Key is invalid', async () => {
-    const res = await request(app)
-      .post(`/admin/agents/${ADDRESS}/deactivate`)
-      .set('X-Admin-Key', 'invalid')
-      .send({});
+    const res = await request(app).post(`/admin/agents/${ADDRESS}/deactivate`).set('X-Admin-Key', 'invalid').send({});
 
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('ADMIN_KEY_INVALID');
@@ -190,7 +183,11 @@ describe('POST /admin/agents/:address/deactivate', () => {
 });
 
 const mockGetActivityFeed = vi.fn(() => []);
-const mockParseActivityPagination = vi.fn(() => ({ limit: 20, offset: 0, errors: [] }));
+const mockParseActivityPagination = vi.fn(() => ({
+  limit: 20,
+  offset: 0,
+  errors: [],
+}));
 
 vi.mock('../lib/activityFeed.js', async () => {
   const actual = await vi.importActual('../lib/activityFeed.js');
@@ -224,14 +221,15 @@ describe('GET /api/agents/:address/score', () => {
     const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
 
     expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: 'Agent not found', code: 'AGENT_NOT_FOUND' });
+    expect(res.body).toEqual({
+      error: 'Agent not found',
+      code: 'AGENT_NOT_FOUND',
+    });
   });
 
   it('surfaces a mapped contract error as its own HTTP status', async () => {
     const { ContractError } = await import('../lib/ContractError.js');
-    mockGetAgentScore.mockRejectedValueOnce(
-      new ContractError('Agent not found', 'AGENT_NOT_FOUND', 404)
-    );
+    mockGetAgentScore.mockRejectedValueOnce(new ContractError('Agent not found', 'AGENT_NOT_FOUND', 404));
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
 
@@ -265,6 +263,76 @@ describe('GET /api/agents/:address/eligible', () => {
   });
 });
 
+describe('GET /agents/:address/check', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('logs one structured line with request and contract-check details', async () => {
+    mockCheckSpendingAllowed.mockResolvedValueOnce(true);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/check?amount=1000`);
+
+    expect(res.status).toBe(200);
+    expect(mockRequestLog.info).toHaveBeenCalledTimes(1);
+    expect(mockRequestLog.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'route-check-request',
+        agentAddress: VALID_ADDR,
+        amountStroops: '1000',
+        contractDurationMs: expect.any(Number),
+        outcome: 'allowed',
+      }),
+      'GET /agents/:address/check completed',
+    );
+    expect(mockRequestLog.error).not.toHaveBeenCalled();
+  });
+
+  it('logs one error outcome without logging the error or request body', async () => {
+    mockCheckSpendingAllowed.mockRejectedValueOnce(new Error('RPC down'));
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/check?amount=1000`);
+
+    expect(res.status).toBe(500);
+    expect(mockRequestLog.error).toHaveBeenCalledTimes(1);
+    expect(mockRequestLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'route-check-request',
+        agentAddress: VALID_ADDR,
+        contractDurationMs: expect.any(Number),
+        outcome: 'error',
+      }),
+      'GET /agents/:address/check failed',
+    );
+    expect(mockRequestLog.error.mock.calls[0][0]).not.toHaveProperty('err');
+    expect(mockRequestLog.error.mock.calls[0][0]).not.toHaveProperty('body');
+    expect(mockRequestLog.info).not.toHaveBeenCalled();
+  });
+
+  it('logs helper-reported contract errors once as an error outcome', async () => {
+    mockCheckSpendingAllowed.mockImplementationOnce(async (_address, _amount, { onError }) => {
+      onError(new Error('RPC down'));
+      return false;
+    });
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/check?amount=1000`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.allowed).toBe(false);
+    expect(mockRequestLog.error).toHaveBeenCalledTimes(1);
+    expect(mockRequestLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'route-check-request',
+        agentAddress: VALID_ADDR,
+        amountStroops: '1000',
+        contractDurationMs: expect.any(Number),
+        outcome: 'error',
+      }),
+      'GET /agents/:address/check failed',
+    );
+    expect(mockRequestLog.info).not.toHaveBeenCalled();
+  });
+});
 
 describe('GET /api/agents/:address/payment-history', () => {
   beforeEach(() => {
@@ -273,9 +341,27 @@ describe('GET /api/agents/:address/payment-history', () => {
 
   it('returns paginated payment history for a given agent', async () => {
     mockGetActivityFeed.mockReturnValue([
-      { agent: VALID_ADDR, txHash: 'abc123', service: 'Weather', amount: '0.001', timestamp: '2026-01-01T00:00:00Z' },
-      { agent: VALID_ADDR, txHash: 'def456', service: 'Search', amount: '0.002', timestamp: '2026-01-01T01:00:00Z' },
-      { agent: 'GOTHER', txHash: 'other1', service: 'Weather', amount: '0.001', timestamp: '2026-01-01T02:00:00Z' },
+      {
+        agent: VALID_ADDR,
+        txHash: 'abc123',
+        service: 'Weather',
+        amount: '0.001',
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+      {
+        agent: VALID_ADDR,
+        txHash: 'def456',
+        service: 'Search',
+        amount: '0.002',
+        timestamp: '2026-01-01T01:00:00Z',
+      },
+      {
+        agent: 'GOTHER',
+        txHash: 'other1',
+        service: 'Weather',
+        amount: '0.001',
+        timestamp: '2026-01-01T02:00:00Z',
+      },
     ]);
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history`);
@@ -297,7 +383,12 @@ describe('GET /api/agents/:address/payment-history', () => {
   it('excludes entries without txHash', async () => {
     mockGetActivityFeed.mockReturnValue([
       { agent: VALID_ADDR, txHash: '', service: 'Weather', amount: '0.001' },
-      { agent: VALID_ADDR, txHash: 'real123', service: 'Weather', amount: '0.001' },
+      {
+        agent: VALID_ADDR,
+        txHash: 'real123',
+        service: 'Weather',
+        amount: '0.001',
+      },
       { agent: VALID_ADDR, service: 'NoHash', amount: '0.001' },
     ]);
 
@@ -314,7 +405,11 @@ describe('GET /api/agents/:address/payment-history', () => {
       amount: '0.001',
     }));
     mockGetActivityFeed.mockReturnValue(entries);
-    mockParseActivityPagination.mockReturnValueOnce({ limit: 10, offset: 5, errors: [] });
+    mockParseActivityPagination.mockReturnValueOnce({
+      limit: 10,
+      offset: 5,
+      errors: [],
+    });
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=10&offset=5`);
     expect(res.status).toBe(200);
@@ -324,7 +419,11 @@ describe('GET /api/agents/:address/payment-history', () => {
   });
 
   it('returns 400 when pagination params are invalid', async () => {
-    mockParseActivityPagination.mockReturnValueOnce({ limit: 0, offset: 0, errors: ['`limit` must be a positive integer'] });
+    mockParseActivityPagination.mockReturnValueOnce({
+      limit: 0,
+      offset: 0,
+      errors: ['`limit` must be a positive integer'],
+    });
     mockGetActivityFeed.mockReturnValueOnce([]);
 
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);
