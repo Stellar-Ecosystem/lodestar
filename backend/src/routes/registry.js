@@ -260,6 +260,40 @@ router.get("/services/:id/history", async (req, res) => {
     const history = getReputationHistory(id);
     res.json({ history });
   } catch (err) {
+    if (err instanceof ContractError) {
+      if (err.code === "SERVICE_NOT_FOUND" || err.status === 404) {
+        return res.status(404).json({ error: err.message, code: err.code });
+      }
+      if (
+        err.code === "PROVIDER_MISMATCH" ||
+        err.code === "UNAUTHORIZED" ||
+        err.code === "CALLER_NOT_REGISTERED_AGENT" ||
+        err.status === 403
+      ) {
+        return res.status(403).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "RPC_THROTTLED" || err.status === 503) {
+        return res.status(503).json({ error: err.message, code: err.code });
+      }
+      if (
+        err.code === "TRANSACTION_TIMEOUT" ||
+        err.code === "UPSTREAM_TIMEOUT" ||
+        err.status === 504
+      ) {
+        return res.status(504).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "SERVICE_READ_FAILED" || err.status === 502) {
+        return res.status(502).json({ error: err.message, code: err.code });
+      }
+
+      logger.error(
+        { err, variant: err.code, id },
+        "GET /api/services/:id/history failed: unmapped contract error"
+      );
+      return res
+        .status(500)
+        .json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+    }
     logger.error({ err, id }, "GET /api/services/:id/history failed");
     res.status(500).json({ error: "Failed to fetch reputation history", code: "FETCH_ERROR" });
   }

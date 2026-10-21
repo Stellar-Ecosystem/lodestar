@@ -42,8 +42,10 @@ vi.mock('../lib/reputationHistory.js', () => ({
   getReputationHistory: (...args) => mockGetReputationHistory(...args),
 }));
 
+const mockLogger = { error: vi.fn(), info: vi.fn(), warn: vi.fn() };
 vi.mock('../lib/logger.js', () => ({
-  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+  default: mockLogger,
+  logger: mockLogger,
 }));
 
 // Rate limiting is verified in isolation in middleware/rateLimiter.test.js;
@@ -979,6 +981,82 @@ describe('GET /api/services/:id/history', () => {
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Failed to fetch reputation history', code: 'FETCH_ERROR' });
+  });
+
+  it('maps SERVICE_NOT_FOUND contract error to 404', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetService.mockRejectedValueOnce(new ContractError('Service not found', 'SERVICE_NOT_FOUND', 404));
+
+    const res = await request(app).get('/api/services/1/history');
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Service not found', code: 'SERVICE_NOT_FOUND' });
+  });
+
+  it('maps UNAUTHORIZED contract error to 403', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetService.mockRejectedValueOnce(new ContractError('Unauthorized', 'UNAUTHORIZED', 403));
+
+    const res = await request(app).get('/api/services/1/history');
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
+  });
+
+  it('maps PROVIDER_MISMATCH contract error to 403', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetService.mockRejectedValueOnce(new ContractError('Provider mismatch', 'PROVIDER_MISMATCH'));
+
+    const res = await request(app).get('/api/services/1/history');
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'Provider mismatch', code: 'PROVIDER_MISMATCH' });
+  });
+
+  it('maps RPC_THROTTLED contract error to 503', async () => {
+    const { RpcThrottledError } = await import('../lib/contractErrors.js');
+    mockGetService.mockRejectedValueOnce(new RpcThrottledError('RPC throttled', 3));
+
+    const res = await request(app).get('/api/services/1/history');
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: 'RPC throttled', code: 'RPC_THROTTLED' });
+  });
+
+  it('maps TRANSACTION_TIMEOUT contract error to 504', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetService.mockRejectedValueOnce(new ContractError('Transaction timeout', 'TRANSACTION_TIMEOUT'));
+
+    const res = await request(app).get('/api/services/1/history');
+
+    expect(res.status).toBe(504);
+    expect(res.body).toEqual({ error: 'Transaction timeout', code: 'TRANSACTION_TIMEOUT' });
+  });
+
+  it('maps SERVICE_READ_FAILED contract error to 502', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetService.mockRejectedValueOnce(new ContractError('Service read failed', 'SERVICE_READ_FAILED'));
+
+    const res = await request(app).get('/api/services/1/history');
+
+    expect(res.status).toBe(502);
+    expect(res.body).toEqual({ error: 'Service read failed', code: 'SERVICE_READ_FAILED' });
+  });
+
+  it('logs unmapped contract error at error level with variant name and returns 500', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockLogger.error.mockClear();
+    const unmappedErr = new ContractError('Unknown contract failure', 'UNEXPECTED_VARIANT');
+    mockGetService.mockRejectedValueOnce(unmappedErr);
+
+    const res = await request(app).get('/api/services/1/history');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: unmappedErr, variant: 'UNEXPECTED_VARIANT', id: 1 }),
+      expect.stringContaining('unmapped contract error')
+    );
   });
 });
 
