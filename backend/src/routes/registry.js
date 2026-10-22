@@ -111,10 +111,16 @@ router.get("/services", async (req, res) => {
     const offset = Math.max(0, parseInt(offsetStr, 10) || 0);
     const limit = Math.min(50, Math.max(1, parseInt(limitStr, 10) || PAGE_SIZE));
 
-    const [servicesResult, ledgerResult] = await Promise.allSettled([
-      listServices({ category: category || undefined, offset, limit }),
-      getCurrentLedgerSequence(),
-    ]);
+    const [servicesResult, ledgerResult] = await withUpstreamTimeout(
+      Promise.allSettled([
+        listServices({ category: category || undefined, offset, limit }),
+        getCurrentLedgerSequence(),
+      ]),
+      {
+        timeoutMs: config.upstreamTimeout.servicesMs,
+        label: "services",
+      },
+    );
 
     if (servicesResult.status === "rejected") throw servicesResult.reason;
 
@@ -147,7 +153,7 @@ router.get("/services", async (req, res) => {
       if (err.code === "SIMULATION_FAILED") {
         return res.status(400).json({ error: err.message, code: err.code });
       }
-      if (err.code === "TRANSACTION_TIMEOUT") {
+      if (err.code === "TRANSACTION_TIMEOUT" || err.code === "UPSTREAM_TIMEOUT") {
         return res.status(504).json({ error: err.message, code: err.code });
       }
     }

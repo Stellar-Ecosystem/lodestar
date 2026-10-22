@@ -78,6 +78,69 @@ function makeService(overrides = {}) {
   };
 }
 
+describe('GET /api/services — upstream deadline', () => {
+  beforeEach(() => {
+    mockListServices.mockReset();
+    mockGetCurrentLedgerSequence.mockReset();
+  });
+
+  it('answers 504 UPSTREAM_TIMEOUT when listServices outlives the deadline', async () => {
+    const { default: config } = await import('../config.js');
+
+    let signalStarted;
+    const started = new Promise((resolve) => {
+      signalStarted = resolve;
+    });
+    mockListServices.mockImplementation(() => {
+      signalStarted();
+      return new Promise(() => {});
+    });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const pending = request(app).get('/api/services').then((res) => res);
+
+      await started;
+      await vi.advanceTimersByTimeAsync(config.upstreamTimeout.servicesMs + 1);
+
+      const res = await pending;
+      expect(res.status).toBe(504);
+      expect(res.body.code).toBe('UPSTREAM_TIMEOUT');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout as a metric with label services', async () => {
+    const { default: config } = await import('../config.js');
+    const { getRouteMetrics, resetRouteMetrics } = await import('../lib/routeMetrics.js');
+    resetRouteMetrics();
+
+    let signalStarted;
+    const started = new Promise((resolve) => {
+      signalStarted = resolve;
+    });
+    mockListServices.mockImplementation(() => {
+      signalStarted();
+      return new Promise(() => {});
+    });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const pending = request(app).get('/api/services').then((res) => res);
+
+      await started;
+      await vi.advanceTimersByTimeAsync(config.upstreamTimeout.servicesMs + 1);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(getRouteMetrics().upstreamTimeouts.total).toBe(1);
+    expect(getRouteMetrics().upstreamTimeouts.byLabel.services).toBe(1);
+  });
+});
+
 describe('GET /api/services', () => {
   it('should return all services when no q param', async () => {
     const services = [makeService({ id: 1 }), makeService({ id: 2, name: 'Other' })];
