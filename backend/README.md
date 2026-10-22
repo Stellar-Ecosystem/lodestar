@@ -19,7 +19,11 @@ Submit a client-signed transaction to the registry. The caller signs the transac
 locally and posts the serialized signed payload; the backend broadcasts it and returns
 the resulting transaction hash.
 
-#### Request body
+## Request deadlines, caching and throttling
+
+`POST /api/reputation/:id` gives up on a slow RPC node after `REPUTATION_TIMEOUT_MS` (default 20000) and answers `504 UPSTREAM_TIMEOUT`; the expiry is counted and exposed at `GET /api/metrics`. `GET /api/health` is cached for `HEALTH_CACHE_TTL_SECONDS` (default 5, Redis-backed when `REDIS_URL` is set), serves `Cache-Control` + `ETag`, answers a matching `If-None-Match` with `304`, and replays a repeat carrying the same `Idempotency-Key` for `HEALTH_IDEMPOTENCY_TTL_SECONDS` (default 300). `GET /demo/weather` is throttled by the shared limiter at `WEATHER_RATE_LIMIT_MAX` per `WEATHER_RATE_LIMIT_WINDOW_MS` (default 30 per 60 s per IP) and answers `429` with `Retry-After`.
+
+## Demo Scripts
 
 `Content-Type: application/json`
 

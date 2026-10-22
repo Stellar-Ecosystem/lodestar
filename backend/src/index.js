@@ -40,6 +40,8 @@ if (process.argv.includes("--print-config")) {
         jsonBodyLimit: config.jsonBodyLimit,
         trustProxy: config.trustProxy,
         rateLimit: config.rateLimit,
+        upstreamTimeout: config.upstreamTimeout,
+        health: config.health,
         demoRun: config.demoRun,
       },
       null,
