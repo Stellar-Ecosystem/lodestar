@@ -29,6 +29,23 @@ function parsePositiveInt(value, fallback, name) {
 }
 
 /**
+ * Parse a non-negative-integer env var (0 allowed), falling back to a
+ * safe default when the value is missing, non-numeric, or negative. Used for
+ * cache TTLs where 0 is a meaningful "disabled" value.
+ */
+function parseNonNegativeInt(value, fallback, name) {
+  if (value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.warn(
+      `[config] Invalid ${name}="${value}" (expected a non-negative integer). Using fallback ${fallback}.`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
+/**
  * Parse the Express `trust proxy` setting from env. Accepts:
  *   - "true"/"false"        → boolean
  *   - a non-negative integer → number of trusted proxy hops
@@ -172,6 +189,18 @@ const config = Object.freeze({
     ),
   },
 
+  // Short-TTL Redis-backed cache for the admin agent deactivate route
+  // (POST /admin/agents/:address/deactivate). Responses carry Cache-Control
+  // and ETag, and conditional requests are answered with 304. Set
+  // ADMIN_DEACTIVATE_CACHE_TTL_SECONDS to 0 to disable caching.
+  adminDeactivateCache: {
+    ttlSeconds: parseNonNegativeInt(
+      process.env.ADMIN_DEACTIVATE_CACHE_TTL_SECONDS,
+      30,
+      'ADMIN_DEACTIVATE_CACHE_TTL_SECONDS',
+    ),
+  },
+
   demoRun: {
     cacheTtlSeconds: parsePositiveInt(process.env.DEMO_RUN_CACHE_TTL_SECONDS, 15, 'DEMO_RUN_CACHE_TTL_SECONDS'),
     pollMaxWaitMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_WAIT_MS, 8_000, 'DEMO_RUN_POLL_MAX_WAIT_MS'),
@@ -214,7 +243,7 @@ const _consoleLog = {
  * Omit it (or call from a script) and it falls back to console output.
  */
 export function validateConfig(log = _consoleLog) {
-  const missing = required.filter((key) => !process.env[key]);
+  const missing = required.filter((k) => !process.env[k]);
   const errors = missing.map((k) => `${k} is not set`);
 
   if (
