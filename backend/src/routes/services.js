@@ -7,6 +7,7 @@ import logger from '../lib/logger.js';
 import { recordPaymentOnChain, getAgent } from '../lib/contract.js';
 import { usdcToStroops } from '../lib/stroops.js';
 import { isValidStellarAddress } from '../middleware/addressValidator.js';
+import { createRateLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -88,6 +89,21 @@ const paymentConfig = {
     description: 'Web search results via Lodestar',
   },
 };
+
+// Ceiling for GET /demo/weather (#674). Every accepted call costs a
+// facilitator verification plus an upstream Open-Meteo fetch, so the route is
+// an amplifier: a cheap request to Lodestar becomes an expensive one against
+// those upstreams. 30 requests per minute per IP is far above interactive
+// use, yet still bounds the amplification — the number is chosen for this
+// route's cost profile, not inherited from the generic write limit.
+const weatherRateLimiter = createRateLimiter(
+  config.rateLimit.weather.max,
+  config.rateLimit.weather.windowMs,
+);
+
+// Mounted before the x402 middleware so a flood is rejected before it costs a
+// facilitator verification or an upstream weather fetch.
+router.use('/weather', weatherRateLimiter);
 
 router.use(
   paymentMiddlewareFromConfig(paymentConfig, facilitator, [
