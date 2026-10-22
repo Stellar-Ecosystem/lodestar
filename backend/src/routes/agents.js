@@ -38,14 +38,11 @@ import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js
 
 const router = Router();
 
-// Shared page-size constants — keep in sync with frontend/lib/pagination.ts.
-// CONTRACT_PAGE_SIZE_CAP must match the .min(20u32) clamp in contract/src/lib.rs
-// so the backend never promises a slice larger than the contract can return.
+
 const PAGE_SIZE = 12;
 const CONTRACT_PAGE_SIZE_CAP = 20;
 
-// In-memory cache: avoids fetching all agents from Soroban on every paginated request.
-// TTL matches the frontend's 30s auto-refresh interval.
+
 let agentsCache = null;
 let agentsCacheTime = 0;
 const AGENTS_CACHE_TTL = 30_000;
