@@ -1,18 +1,23 @@
-# Lodestar Backend
+# Backend
 
-## Rate Limiting
+Node.js/Express API for the registry service.
 
-The backend uses `express-rate-limit` for anti-spam protection on public write endpoints (e.g., `POST /reputation/:id`, `POST /agents/register`).
+## Getting started
 
-### Deployment Considerations
+```bash
+npm install
+npm run dev
+```
 
-By default, rate limiting uses an in-memory store, which means limits are applied per process. When running multiple replicas behind a load balancer, the effective limit is multiplied by the number of replicas.
+## API specification
 
-To enforce limits in aggregate across multiple instances, configure a shared Redis store by setting the `REDIS_URL` environment variable.
+The OpenAPI fragments below are assembled into the specification for the whole API.
 
-## Demo-run caching
+### `POST /registry/submit-signed-tx`
 
-`POST /api/demo-run` caches the on-chain service record in Redis for 15 seconds by default (`DEMO_RUN_CACHE_TTL_SECONDS` overrides the positive-integer TTL). Set `REDIS_URL` to enable the shared cache; if Redis is unavailable, the route falls back to the contract lookup. The paid demo request and activity recording are never cached or skipped. Successful responses include a private `Cache-Control` header and a weak `ETag`; a matching `If-None-Match` receives `304` only after the demo run has executed. Cache lookups and hit rates are emitted as structured `demo_service_cache` logs and are available at `GET /api/demo-run/metrics`.
+Submit a client-signed transaction to the registry. The caller signs the transaction
+locally and posts the serialized signed payload; the backend broadcasts it and returns
+the resulting transaction hash.
 
 ## Request deadlines, caching and throttling
 
@@ -20,4 +25,57 @@ To enforce limits in aggregate across multiple instances, configure a shared Red
 
 ## Demo Scripts
 
-`scripts/demo/boost-scores.js` is a demo-only utility that inflates agent scores for UI demonstrations. It refuses to run unless `DEMO_MODE=true` and rejects any contract ID listed in `contract/deployments.json`. Do not use this script against a real deployment.
+`Content-Type: application/json`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `signedTx` | string | yes | Hex-encoded, serialized signed transaction. |
+| `chainId` | integer | no | Chain the transaction targets. Defaults to the server-configured chain. |
+
+```json
+{
+  "signedTx": "0x02f8...",
+  "chainId": 1
+}
+```
+
+#### Responses
+
+| Status | Description | Body schema |
+| --- | --- | --- |
+| `200` | Transaction accepted and broadcast. | `{ "txHash": string }` |
+| `400` | Malformed request or invalid signed transaction. | `{ "error": string, "code": string }` |
+| `401` | Missing or invalid authentication. | `{ "error": string, "code": string }` |
+| `409` | Transaction conflicts with an already-known transaction (e.g. nonce reuse). | `{ "error": string, "code": string }` |
+| `422` | Signed transaction failed validation (bad signature, unsupported chain). | `{ "error": string, "code": string }` |
+| `500` | Unexpected server or upstream node error. | `{ "error": string, "code": string }` |
+
+Success example (`200`):
+
+```json
+{
+  "txHash": "0xabc123..."
+}
+```
+
+Error example (`400`):
+
+```json
+{
+  "error": "signedTx is required",
+  "code": "INVALID_REQUEST"
+}
+```
+
+#### Error codes
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `INVALID_REQUEST` | `400` | Request body missing or malformed. |
+| `INVALID_SIGNED_TX` | `400` | `signedTx` could not be decoded. |
+| `UNAUTHORIZED` | `401` | Authentication required or failed. |
+| `TX_CONFLICT` | `409` | Transaction conflicts with a known transaction. |
+| `INVALID_SIGNATURE` | `422` | Signature verification failed. |
+| `UNSUPPORTED_CHAIN` | `422` | `chainId` is not supported. |
+| `UPSTREAM_ERROR` | `500` | Node/broadcast provider returned an error. |
+| `INTERNAL_ERROR` | `500` | Unexpected server error. |
