@@ -44,6 +44,7 @@ if (process.argv.includes("--print-config")) {
         upstreamTimeout: config.upstreamTimeout,
         health: config.health,
         demoRun: config.demoRun,
+        registryCache: config.registryCache,
       },
       null,
       2,

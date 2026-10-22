@@ -29,6 +29,8 @@ async function loadConfig(overrides = {}) {
     'DEMO_RUN_POLL_INITIAL_DELAY_MS',
     'DEMO_RUN_POLL_MAX_DELAY_MS',
     'DEMO_RUN_CACHE_TTL_SECONDS',
+    'REGISTRY_CACHE_TTL_SECONDS',
+    'REGISTRY_PROVIDER_CACHE_TTL_SECONDS',
   ]) {
     if (!(key in overrides)) delete process.env[key];
   }
@@ -134,6 +136,32 @@ describe('config demo-run cache TTL validation', () => {
     expect((await loadConfig({ DEMO_RUN_CACHE_TTL_SECONDS: '30' })).demoRun.cacheTtlSeconds).toBe(30);
     expect((await loadConfig({ DEMO_RUN_CACHE_TTL_SECONDS: '0' })).demoRun.cacheTtlSeconds).toBe(15);
     expect(console.warn).toHaveBeenCalled();
+  });
+});
+
+describe('config registry cache TTL validation', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+  });
+
+  it('defaults the registry cache TTL to 30 seconds', async () => {
+    expect((await loadConfig()).registryCache.ttlSeconds).toBe(30);
+  });
+
+  it('accepts a positive integer override and falls back for invalid values', async () => {
+    expect((await loadConfig({ REGISTRY_CACHE_TTL_SECONDS: '60' })).registryCache.ttlSeconds).toBe(60);
+    expect((await loadConfig({ REGISTRY_CACHE_TTL_SECONDS: '0' })).registryCache.ttlSeconds).toBe(30);
+    expect((await loadConfig({ REGISTRY_CACHE_TTL_SECONDS: 'abc' })).registryCache.ttlSeconds).toBe(30);
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it('accepts REGISTRY_PROVIDER_CACHE_TTL_SECONDS as an override', async () => {
+    expect((await loadConfig({ REGISTRY_PROVIDER_CACHE_TTL_SECONDS: '45' })).registryCache.ttlSeconds).toBe(45);
   });
 });
 
