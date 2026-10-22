@@ -2,9 +2,6 @@
 node_modules/
 
 # Environment
-.env
-.env.local
-.env.production
 
 # Build outputs
 target/
@@ -22,7 +19,6 @@ logs/
 Thumbs.db
 
 # IDE
-.vscode/
 .idea/
 
 # Soroban
@@ -34,3 +30,4 @@ data/
 
 # Agent run summary artefact (#843) — path configurable via AGENT_RUN_SUMMARY_PATH
 agent-run-summary.json
+config.bat
