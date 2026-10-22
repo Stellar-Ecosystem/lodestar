@@ -22,6 +22,8 @@ import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
 import { withUpstreamTimeout } from "../lib/upstreamTimeout.js";
 import { getCachedHealth, getHealthCacheStatus } from "../lib/healthCache.js";
+import { getCachedServiceDetail, getServiceCacheStatus } from "../lib/serviceCache.js";
+
 import {
   getEntry,
   isValidIdempotencyKey,
@@ -157,38 +159,58 @@ router.get("/services", async (req, res) => {
 });
 
 router.get("/services/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id) || id < 1) {
+    return res
+      .status(400)
+      .json({ error: "Invalid service ID", code: "INVALID_ID" });
+  }
+
   try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-      return res
-        .status(400)
-        .json({ error: "Invalid service ID", code: "INVALID_ID" });
-    }
+    const { body, etag, notFound } = await getCachedServiceDetail(id, async () => {
+      const [serviceResult, ledgerResult] = await Promise.allSettled([
+        getService(id),
+        getCurrentLedgerSequence(),
+      ]);
 
-    const [serviceResult, ledgerResult] = await Promise.allSettled([
-      getService(id),
-      getCurrentLedgerSequence(),
-    ]);
+      if (serviceResult.status === "rejected") throw serviceResult.reason;
 
-    if (serviceResult.status === "rejected") throw serviceResult.reason;
+      const service = serviceResult.value;
+      if (!service) return null;
 
-    const service = serviceResult.value;
-    if (!service) {
+      if (ledgerResult.status === "rejected") {
+        logger.warn(
+          { err: ledgerResult.reason },
+          "Failed to fetch current ledger for TTL annotation on GET /api/services/:id",
+        );
+      }
+
+      const currentLedger =
+        ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
+      return annotateTtlWarning(service, currentLedger);
+    });
+
+    if (notFound) {
       return res
         .status(404)
         .json({ error: "Service not found", code: "NOT_FOUND" });
     }
 
-    if (ledgerResult.status === "rejected") {
-      logger.warn(
-        { err: ledgerResult.reason },
-        "Failed to fetch current ledger for TTL annotation on GET /api/services/:id",
-      );
+    const ttl = config.serviceCache?.ttlSeconds ?? 15;
+    res.set("Cache-Control", `public, max-age=${ttl}, must-revalidate`);
+    res.set("ETag", etag);
+
+    const ifNoneMatch = req.get("If-None-Match");
+    if (
+      ifNoneMatch
+        ?.split(",")
+        .map((value) => value.trim())
+        .includes(etag)
+    ) {
+      return res.status(304).end();
     }
 
-    const currentLedger =
-      ledgerResult.status === "fulfilled" ? ledgerResult.value : null;
-    res.json(annotateTtlWarning(service, currentLedger));
+    return res.type("application/json").send(body);
   } catch (err) {
     logger.error({ err }, "GET /api/services/:id failed");
     res.status(500).json({ error: "Failed to fetch service", code: "FETCH_ERROR" });
@@ -672,6 +694,7 @@ router.get("/metrics", (req, res) => {
   res.json({
     ...metrics,
     healthCache: { ...metrics.healthCache, ...getHealthCacheStatus() },
+    serviceCache: { ...metrics.serviceCache, ...getServiceCacheStatus() },
   });
 });
 
