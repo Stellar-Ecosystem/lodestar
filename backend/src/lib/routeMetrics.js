@@ -19,6 +19,13 @@ const state = {
     errors: 0,
     loads: 0,
   },
+  serviceCache: {
+    lookups: 0,
+    hits: 0,
+    misses: 0,
+    errors: 0,
+    loads: 0,
+  },
 };
 
 /**
@@ -56,6 +63,30 @@ export function recordHealthCacheLoad() {
   state.healthCache.loads += 1;
 }
 
+/**
+ * Record a service detail cache lookup.
+ *
+ * @param {'hit'|'miss'} status
+ */
+export function recordServiceCacheLookup(status) {
+  state.serviceCache.lookups += 1;
+  if (status === 'hit') {
+    state.serviceCache.hits += 1;
+  } else {
+    state.serviceCache.misses += 1;
+  }
+}
+
+/** Record a failure to read from or write to the service cache backend. */
+export function recordServiceCacheError() {
+  state.serviceCache.errors += 1;
+}
+
+/** Record an actual service detail build (a cache miss that loaded from upstream). */
+export function recordServiceCacheLoad() {
+  state.serviceCache.loads += 1;
+}
+
 export function getUpstreamTimeoutMetrics() {
   return {
     total: state.upstreamTimeouts,
@@ -75,10 +106,23 @@ export function getHealthCacheMetrics() {
   };
 }
 
+export function getServiceCacheMetrics() {
+  const { lookups, hits, misses, errors, loads } = state.serviceCache;
+  return {
+    lookups,
+    hits,
+    misses,
+    errors,
+    loads,
+    hitRate: lookups === 0 ? 0 : Number((hits / lookups).toFixed(4)),
+  };
+}
+
 export function getRouteMetrics() {
   return {
     upstreamTimeouts: getUpstreamTimeoutMetrics(),
     healthCache: getHealthCacheMetrics(),
+    serviceCache: getServiceCacheMetrics(),
   };
 }
 
@@ -87,4 +131,5 @@ export function resetRouteMetrics() {
   state.upstreamTimeouts = 0;
   state.upstreamTimeoutsByLabel = Object.create(null);
   state.healthCache = { lookups: 0, hits: 0, misses: 0, errors: 0, loads: 0 };
+  state.serviceCache = { lookups: 0, hits: 0, misses: 0, errors: 0, loads: 0 };
 }

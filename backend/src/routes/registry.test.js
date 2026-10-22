@@ -1058,9 +1058,10 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
   const REGISTERED_AT = 1000;
   const WARN_ONSET = REGISTERED_AT + SERVICE_MAX_TTL - SERVICE_TTL_WARNING_LEDGERS;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     mockGetCurrentLedgerSequence.mockReset();
-
+    const { _resetServiceMemoryCache } = await import('../lib/serviceCache.js');
+    _resetServiceMemoryCache();
   });
 
   it('includes ttl_warning:false for a fresh entry', async () => {
@@ -1259,5 +1260,76 @@ describe('GET /api/health — caching and idempotency (#672, #673)', () => {
     expect(res.body.healthCache.hits).toBe(1);
     expect(res.body.healthCache.hitRate).toBe(0.5);
     expect(res.body.upstreamTimeouts.total).toBe(0);
+  });
+});
+
+describe('GET /api/services/:id — caching, headers and conditional requests', () => {
+  beforeEach(async () => {
+    const { _resetServiceMemoryCache } = await import('../lib/serviceCache.js');
+    const { resetRouteMetrics } = await import('../lib/routeMetrics.js');
+    _resetServiceMemoryCache();
+    resetRouteMetrics();
+    mockGetService.mockReset();
+    mockGetCurrentLedgerSequence.mockReset();
+  });
+
+  it('serves Cache-Control and ETag headers on successful response', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ id: 1, name: 'Cache Test' }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(100);
+
+    const res = await request(app).get('/api/services/1');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('public, max-age=15, must-revalidate');
+    expect(res.headers.etag).toMatch(/^W\/".+"$/);
+    expect(res.body.name).toBe('Cache Test');
+  });
+
+  it('serves repeat requests from cache without calling getService again', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ id: 1, name: 'Cache Test' }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(100);
+
+    const first = await request(app).get('/api/services/1');
+    const second = await request(app).get('/api/services/1');
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+    expect(second.body).toEqual(first.body);
+    expect(second.headers.etag).toBe(first.headers.etag);
+  });
+
+  it('answers conditional requests (If-None-Match) with 304 Not Modified', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ id: 1, name: 'Cache Test' }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(100);
+
+    const first = await request(app).get('/api/services/1');
+    expect(first.status).toBe(200);
+
+    const second = await request(app)
+      .get('/api/services/1')
+      .set('If-None-Match', first.headers.etag);
+
+    expect(second.status).toBe(304);
+    expect(second.text).toBe('');
+    expect(mockGetService).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes serviceCache metrics at GET /api/metrics', async () => {
+    mockGetService.mockResolvedValueOnce(makeService({ id: 1, name: 'Cache Test' }));
+    mockGetCurrentLedgerSequence.mockResolvedValue(100);
+
+    await request(app).get('/api/services/1');
+    await request(app).get('/api/services/1');
+
+    const res = await request(app).get('/api/metrics');
+
+    expect(res.status).toBe(200);
+    expect(res.body.serviceCache).toBeDefined();
+    expect(res.body.serviceCache.lookups).toBe(2);
+    expect(res.body.serviceCache.hits).toBe(1);
+    expect(res.body.serviceCache.misses).toBe(1);
+    expect(res.body.serviceCache.hitRate).toBe(0.5);
+    expect(res.body.serviceCache.ttlSeconds).toBe(15);
   });
 });
