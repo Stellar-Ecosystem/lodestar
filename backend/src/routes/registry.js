@@ -1,4 +1,5 @@
 import { Router } from "express";
+import config from "../config.js";
 import {
   listServices,
   listServicesByProvider,
@@ -19,6 +20,16 @@ import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
+import { withUpstreamTimeout } from "../lib/upstreamTimeout.js";
+import { getCachedHealth, getHealthCacheStatus } from "../lib/healthCache.js";
+import {
+  getEntry,
+  isValidIdempotencyKey,
+  markComplete,
+  markFailed,
+  markPending,
+} from "../lib/idempotency.js";
+import { getRouteMetrics } from "../lib/routeMetrics.js";
 
 const router = Router();
 
@@ -472,6 +483,9 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
 // `agent` must be a registered agent the backend is allowed to sign for. The
 // on-chain contract enforces require_auth + agent registration + a per-agent
 // cooldown, so reputation can no longer be moved by anonymous callers.
+// The vote is bounded by a deadline (REPUTATION_TIMEOUT_MS): on expiry the
+// route answers 504 UPSTREAM_TIMEOUT so a hanging RPC node cannot hold
+// connections open until the pool is exhausted (#671).
 router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   let id;
   try {
@@ -504,7 +518,13 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
       });
     }
 
-    const newReputation = await updateReputation(id, positive, agent);
+    const newReputation = await withUpstreamTimeout(
+      updateReputation(id, positive, agent),
+      {
+        timeoutMs: config.upstreamTimeout.reputationMs,
+        label: "reputation",
+      },
+    );
     res.json({ success: true, newReputation });
   } catch (err) {
     // SIMULATION_FAILED covers on-chain rejections such as the vote cooldown
@@ -513,7 +533,7 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
       if (err.code === "AGENT_NOT_ALLOWED") {
         return res.status(403).json({ error: err.message, code: err.code });
       }
-      if (err.code === "TRANSACTION_TIMEOUT") {
+      if (err.code === "TRANSACTION_TIMEOUT" || err.code === "UPSTREAM_TIMEOUT") {
         return res.status(504).json({ error: err.message, code: err.code });
       }
       return res.status(400).json({ error: err.message, code: err.code });
@@ -524,20 +544,134 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
 });
 
 /**
- * Liveness (#841).
- *
- * Deliberately dependency-free: it answers "is this process running?" and
- * nothing else. Touching RPC here would make an orchestrator restart a healthy
- * instance whose only problem is a slow upstream — use /api/ready for that.
+ * The liveness payload. Built at most once per cache TTL — see
+ * {@link getCachedHealth}.
  */
-router.get("/health", async (req, res) => {
-  const { default: config } = await import("../config.js");
-  res.json({
+function buildHealthPayload() {
+  return {
     status: "ok",
     network: config.stellar.network,
     contractId: config.contract.id,
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Send a health payload with its caching headers, honouring conditional
+ * requests with 304.
+ *
+ * The ETag is computed over the exact bytes that are sent, so a client that
+ * already holds the body can revalidate without downloading it again.
+ */
+function sendHealthResponse(req, res, body, etag, replayed) {
+  res.set(
+    "Cache-Control",
+    `public, max-age=${config.health.cacheTtlSeconds}, must-revalidate`,
+  );
+  res.set("ETag", etag);
+  if (replayed) {
+    res.set("Idempotent-Replay", "true");
+  }
+
+  const ifNoneMatch = req.get("If-None-Match");
+  if (
+    ifNoneMatch
+      ?.split(",")
+      .map((value) => value.trim())
+      .includes(etag)
+  ) {
+    return res.status(304).end();
+  }
+
+  return res.type("application/json").send(body);
+}
+
+/**
+ * Liveness (#841).
+ *
+ * Deliberately dependency-free: it answers "is this process running?" and
+ * nothing else. Touching RPC here would make an orchestrator restart a healthy
+ * instance whose only problem is a slow upstream — use /api/ready for that.
+ *
+ * The payload changes far more slowly than it is read, so it is cached for a
+ * few seconds (HEALTH_CACHE_TTL_SECONDS) and served with `Cache-Control` and
+ * `ETag`: a conditional request is answered with 304 instead of a refetch
+ * (#672). An `Idempotency-Key` makes a client retry replay the stored
+ * response instead of re-executing the check (#673).
+ */
+router.get("/health", async (req, res) => {
+  const idempotencyKey = req.get("idempotency-key") ?? req.get("x-idempotency-key");
+
+  if (idempotencyKey !== undefined && !isValidIdempotencyKey(idempotencyKey)) {
+    return res.status(400).json({
+      error:
+        "Idempotency-Key must be 1-255 printable ASCII characters (no spaces)",
+      code: "IDEMPOTENCY_KEY_INVALID",
+    });
+  }
+
+  // Scope the key to this route so keys cannot collide with another route's.
+  const scopedKey = idempotencyKey ? `health:${idempotencyKey}` : null;
+
+  if (scopedKey) {
+    const existing = getEntry(scopedKey);
+    if (existing?.status === "pending") {
+      return res.status(409).json({
+        error: "A health check with this idempotency key is already in flight",
+        code: "IDEMPOTENCY_CONFLICT",
+      });
+    }
+    if (existing?.status === "complete") {
+      logger.info({ idempotencyKey }, "Replaying idempotent health response");
+      return sendHealthResponse(
+        req,
+        res,
+        existing.result.body,
+        existing.result.etag,
+        true,
+      );
+    }
+    if (existing?.status === "failed") {
+      logger.info({ idempotencyKey }, "Replaying idempotent health error");
+      return res.status(existing.result.httpStatus).json({
+        error: existing.result.error,
+        code: existing.result.code,
+      });
+    }
+    markPending(scopedKey, config.health.idempotencyTtlSeconds * 1000);
+  }
+
+  try {
+    const { body, etag } = await getCachedHealth(buildHealthPayload);
+    if (scopedKey) {
+      markComplete(scopedKey, { httpStatus: 200, body, etag });
+    }
+    return sendHealthResponse(req, res, body, etag, false);
+  } catch (err) {
+    if (scopedKey) {
+      markFailed(scopedKey, {
+        httpStatus: 500,
+        error: "Health check failed",
+        code: "HEALTH_ERROR",
+      });
+    }
+    logger.error({ err }, "GET /api/health failed");
+    res.status(500).json({ error: "Health check failed", code: "HEALTH_ERROR" });
+  }
+});
+
+/**
+ * Route counters: upstream timeouts (#671) and the health cache hit rate
+ * (#672). Cheap to read, and the only way to tell "slow upstream" apart from
+ * "cold cache" without reading logs.
+ */
+router.get("/metrics", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const metrics = getRouteMetrics();
+  res.json({
+    ...metrics,
+    healthCache: { ...metrics.healthCache, ...getHealthCacheStatus() },
   });
 });
 
