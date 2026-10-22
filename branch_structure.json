@@ -1,0 +1,18 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "fix/issue-629-backend-apply-explicit-rate-limiting-to-post",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "fix/issue-629-backend-apply-explicit-rate-limiting-to-post": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "fix/issue-629-backend-apply-explicit-rate-limiting-to-post",
+    "origin"
+  ]
+}

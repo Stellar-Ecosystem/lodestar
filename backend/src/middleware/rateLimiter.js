@@ -40,9 +40,10 @@ export function createRateLimiter(
         { ip: req.ip, path: req.originalUrl, max, windowMs },
         'Rate limit exceeded',
       );
-      // Retry-After tells the client when it may come back — the standard
-      // signal for "slow down", which a JSON body alone does not express.
-      res.set('Retry-After', String(Math.ceil(windowMs / 1000)));
+      // RFC 7231: Retry-After is in seconds. express-rate-limit's standard
+      // headers do not include Retry-After, so set it explicitly so clients
+      // (and proxies) can back off correctly.
+      res.set('Retry-After', Math.ceil(windowMs / 1000));
       res.status(429).json({
         error: 'Too many requests. Please slow down and try again later.',
         code: 'RATE_LIMITED',
@@ -57,6 +58,21 @@ export function createRateLimiter(
  * Kept as a named export because write routes are the ones that cost money.
  */
 export const writeRateLimiter = createRateLimiter;
+
+/**
+ * Limiter for POST /agents/register.
+ *
+ * Ceiling rationale: every accepted call reaches the RPC provider (Lodestar
+ * forwards to it), so an unthrottled route is an amplification vector — a
+ * cheap HTTP request becomes an expensive RPC call and the provider throttles
+ * Lodestar. Registration is a rare, one-per-agent action, so a tight ceiling
+ * is appropriate: 10 requests per 10 minutes per IP. This is deliberately
+ * stricter than the generic write limiter and is NOT a default — do not
+ * "fix" it to match config.rateLimit without re-checking the RPC cost.
+ */
+export function agentRegisterRateLimiter() {
+  return writeRateLimiter(10, 10 * 60 * 1000);
+}
 
 /**
  * The shared Redis client, or undefined when REDIS_URL is unset.
