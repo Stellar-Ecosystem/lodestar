@@ -26,7 +26,7 @@ import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
-import { handleContractError } from '../lib/ContractError.js';
+import { ContractError, handleContractError } from '../lib/ContractError.js';
 import {
   isValidIdempotencyKey,
   getEntry,
@@ -309,20 +309,20 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
     res.status(201).json({ success: true, agentCount: count, agentAddress });
   } catch (err) {
     logger.error({ err }, 'POST /api/agents/register failed');
-    // Soroban returns contract errors as `Error(<u32>)` in simulation failures.
-    // Keep the HTTP contract stable while preserving the typed on-chain cause.
-    const contractError = String(err.message || '').match(/(?:Error|contract error)\s*\(?([0-9]+)\)?/i);
-    const registerErrorCodes = {
-      3: { status: 409, error: 'Agent already registered', code: 'ALREADY_EXISTS' },
-      4: { status: 503, error: 'Agent registry is full', code: 'AGENT_LIST_FULL' },
-      5: { status: 503, error: 'Agent registry count overflow', code: 'AGENT_COUNT_OVERFLOW' },
-    };
-    const mapped = contractError && registerErrorCodes[Number(contractError[1])];
-    if (mapped) {
-      return res.status(mapped.status).json({ error: mapped.error, code: mapped.code, agentAddress });
-    }
-    if (err.message?.includes('already registered')) {
-      return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+    if (err instanceof ContractError) {
+      // Map agent-contract typed codes to their intended HTTP statuses.
+      // AGENT_ALREADY_REGISTERED (3), AGENT_LIST_FULL (4), AGENT_COUNT_OVERFLOW (5)
+      // are already decoded by contractErrorFromHostError inside simulateRead;
+      // anything else falls through to handleContractError.
+      if (err.code === 'AGENT_ALREADY_REGISTERED') {
+        return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
+      }
+      if (err.code === 'AGENT_LIST_FULL') {
+        return res.status(503).json({ error: err.message, code: err.code, agentAddress });
+      }
+      if (err.code === 'AGENT_COUNT_OVERFLOW') {
+        return res.status(503).json({ error: err.message, code: err.code, agentAddress });
+      }
     }
     return handleContractError(err, res, 'Registration failed', 'REGISTER_ERROR');
   }
