@@ -194,6 +194,11 @@ const config = Object.freeze({
     baseDelayMs: parsePositiveInt(process.env.RPC_RETRY_BASE_DELAY_MS, 200, 'RPC_RETRY_BASE_DELAY_MS'),
     maxDelayMs: parsePositiveInt(process.env.RPC_RETRY_MAX_DELAY_MS, 5_000, 'RPC_RETRY_MAX_DELAY_MS'),
   },
+
+  // Upper bound (ms) on a single upstream Soroban RPC call. A slow or hanging
+  // RPC node must not hold a request open indefinitely; on expiry the route
+  // aborts the call and returns 504 RPC_TIMEOUT. Default 10 s.
+  rpcTimeoutMs: parsePositiveInt(process.env.RPC_TIMEOUT_MS, 10_000, 'RPC_TIMEOUT_MS'),
 });
 
 export default config;
@@ -218,44 +223,6 @@ export function validateConfig(log = _consoleLog) {
   const errors = missing.map((k) => `${k} is not set`);
 
   if (
-    process.env.PAYMENT_ADDRESS &&
-    !/^G[A-Z2-7]{55}$/.test(process.env.PAYMENT_ADDRESS)
-  ) {
-    errors.push(
-      `Invalid PAYMENT_ADDRESS="${process.env.PAYMENT_ADDRESS}" — must be a valid G... Stellar address`,
-    );
-  }
+    process.env.PAYMENT_ADDRE
 
-  // A forgotten CORS_ORIGIN in production silently falls back to
-  // http://localhost:3000, which fails closed for real users but is
-  // confusing to diagnose. Require it to be set explicitly instead.
-  if (config.nodeEnv === 'production' && !config._corsOriginExplicit) {
-    errors.push(
-      'CORS_ORIGIN must be set explicitly when NODE_ENV=production (refusing to fall back to http://localhost:3000)',
-    );
-  }
-
-  // credentials: true is always enabled on the CORS middleware (see index.js),
-  // so an origin of "*" is both spec-invalid and a footgun that would trust
-  // any site with credentialed requests. Reject it in every environment.
-  if (config.corsOrigin.includes('*')) {
-    errors.push(
-      "CORS_ORIGIN cannot include '*' because CORS is mounted with credentials: true — list explicit origin(s) instead",
-    );
-  }
-
-  if (errors.length > 0) {
-    log.fatal(
-      { missingVars: missing, errors },
-      `Server startup failed: missing required environment variables: ${missing.join(', ')}`,
-    );
-    process.exit(1);
-  }
-
-  if (!process.env.AGENTS_CONTRACT_ID) {
-    log.warn(
-      'AGENTS_CONTRACT_ID is not set. Agent credit scoring will return 503 AGENTS_NOT_CONFIGURED. ' +
-        'Set AGENTS_CONTRACT_ID in your environment if credit scoring is required.',
-    );
-  }
-}
+/* … truncated 1512 chars — edit only what you need near the top … */
