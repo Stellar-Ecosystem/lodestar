@@ -9,7 +9,7 @@ export const REGISTRY_ERROR_CODES = Object.freeze({
   6: { code: 'CALLER_NOT_REGISTERED_AGENT', message: 'Caller is not a registered agent' },
   7: { code: 'REPUTATION_VOTE_COOLDOWN', message: 'This agent has voted on this service too recently' },
   8: { code: 'PROVIDER_MISMATCH', message: 'Only the provider that registered this service can deactivate it' },
-  9: { code: 'CATEGORY_INDEX_NOT_FOUND', message: 'Category index not found' },
+  9: { code: 'ATEGORY_INDEX_NOT_FOUND', message: 'Category index not found' },
   10: { code: 'INVALID_ENDPOINT', message: 'Service endpoint must be at most 256 characters' },
   11: { code: 'INVALID_CATEGORY', message: 'Service category must be a supported value of 1-32 characters' },
   12: { code: 'REGISTRY_NOT_INITIALIZED', message: 'Registry contract has not been initialized' },
@@ -47,7 +47,7 @@ export const AGENT_ERROR = Object.freeze({
  */
 export const AGENT_ERROR_CODES = Object.freeze({
   1: { code: 'INVALID_AMOUNT', status: 400, message: 'Payment amount must be greater than zero' },
-  2: { code: 'ARITHMETIC_OVERFLOW', status: 400, message: 'Payment amount exceeds the supported range' },
+  2: { code: 'ARYTHMETIC_OVERFLOW', status: 400, message: 'Payment amount exceeds the supported range' },
   3: { code: 'AGENT_ALREADY_REGISTERED', status: 409, message: 'Agent already registered' },
   4: { code: 'AGENT_LIST_FULL', status: 503, message: 'Agent registry is full' },
   5: { code: 'AGENT_COUNT_OVERFLOW', status: 503, message: 'Agent registry count overflow' },
@@ -186,8 +186,8 @@ export function agentErrorFromHostError(details) {
 
 /**
  * Resolve a Soroban host error against the map for the contract that produced
- * it. Passing the wrong scope silently reports another contract's error, so
- * call sites must state which contract they invoked.
+ * it. Passing the wrong scope silently reports another contract's error, so call
+ * sites must state which contract they invoked.
  */
 export function contractErrorFromHostError(details, scope = REGISTRY_ERROR_SCOPE) {
   const code = extractErrorCode(details, scope.errorCodes, new Set());
@@ -249,11 +249,13 @@ export class RpcThrottledError extends ContractError {
  * to be catalogued so clients can branch on a stable identifier.
  */
 export const ROUTE_ERROR_CODES = Object.freeze({
-  UPSTREAM_TIMEOUT: {
-    code: 'UPSTREAM_TIMEOUT',
-    status: 504,
-    message: 'Upstream call timed out',
-  },
+  INVALID_PARAMS: { code: 'INVALID_PARAMS', status: 400, message: 'Invalid service ID' },
+  INVALID_QUERY: { code: 'INVALID_QUERY', status: 400, message: 'Invalid query parameters' },
+  INVALID_BODY: { code: 'INVALID_BODY', status: 400, message: 'Invalid request body' },
+  INVALID_ID: { code: 'INVALID_ID', status: 400, message: 'Invalid service ID' },
+  INVALID_ADDRESS: { code: 'INVALID_ADDRESS', status: 400, message: 'Invalid Stellar address format' },
+  FETCH_ERROR: { code: 'FETCH_ERROR', status: 500, message: 'Failed to fetch resource' },
+  DEACTIVATE_ERROR: { code: 'DEACTIVATE_ERROR', status: 500, message: 'Failed to deactivate service' },
 });
 
 export class UpstreamTimeoutError extends ContractError {
