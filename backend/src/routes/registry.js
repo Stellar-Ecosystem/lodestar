@@ -16,7 +16,7 @@ import {
 } from "../lib/contract.js";
 import { getCurrentLedgerSequence } from "../lib/stellar.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
-import logger from "../lib/logger.js";
+import logger, { requestContext } from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
@@ -105,6 +105,13 @@ function annotateTtlWarning(service, currentLedger) {
   };
 }
 
+// Returns a request-scoped child logger that always carries the request id.
+// Falls back to the root logger when the AsyncLocalStorage context is missing.
+function requestLogger(req) {
+  const requestId = requestContext.getStore()?.requestId ?? req?.id;
+  return requestId ? logger.child({ requestId }) : logger;
+}
+
 router.get("/services", async (req, res) => {
   try {
     const { category, q, offset: offsetStr, limit: limitStr } = req.query;
@@ -121,7 +128,7 @@ router.get("/services", async (req, res) => {
     if (ledgerResult.status === "rejected") {
       logger.warn(
         { err: ledgerResult.reason },
-        "Failed to fetch current ledger for TTL annotation on GET /api/services",
+        "Failed to fetch current ledger for TT \ annotation on GET /api/services",
       );
     }
 
@@ -277,6 +284,14 @@ router.get("/services/:id/history", async (req, res) => {
 });
 
 router.get("/stats", async (req, res) => {
+  const log = requestLogger(req);
+  const startedAt = process.hrtime.bigint();
+  const contractStartedAt = process.hrtime.bigint();
+  const context = {
+    route: "GET /stats",
+    callerAddress: req.ip,
+  };
+
   try {
     const totalServices = await getServiceCount();
     const totalPages = Math.ceil(totalServices / PAGE_SIZE);
@@ -293,9 +308,40 @@ router.get("/stats", async (req, res) => {
       null,
     );
 
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    const contractDurationMs = Number(process.hrtime.bigint() - contractStartedAt) / 1e6;
+
+    log.info(
+      {
+        ...context,
+        outcome: "success",
+        statusCode: res.statusCode,
+        durationMs,
+        contractDurationMs,
+        totalServices,
+        categoryCount: categories.length,
+        latestServiceId: latestService?.id ?? null,
+      },
+      "GET /api/stats completed",
+    );
+
     res.json({ totalServices, categories, latestService });
   } catch (err) {
-    logger.error({ err }, "GET /api/stats failed");
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    const contractDurationMs = Number(process.hrtime.bigint() - contractStartedAt) / 1e6;
+
+    log.error(
+      {
+        ...context,
+        err,
+        outcome: "error",
+        statusCode: 500,
+        durationMs,
+        contractDurationMs,
+        errorCode: err instanceof ContractError ? err.code : undefined,
+      },
+      "GET /api/stats failed",
+    );
     res.status(500).json({ error: "Failed to fetch stats", code: "FETCH_ERROR" });
   }
 });
@@ -341,7 +387,7 @@ router.get("/registry/by-provider/:address", async (req, res) => {
         return res.status(504).json({ error: err.message, code: err.code });
       }
     }
-    logger.error({ err, address: req.params.address }, "GET /api/registry/by-provider/:address failed");
+    logger.error({ err }, "GET /api/registry/by-provider/:address failed");
     res.status(500).json({ error: "Failed to fetch services", code: "FETCH_ERROR" });
   }
 });

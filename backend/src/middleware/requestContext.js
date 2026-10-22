@@ -20,6 +20,42 @@ export function createRequestLogger(baseLogger = logger) {
       res.setHeader('X-Request-Id', requestId);
       return requestId;
     },
+    // Emit one structured completion line per request with duration and outcome.
+    // Request id is included by pino-http as req.id. Avoid logging secrets or bodies.
+    customLogLevel(req, res, err) {
+      if (err) {
+        return 'error';
+      }
+      if (res.statusCode >= 500) {
+        return 'error';
+      }
+      if (res.statusCode >= 400) {
+        return 'warn';
+      }
+      return 'info';
+    },
+    serializers: {
+      req(req) {
+        return {
+          id: req.id,
+          method: req.method,
+          url: req.url,
+          // Caller address for correlation.
+          remoteAddress: req.ipaddress || req.socket?.remoteAddress,
+        };
+      },
+      res(res) {
+        return {
+          statusCode: res.statusCode,
+        };
+      },
+    },
+    // Attach outcome field to the completion line.
+    customProps(req, res) {
+      return {
+        outcome: res.statusCode >= 400 ? 'failure' : 'success',
+      };
+    },
   });
 }
 

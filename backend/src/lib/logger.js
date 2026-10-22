@@ -27,6 +27,37 @@ export function createLogger(destination) {
   return pino(options, destination);
 }
 
+export function getRequestLogger(req) {
+  const context = requestContext.getStore();
+  const requestId = context?.requestId || req?.id;
+  const bindings = {};
+
+  if (requestId) {
+    bindings.requestId = requestId;
+  }
+
+  const callerAddress = req?.ip ? req.ip : req?.socket?.remoteAddress;
+  if (callerAddress) {
+    bindings.callerAddress = callerAddress;
+  }
+
+  return createLogger().child(bindings);
+}
+
+export function logRequestCompletion(log, { outcome, durationMs, ...rest }) {
+  const payload = {
+    outcome,
+    durationMs,
+    ...rest,
+  };
+
+  if (outcome === 'success') {
+    log.info(payload, 'request completed');
+  } else {
+    log.warn(payload, 'request completed');
+  }
+}
+
 const logger = createLogger();
 
 export default logger;
