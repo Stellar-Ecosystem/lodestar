@@ -2,7 +2,7 @@
   "name": "lodestar-backend",
   "version": "1.0.0",
   "license": "Apache-2.0",
-  "description": "Lodestar service discovery backend — x402 on Stellar",
+  "description": "Lodestar service discovery backend \u2014 x402 on Stellar",
   "type": "module",
   "main": "src/index.js",
   "scripts": {

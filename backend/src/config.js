@@ -7,7 +7,7 @@ const required = [
   'STELLAR_RPC_URL',
   'STELLAR_NETWORK_PASSPHRASE',
   'FACILITATOR_URL',
-  'USDC_CONTRACT_ID',
+  'USDK_CONTRACT_ID',
 ];
 
 
@@ -22,6 +22,23 @@ function parsePositiveInt(value, fallback, name) {
   if (!Number.isInteger(parsed) || parsed <= 0) {
     console.warn(
       `[config] Invalid ${name}="${value}" (expected a positive integer). Using fallback ${fallback}.`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
+/**
+ * Parse a non-negative integer env var (0 allowed), falling back to a
+ * safe default when the value is missing or non-numeric. Logs a warning for a
+ * negative or non-numeric value so a typo can't silently change cache behaviour.
+ */
+function parseNonNegativeInt(value, fallback, name) {
+  if (value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.warn(
+      `[config] Invalid ${name}="${value}" (expected a non-negative integer). Using fallback ${fallback}.`,
     );
     return fallback;
   }
@@ -170,6 +187,14 @@ const config = Object.freeze({
       300,
       'HEALTH_IDEMPOTENCY_TTL_SECONDS',
     ),
+  },
+
+  // Short-TTL cache for the build-tx route (POST /agents/:address/build-tx).
+  // Responses are cached in Redis and served with Cache-Control + ETag, and
+  // conditional requests are answered with 304. Set BUILD_TX_CACHE_TTL_SECONDS
+  // to 0 to disable caching entirely.
+  buildTxCache: {
+    ttlSeconds: parseNonNegativeInt(process.env.BUILD_TX_CACHE_TTL_SECONDS, 10, 'BUILD_TX_CACHE_TTL_SECONDS'),
   },
 
   demoRun: {
