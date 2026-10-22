@@ -29,6 +29,11 @@ Lodestar is currently an early-stage, demo-ready project for the Stellar ecosyst
 - The demo experience is useful for validation, but operational hardening, monitoring, and broader real-world testing are still pending.
 - Some UX and onboarding flows are intentionally lightweight and may evolve as contributors shape the roadmap.
 
+### API hardening
+- `POST /api/reputation/:id` is bounded by a deadline (`REPUTATION_TIMEOUT_MS`, default 20 s) and answers `504 UPSTREAM_TIMEOUT` on expiry, so a hanging RPC node cannot exhaust the connection pool.
+- `GET /api/health` serves `Cache-Control` + `ETag`, honours `If-None-Match` with `304`, caches for `HEALTH_CACHE_TTL_SECONDS` (default 5 s), and replays a repeat carrying the same `Idempotency-Key`.
+- `GET /demo/weather` is throttled at `WEATHER_RATE_LIMIT_MAX` (default 30/min per IP) and answers `429` with `Retry-After`; counters for timeouts and cache hit rate are exposed at `GET /api/metrics`.
+
 ### Roadmap
 The short-term direction is to harden the core experience, improve documentation, and expand the set of supported payment and discovery flows. Follow the GitHub milestones for ongoing priorities: https://github.com/harshita4ever/lodestar/milestones
 
