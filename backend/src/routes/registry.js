@@ -207,7 +207,10 @@ router.get("/services/:id", async (req, res) => {
  * Body: { providerAddress: string }
  * Returns: { xdr, submitToken } — unsigned tx ready for wallet signing
  */
-router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => {
+// Deactivation reads the service and builds/simulates an unsigned transaction.
+// Allow 5 attempts per IP per minute for wallet retries, while bounding this
+// multi-RPC operation independently of the generic write-route defaults.
+router.post("/services/:id/deactivate", writeRateLimiter(5, 60_000), async (req, res) => {
   const parsedId = parsePositiveSafeInteger(req.params.id);
   if (parsedId == null) {
     return res
