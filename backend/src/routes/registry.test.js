@@ -1093,3 +1093,171 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
     expect('ttl_warning' in res.body).toBe(false);
   });
 });
+
+describe('POST /api/reputation/:id — upstream deadline (#671)', () => {
+  const VALID_AGENT = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+
+  beforeEach(() => {
+    mockIsAllowedReputationAgent.mockReset();
+    mockUpdateReputation.mockReset();
+  });
+
+  it('answers 504 UPSTREAM_TIMEOUT when the contract call outlives the deadline', async () => {
+    const { default: config } = await import('../config.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+
+    // A hanging RPC node: the promise never settles.
+    let signalStarted;
+    const started = new Promise((resolve) => {
+      signalStarted = resolve;
+    });
+    mockUpdateReputation.mockImplementation(() => {
+      signalStarted();
+      return new Promise(() => {});
+    });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      // `.then()` dispatches the request — supertest only sends on demand.
+      const pending = request(app)
+        .post('/api/reputation/1')
+        .send({ positive: true, agent: VALID_AGENT })
+        .then((res) => res);
+
+      // Wait until the handler has actually started the upstream call, so the
+      // deadline is registered before the clock is advanced.
+      await started;
+      await vi.advanceTimersByTimeAsync(config.upstreamTimeout.reputationMs + 1);
+
+      const res = await pending;
+      expect(res.status).toBe(504);
+      expect(res.body.code).toBe('UPSTREAM_TIMEOUT');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout as a metric', async () => {
+    const { default: config } = await import('../config.js');
+    const { getRouteMetrics, resetRouteMetrics } = await import('../lib/routeMetrics.js');
+    resetRouteMetrics();
+
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+
+    let signalStarted;
+    const started = new Promise((resolve) => {
+      signalStarted = resolve;
+    });
+    mockUpdateReputation.mockImplementation(() => {
+      signalStarted();
+      return new Promise(() => {});
+    });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      // `.then()` dispatches the request — supertest only sends on demand.
+      const pending = request(app)
+        .post('/api/reputation/1')
+        .send({ positive: true, agent: VALID_AGENT })
+        .then((res) => res);
+
+      await started;
+      await vi.advanceTimersByTimeAsync(config.upstreamTimeout.reputationMs + 1);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(getRouteMetrics().upstreamTimeouts.total).toBe(1);
+    expect(getRouteMetrics().upstreamTimeouts.byLabel.reputation).toBe(1);
+  });
+
+  it('does not time out a vote that completes inside the deadline', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(7);
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, newReputation: 7 });
+  });
+});
+
+describe('GET /api/health — caching and idempotency (#672, #673)', () => {
+  beforeEach(async () => {
+    const { _resetMemoryCache } = await import('../lib/healthCache.js');
+    const { _reset } = await import('../lib/idempotency.js');
+    const { resetRouteMetrics } = await import('../lib/routeMetrics.js');
+    _resetMemoryCache();
+    _reset();
+    resetRouteMetrics();
+  });
+
+  it('serves Cache-Control and ETag', async () => {
+    const res = await request(app).get('/api/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(res.headers['cache-control']).toMatch(/max-age=\d+/);
+    expect(res.headers.etag).toMatch(/^W\/".+"$/);
+  });
+
+  it('answers a conditional request with 304', async () => {
+    const first = await request(app).get('/api/health');
+    const res = await request(app)
+      .get('/api/health')
+      .set('If-None-Match', first.headers.etag);
+
+    expect(res.status).toBe(304);
+  });
+
+  it('serves a repeated read from the cache instead of rebuilding it', async () => {
+    const { getHealthCacheMetrics } = await import('../lib/routeMetrics.js');
+
+    const first = await request(app).get('/api/health');
+    const second = await request(app).get('/api/health');
+
+    expect(second.body).toEqual(first.body);
+    expect(getHealthCacheMetrics().loads).toBe(1);
+    expect(getHealthCacheMetrics().hits).toBe(1);
+    expect(getHealthCacheMetrics().hitRate).toBe(0.5);
+  });
+
+  it('replays a duplicate Idempotency-Key without re-executing the check', async () => {
+    const { getHealthCacheMetrics } = await import('../lib/routeMetrics.js');
+
+    const first = await request(app).get('/api/health').set('Idempotency-Key', 'retry-key-1');
+    const second = await request(app).get('/api/health').set('Idempotency-Key', 'retry-key-1');
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual(first.body);
+    expect(second.headers['idempotent-replay']).toBe('true');
+    // Exactly one effect: the payload was built once and cached once.
+    expect(getHealthCacheMetrics().loads).toBe(1);
+    expect(getHealthCacheMetrics().lookups).toBe(1);
+  });
+
+  it('rejects a malformed Idempotency-Key', async () => {
+    const res = await request(app).get('/api/health').set('Idempotency-Key', 'not a key');
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('IDEMPOTENCY_KEY_INVALID');
+  });
+
+  it('exposes the cache hit rate and the timeout counters as metrics', async () => {
+    await request(app).get('/api/health');
+    await request(app).get('/api/health');
+
+    const res = await request(app).get('/api/metrics');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body.healthCache.lookups).toBe(2);
+    expect(res.body.healthCache.hits).toBe(1);
+    expect(res.body.healthCache.hitRate).toBe(0.5);
+    expect(res.body.upstreamTimeouts.total).toBe(0);
+  });
+});
