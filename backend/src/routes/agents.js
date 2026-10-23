@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { z } from 'zod';
+import { ROUTE_ERROR_CODES } from '../lib/contractErrors.js';
 import {
   listAgentsPage,
   getAgent,
@@ -508,15 +510,87 @@ router.post('/agents/:address/build-tx', requireAgentsContract, ownerAuth, async
   }
 });
 
+export const SUBMIT_TX_ERROR_CODES = Object.freeze({
+  INVALID_BODY: 'INVALID_BODY',
+  INVALID_PARAMS: 'INVALID_PARAMS',
+  INVALID_QUERY: 'INVALID_QUERY',
+});
+
+export const submitSignedTxParamsSchema = z.object({
+  address: z
+    .string({
+      required_error: '`address` is required',
+      invalid_type_error: '`address` must be a string',
+    })
+    .regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar address format'),
+});
+
+export const submitSignedTxQuerySchema = z.object({}).strict({
+  message: 'Unexpected query parameters',
+});
+
+export const submitSignedTxBodySchema = z
+  .object({
+    signedXdr: z
+      .string({
+        required_error: '`signedXdr` is required',
+        invalid_type_error: '`signedXdr` must be a string',
+      })
+      .trim()
+      .min(1, '`signedXdr` is required')
+      .max(65536, '`signedXdr` is too long')
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/, '`signedXdr` must be valid base64 encoded XDR'),
+  })
+  .strict({
+    message: 'Unexpected fields in request body',
+  });
+
+export const submitSignedTxSchema = z.object({
+  params: submitSignedTxParamsSchema,
+  query: submitSignedTxQuerySchema,
+  body: submitSignedTxBodySchema,
+});
+
+export function validateSubmitSignedTx(req, res, next) {
+  const paramsResult = submitSignedTxParamsSchema.safeParse(req.params);
+  if (!paramsResult.success) {
+    const issue = paramsResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message || 'Invalid params',
+      code: ROUTE_ERROR_CODES?.INVALID_PARAMS?.code || SUBMIT_TX_ERROR_CODES.INVALID_PARAMS,
+      details: paramsResult.error.issues,
+    });
+  }
+
+  const queryResult = submitSignedTxQuerySchema.safeParse(req.query);
+  if (!queryResult.success) {
+    const issue = queryResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message || 'Invalid query parameters',
+      code: ROUTE_ERROR_CODES?.INVALID_QUERY?.code || SUBMIT_TX_ERROR_CODES.INVALID_QUERY,
+      details: queryResult.error.issues,
+    });
+  }
+
+  const bodyResult = submitSignedTxBodySchema.safeParse(req.body);
+  if (!bodyResult.success) {
+    const issue = bodyResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message || 'Invalid request body',
+      code: ROUTE_ERROR_CODES?.INVALID_BODY?.code || SUBMIT_TX_ERROR_CODES.INVALID_BODY,
+      details: bodyResult.error.issues,
+    });
+  }
+
+  next();
+}
+
 // POST /api/agents/:address/submit-signed-tx
 // Body: { signedXdr: string }
-router.post('/agents/:address/submit-signed-tx', requireAgentsContract, async (req, res) => {
+router.post('/agents/:address/submit-signed-tx', requireAgentsContract, validateSubmitSignedTx, async (req, res) => {
   try {
     const { address } = req.params;
     const { signedXdr } = req.body;
-    if (!signedXdr || typeof signedXdr !== 'string') {
-      return res.status(400).json({ error: '`signedXdr` is required', code: 'INVALID_BODY' });
-    }
     const hash = await submitSignedAgentTx(signedXdr);
     agentsCache = null; // invalidate so next read reflects the change
     logger.info({ address, hash }, 'Submitted wallet-signed agent tx');
