@@ -27,6 +27,8 @@ import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
 import { handleContractError } from '../lib/ContractError.js';
+import { UpstreamTimeoutError } from '../lib/contractErrors.js';
+import { withUpstreamTimeout } from '../lib/upstreamTimeout.js';
 import {
   isValidIdempotencyKey,
   getEntry,
@@ -457,13 +459,23 @@ router.get('/agents/:address/payment-history', requireAgentsContract, async (req
 
 // GET /api/agents/:address/check?amount=1000000 (legacy stroops endpoint)
 router.get('/agents/:address/check', requireAgentsContract, async (req, res) => {
+  // #635: the upstream Soroban call is bounded. The deadline ends the wait
+  // here; the shared RPC client aborts the request itself, so a hung node
+  // releases its socket instead of holding the connection open indefinitely.
   try {
     const { address } = req.params;
     const amount = BigInt(req.query.amount ?? '0');
-    const allowed = await checkSpendingAllowed(address, amount);
+    const allowed = await withUpstreamTimeout(checkSpendingAllowed(address, amount), {
+      timeoutMs: config.upstreamTimeout.agentCheckMs,
+      label: 'agent-check',
+    });
     res.json({ allowed, agentAddress: address, amountStroops: amount.toString() });
   } catch (err) {
-    logger.error({ err }, 'GET /api/agents/:address/check failed');
+    // An expired deadline is already logged by withUpstreamTimeout; only
+    // unexpected failures are logged here.
+    if (!(err instanceof UpstreamTimeoutError)) {
+      logger.error({ err }, 'GET /api/agents/:address/check failed');
+    }
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
   }
 });

@@ -2,7 +2,7 @@ import pkg from "@stellar/stellar-sdk";
 const { rpc, Networks, Keypair } = pkg;
 import config from "../config.js";
 import logger from "./logger.js";
-import { RpcThrottledError } from "./contractErrors.js";
+import { RpcThrottledError, UpstreamTimeoutError } from "./contractErrors.js";
 
 let _server = null;
 
@@ -41,6 +41,20 @@ function isRetryableRpcError(err) {
 }
 
 /**
+ * Detect a request that ran out of its transport timeout.
+ *
+ * The SDK's HTTP client aborts the request when the timeout elapses and
+ * rejects with `ECONNABORTED` and a `timeout of Nms exceeded` message. A
+ * timeout means the request budget is spent, not that the node is briefly
+ * unhealthy, so it is handled separately from the retryable errors above.
+ */
+function isRpcTimeoutError(err) {
+  if (!err) return false;
+  if (err.code === "ECONNABORTED") return true;
+  return /timeout of \d+ms exceeded/i.test(err.message ?? "");
+}
+
+/**
  * Jittered exponential backoff helper.
  *
  * @param {number} attempt - zero-based attempt index
@@ -75,6 +89,17 @@ async function withRpcRetry(fn, methodName, maxRetries, baseDelayMs, maxDelayMs)
       return await fn();
     } catch (err) {
       lastError = err;
+
+      // A timeout means the request budget is spent, not that the node is
+      // briefly unhealthy. Retrying it would multiply both the wait and the
+      // number of sockets held open by the retry count.
+      if (isRpcTimeoutError(err)) {
+        throw new UpstreamTimeoutError(
+          `RPC call '${methodName}' timed out after ${config.rpcTimeoutMs}ms`,
+          config.rpcTimeoutMs,
+          err,
+        );
+      }
 
       if (!isRetryableRpcError(err) || attempt >= maxRetries) {
         // Re-throw non-retryable errors immediately — only wrap exhausted
@@ -149,6 +174,11 @@ export function getStellarServer() {
     const rawServer = new rpc.Server(config.stellar.rpcUrl, {
       allowHttp: config.stellar.rpcUrl.startsWith("http://"),
     });
+    // #635: bound every RPC request. The SDK's `Server` constructor documents
+    // a `timeout` option but never reads it, so the deadline is set on the
+    // underlying HTTP client — there axios aborts the request and releases
+    // the socket instead of holding it open against a hung node.
+    rawServer.httpClient.defaults.timeout = config.rpcTimeoutMs;
     _server = createRetryingServer(rawServer, config.rpcRetry);
   }
   return _server;

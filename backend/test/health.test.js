@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockServer = {
   getNetwork: vi.fn(),
   getAccount: vi.fn(),
+  // The real Server exposes the HTTP client it uses, and the RPC deadline is
+  // set there so a hung request is aborted rather than left open.
+  httpClient: { defaults: {} },
 };
 
 function MockRpcServer() {

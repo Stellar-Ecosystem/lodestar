@@ -150,13 +150,16 @@ const config = Object.freeze({
     },
   },
 
-  // Upstream deadlines (#671). A slow or hanging RPC node must not hold a
+  // Upstream deadlines (#671, #635). A slow or hanging RPC node must not hold a
   // request open indefinitely — the route answers 504 UPSTREAM_TIMEOUT and
   // frees the connection instead.
   upstreamTimeout: {
     // A reputation vote is simulate + submit + confirm + read back on chain,
     // so the deadline covers the whole sequence, not a single RPC round trip.
     reputationMs: parsePositiveInt(process.env.REPUTATION_TIMEOUT_MS, 20_000, 'REPUTATION_TIMEOUT_MS'),
+    // GET /agents/:address/check is a single read against the agents contract,
+    // so it needs far less than a full vote sequence.
+    agentCheckMs: parsePositiveInt(process.env.AGENT_CHECK_TIMEOUT_MS, 8_000, 'AGENT_CHECK_TIMEOUT_MS'),
   },
 
   // Health endpoint caching and idempotency (#672, #673).
@@ -194,6 +197,12 @@ const config = Object.freeze({
     baseDelayMs: parsePositiveInt(process.env.RPC_RETRY_BASE_DELAY_MS, 200, 'RPC_RETRY_BASE_DELAY_MS'),
     maxDelayMs: parsePositiveInt(process.env.RPC_RETRY_MAX_DELAY_MS, 5_000, 'RPC_RETRY_MAX_DELAY_MS'),
   },
+
+  // #635: transport-level deadline for a single HTTP request to the RPC node.
+  // This is the layer that actually aborts the request: the route deadlines in
+  // `upstreamTimeout` stop *waiting* for a call, but only this releases the
+  // socket — the SDK's axios client never sets a timeout of its own.
+  rpcTimeoutMs: parsePositiveInt(process.env.RPC_TIMEOUT_MS, 8_000, 'RPC_TIMEOUT_MS'),
 });
 
 export default config;
