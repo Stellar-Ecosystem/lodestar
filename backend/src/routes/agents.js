@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { z } from 'zod';
+import { ROUTE_ERROR_CODES } from '../lib/contractErrors.js';
 import {
   listAgentsPage,
   getAgent,
@@ -591,25 +593,114 @@ router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, asy
 });
 
 
+const MAX_I128 = (1n << 127n) - 1n;
+
+const stroopsSchema = z
+  .union([
+    z.number().int('Stroops amount must be an integer').nonnegative('Stroops amount must be non-negative'),
+    z.string().regex(/^\d+$/, 'Stroops amount must be a non-negative integer string'),
+  ], {
+    errorMap: () => ({ message: 'Stroops amount must be a non-negative integer (number or string)' }),
+  })
+  .refine(
+    (val) => {
+      try {
+        const b = BigInt(val);
+        return b >= 0n && b <= MAX_I128;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'Stroops amount is out of range for i128' }
+  );
+
+export const updatePolicyParamsSchema = z.object({
+  address: z
+    .string({
+      required_error: '`address` is required',
+      invalid_type_error: '`address` must be a string',
+    })
+    .regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar address format'),
+});
+
+export const updatePolicyQuerySchema = z.object({}).strict({
+  message: 'Unexpected query parameters',
+});
+
+export const updatePolicyBodySchema = z.object({
+  maxPerTxStroops: stroopsSchema,
+  maxPerDayStroops: stroopsSchema,
+  allowedCategories: z.array(
+    z.string({ invalid_type_error: 'Category must be a string' })
+      .trim()
+      .min(1, 'Category must be a non-empty string')
+      .max(64, 'Category too long'),
+    {
+      required_error: '`allowedCategories` must be an array of strings',
+      invalid_type_error: '`allowedCategories` must be an array of strings',
+    }
+  ),
+  minScoreToEarn: z
+    .number({
+      required_error: '`minScoreToEarn` must be a number',
+      invalid_type_error: '`minScoreToEarn` must be a number',
+    })
+    .int('`minScoreToEarn` must be an integer')
+    .min(0, '`minScoreToEarn` must be between 0 and 1000')
+    .max(1000, '`minScoreToEarn` must be between 0 and 1000'),
+});
+
+export const updatePolicySchema = z.object({
+  params: updatePolicyParamsSchema,
+  query: updatePolicyQuerySchema,
+  body: updatePolicyBodySchema,
+});
+
+export const POLICY_ERROR_CODES = Object.freeze({
+  INVALID_BODY: 'INVALID_BODY',
+  INVALID_PARAMS: 'INVALID_PARAMS',
+  INVALID_QUERY: 'INVALID_QUERY',
+});
+
+export function validateUpdatePolicy(req, res, next) {
+  const paramsResult = updatePolicyParamsSchema.safeParse(req.params);
+  if (!paramsResult.success) {
+    const issue = paramsResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message || 'Invalid params',
+      code: ROUTE_ERROR_CODES.INVALID_PARAMS?.code || 'INVALID_PARAMS',
+      details: paramsResult.error.issues,
+    });
+  }
+
+  const queryResult = updatePolicyQuerySchema.safeParse(req.query);
+  if (!queryResult.success) {
+    const issue = queryResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message || 'Invalid query parameters',
+      code: ROUTE_ERROR_CODES.INVALID_QUERY?.code || 'INVALID_QUERY',
+      details: queryResult.error.issues,
+    });
+  }
+
+  const bodyResult = updatePolicyBodySchema.safeParse(req.body);
+  if (!bodyResult.success) {
+    const issue = bodyResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message || 'Invalid request body',
+      code: ROUTE_ERROR_CODES.INVALID_BODY?.code || 'INVALID_BODY',
+      details: bodyResult.error.issues,
+    });
+  }
+
+  next();
+}
+
 // POST /api/agents/:address/update-policy
-router.post('/agents/:address/update-policy', requireAgentsContract, ownerAuth, async (req, res) => {
+router.post('/agents/:address/update-policy', requireAgentsContract, validateUpdatePolicy, ownerAuth, async (req, res) => {
   const { address } = req.params;
   try {
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
-
-    // Validation
-    if (!maxPerTxStroops || (typeof maxPerTxStroops !== 'string' && typeof maxPerTxStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
-    }
-    if (!maxPerDayStroops || (typeof maxPerDayStroops !== 'string' && typeof maxPerDayStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
-    }
-    if (!Array.isArray(allowedCategories)) {
-      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
-    }
-    if (typeof minScoreToEarn !== 'number') {
-      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
-    }
 
     await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
     logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
@@ -620,24 +711,10 @@ router.post('/agents/:address/update-policy', requireAgentsContract, ownerAuth, 
   }
 });
 
-router.put('/agents/:address/policy', requireAgentsContract, ownerAuth, async (req, res) => {
+router.put('/agents/:address/policy', requireAgentsContract, validateUpdatePolicy, ownerAuth, async (req, res) => {
   const { address } = req.params;
   try {
     const { maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn } = req.body;
-
-    // Validation
-    if (!maxPerTxStroops || (typeof maxPerTxStroops !== 'string' && typeof maxPerTxStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerTxStroops` is required (string or number)', code: 'INVALID_BODY' });
-    }
-    if (!maxPerDayStroops || (typeof maxPerDayStroops !== 'string' && typeof maxPerDayStroops !== 'number')) {
-      return res.status(400).json({ error: '`maxPerDayStroops` is required (string or number)', code: 'INVALID_BODY' });
-    }
-    if (!Array.isArray(allowedCategories)) {
-      return res.status(400).json({ error: '`allowedCategories` must be an array of strings', code: 'INVALID_BODY' });
-    }
-    if (typeof minScoreToEarn !== 'number') {
-      return res.status(400).json({ error: '`minScoreToEarn` must be a number', code: 'INVALID_BODY' });
-    }
 
     await updatePolicyOnChain(address, maxPerTxStroops, maxPerDayStroops, allowedCategories, minScoreToEarn, req.callerAddress);
     logger.info({ address, caller: req.callerAddress, maxPerTxStroops, maxPerDayStroops }, 'Agent policy updated');
