@@ -332,3 +332,118 @@ describe('GET /api/agents/:address/payment-history', () => {
     expect(res.body.code).toBe('INVALID_PAGINATION');
   });
 });
+
+describe('POST /agents/:address/flag — contract error mapping', () => {
+  const VALID_BODY = { reason: 'suspicious activity' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('flags an agent and returns 200 on success', async () => {
+    mockFlagAgentOnChain.mockResolvedValueOnce(true);
+
+    const res = await request(app)
+      .post(`/agents/${VALID_ADDR}/flag`)
+      .set('X-Admin-Key', adminKey(VALID_BODY))
+      .send(VALID_BODY);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+    expect(mockFlagAgentOnChain).toHaveBeenCalledWith(VALID_ADDR, 'suspicious activity');
+  });
+
+  it.each([
+    [1, 'INVALID_AMOUNT', 400, 'Payment amount must be greater than zero'],
+    [2, 'ARITHMETIC_OVERFLOW', 400, 'Payment amount exceeds the supported range'],
+    [3, 'AGENT_ALREADY_REGISTERED', 409, 'Agent already registered'],
+    [4, 'AGENT_LIST_FULL', 503, 'Agent registry is full'],
+    [5, 'AGENT_COUNT_OVERFLOW', 503, 'Agent registry count overflow'],
+    [6, 'AGENT_NOT_FOUND', 404, 'Agent not found'],
+    [7, 'UNAUTHORIZED', 403, 'Unauthorized'],
+    [8, 'POLICY_NOT_FOUND', 404, 'Policy not found'],
+    [9, 'NOT_INITIALIZED', 500, 'Contract not initialized'],
+    [10, 'ALREADY_INITIALIZED', 500, 'Contract already initialized'],
+  ])(
+    'maps agent contract error variant %i (%s) to HTTP %i',
+    async (numericCode, expectedCode, expectedStatus, expectedMessage) => {
+      const { agentErrorFromCode } = await import('../lib/contractErrors.js');
+      mockFlagAgentOnChain.mockRejectedValueOnce(agentErrorFromCode(numericCode));
+
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/flag`)
+        .set('X-Admin-Key', adminKey(VALID_BODY))
+        .send(VALID_BODY);
+
+      expect(res.status).toBe(expectedStatus);
+      expect(res.body).toEqual({ error: expectedMessage, code: expectedCode });
+    }
+  );
+
+  it('extracts and maps host error codes from wrapped SimulationError / TransactionFailedError payloads', async () => {
+    const { SimulationError } = await import('../lib/contractErrors.js');
+    mockFlagAgentOnChain.mockRejectedValueOnce(
+      new SimulationError('Simulation failed: HostError: Error(Contract, #6)', 'HostError: Error(Contract, #6)')
+    );
+
+    const res = await request(app)
+      .post(`/agents/${VALID_ADDR}/flag`)
+      .set('X-Admin-Key', adminKey(VALID_BODY))
+      .send(VALID_BODY);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Agent not found', code: 'AGENT_NOT_FOUND' });
+  });
+
+  it('maps RPC_THROTTLED, TRANSACTION_TIMEOUT, UPSTREAM_TIMEOUT, SIMULATION_FAILED, TRANSACTION_FAILED, and RETURN_VALUE_PARSE_FAILED to distinct statuses', async () => {
+    const {
+      RpcThrottledError,
+      TransactionTimeoutError,
+      UpstreamTimeoutError,
+      SimulationError,
+      TransactionFailedError,
+      ReturnValueParseError,
+    } = await import('../lib/contractErrors.js');
+
+    const cases = [
+      [new RpcThrottledError('RPC throttled', 3), 503, 'RPC_THROTTLED'],
+      [new TransactionTimeoutError('Timed out', 'hash1'), 504, 'TRANSACTION_TIMEOUT'],
+      [new UpstreamTimeoutError('Upstream timed out', 5000), 504, 'UPSTREAM_TIMEOUT'],
+      [new SimulationError('Sim failed'), 400, 'SIMULATION_FAILED'],
+      [new TransactionFailedError('Tx failed', 'hash2'), 502, 'TRANSACTION_FAILED'],
+      [new ReturnValueParseError('Parse failed', 'hash3'), 502, 'RETURN_VALUE_PARSE_FAILED'],
+    ];
+
+    for (const [errInstance, expectedStatus, expectedCode] of cases) {
+      mockFlagAgentOnChain.mockRejectedValueOnce(errInstance);
+
+      const res = await request(app)
+        .post(`/agents/${VALID_ADDR}/flag`)
+        .set('X-Admin-Key', adminKey(VALID_BODY))
+        .send(VALID_BODY);
+
+      expect(res.status).toBe(expectedStatus);
+      expect(res.body.code).toBe(expectedCode);
+    }
+  });
+
+  it('falls through to 500 and logs at error level with the variant name for unmapped errors', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    const logger = (await import('../lib/logger.js')).default;
+
+    const unmappedErr = new ContractError('Some brand new variant', 'UNMAPPED_FUTURE_VARIANT');
+    mockFlagAgentOnChain.mockRejectedValueOnce(unmappedErr);
+
+    const res = await request(app)
+      .post(`/agents/${VALID_ADDR}/flag`)
+      .set('X-Admin-Key', adminKey(VALID_BODY))
+      .send(VALID_BODY);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Flagging failed', code: 'FLAG_ERROR' });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'UNMAPPED_FUTURE_VARIANT' }),
+      expect.stringContaining('UNMAPPED_FUTURE_VARIANT')
+    );
+  });
+});
