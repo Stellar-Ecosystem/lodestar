@@ -1,5 +1,5 @@
 /**
- * In-memory idempotency store for the payment route.
+ * In-memory idempotency store for mutating routes (payments, agent deactivation).
  *
  * Keys expire after TTL_MS (default 24 h). Expired entries are pruned by a
  * background timer so that every lookup stays O(1). A lazy per-key expiry
@@ -11,7 +11,8 @@
  *   'failed'   — request threw; replays the error response
  */
 
-const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const IDEMPOTENCY_TTL_MS = TTL_MS;
 const PURGE_INTERVAL_MS = 60_000; // sweep every 60 s
 
 /** Default lifetime of a stored key. Routes may shorten it per use. */
@@ -111,7 +112,7 @@ export function markPending(key, ttlMs = TTL_MS) {
  * Resolve a pending key with a successful result.
  *
  * @param {string} key
- * @param {{ newScore: number }} result
+ * @param {object} result
  */
 export function markComplete(key, result) {
   const entry = store.get(key);

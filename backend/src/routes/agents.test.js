@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import * as idempotency from '../lib/idempotency.js';
 
 const mockFlagAgentOnChain = vi.fn();
 const mockAdminDeactivateAgentOnChain = vi.fn();
@@ -188,6 +189,184 @@ describe('POST /admin/agents/:address/deactivate', () => {
     expect(res.status).toBe(500);
   });
 });
+
+describe('POST /agents/:address/deactivate', () => {
+  const ADDRESS = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+  const OWNER_ADDR = 'GBOWOWNERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    idempotency._reset();
+    mockGetAgent.mockResolvedValue({ owner: OWNER_ADDR });
+  });
+
+  it('returns 400 when Idempotency-Key header is missing', async () => {
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: 'Missing Idempotency-Key header',
+      code: 'IDEMPOTENCY_KEY_MISSING',
+    });
+    expect(mockDeactivateAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when Idempotency-Key header is invalid', async () => {
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'invalid key with spaces')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: 'Idempotency-Key must be 1–255 printable ASCII characters (no spaces)',
+      code: 'IDEMPOTENCY_KEY_INVALID',
+    });
+    expect(mockDeactivateAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('deactivates an agent and stores the response against Idempotency-Key', async () => {
+    mockDeactivateAgentOnChain.mockResolvedValueOnce(true);
+
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'idem-key-1')
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(1);
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledWith(ADDRESS, OWNER_ADDR);
+
+    const stored = idempotency.getEntry(`deactivate:${ADDRESS}:idem-key-1`);
+    expect(stored).not.toBeNull();
+    expect(stored.status).toBe('complete');
+    expect(stored.result).toEqual({ success: true });
+  });
+
+  it('replays the original response without re-executing for duplicate requests', async () => {
+    mockDeactivateAgentOnChain.mockResolvedValueOnce(true);
+
+    const res1 = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'idem-key-dup')
+      .send({});
+
+    expect(res1.status).toBe(200);
+    expect(res1.body).toEqual({ success: true });
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(1);
+
+    // Duplicate request with the exact same Idempotency-Key
+    const res2 = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'idem-key-dup')
+      .send({});
+
+    expect(res2.status).toBe(200);
+    expect(res2.body).toEqual({ success: true });
+    // Assert exactly one execution/effect occurred on chain
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts X-Idempotency-Key header as an alternative', async () => {
+    mockDeactivateAgentOnChain.mockResolvedValueOnce(true);
+
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('X-Idempotency-Key', 'x-key-1')
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays cached failure response on duplicate request after error', async () => {
+    mockDeactivateAgentOnChain.mockRejectedValueOnce(new Error('Contract transaction failed'));
+
+    const res1 = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'fail-key')
+      .send({});
+
+    expect(res1.status).toBe(500);
+    expect(res1.body).toEqual({ error: 'Deactivation failed', code: 'DEACTIVATE_ERROR' });
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(1);
+
+    const res2 = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'fail-key')
+      .send({});
+
+    expect(res2.status).toBe(500);
+    expect(res2.body).toEqual({ error: 'Deactivation failed', code: 'DEACTIVATE_ERROR' });
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 409 conflict when duplicate request arrives while pending', async () => {
+    idempotency.markPending(`deactivate:${ADDRESS}:pending-key`);
+
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'pending-key')
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(mockDeactivateAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('expires idempotency keys after documented TTL (24h) and re-executes', async () => {
+    vi.useFakeTimers();
+    mockDeactivateAgentOnChain.mockResolvedValue(true);
+
+    const res1 = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'ttl-key')
+      .send({});
+
+    expect(res1.status).toBe(200);
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(1);
+
+    // Fast forward past documented TTL (24 hours)
+    vi.advanceTimersByTime(idempotency.TTL_MS + 1);
+
+    const res2 = await request(app)
+      .post(`/agents/${ADDRESS}/deactivate`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature')
+      .set('Idempotency-Key', 'ttl-key')
+      .send({});
+
+    expect(res2.status).toBe(200);
+    expect(mockDeactivateAgentOnChain).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+});
+
 
 const mockGetActivityFeed = vi.fn(() => []);
 const mockParseActivityPagination = vi.fn(() => ({ limit: 20, offset: 0, errors: [] }));

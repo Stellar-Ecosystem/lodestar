@@ -12,6 +12,10 @@ afterEach(() => {
 });
 
 describe('isValidIdempotencyKey', () => {
+  it('documents and exports TTL_MS as 24 hours', () => {
+    expect(idempotency.TTL_MS).toBe(24 * 60 * 60 * 1000);
+    expect(idempotency.IDEMPOTENCY_TTL_MS).toBe(24 * 60 * 60 * 1000);
+  });
   it('accepts valid keys', () => {
     expect(idempotency.isValidIdempotencyKey('abc-123')).toBe(true);
     expect(idempotency.isValidIdempotencyKey('x')).toBe(true);
