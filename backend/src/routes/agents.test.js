@@ -332,3 +332,205 @@ describe('GET /api/agents/:address/payment-history', () => {
     expect(res.body.code).toBe('INVALID_PAGINATION');
   });
 });
+
+describe('PUT /agents/:address/policy', () => {
+  const OWNER_ADDR = 'GBOWOWNERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+  const OTHER_ADDR = 'GOTHERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+  const VALID_POLICY_BODY = {
+    maxPerTxStroops: '10000000',
+    maxPerDayStroops: '50000000',
+    allowedCategories: ['weather', 'search'],
+    minScoreToEarn: 600,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('updates policy on-chain and returns 200 on happy path', async () => {
+    mockGetAgent.mockResolvedValueOnce({ address: VALID_ADDR, owner: OWNER_ADDR });
+    mockUpdatePolicyOnChain.mockResolvedValueOnce(true);
+
+    const res = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send(VALID_POLICY_BODY);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({ success: true });
+    expect(mockGetAgent).toHaveBeenCalledWith(VALID_ADDR);
+    expect(mockUpdatePolicyOnChain).toHaveBeenCalledWith(
+      VALID_ADDR,
+      '10000000',
+      '50000000',
+      ['weather', 'search'],
+      600,
+      OWNER_ADDR
+    );
+  });
+
+  it('returns 400 INVALID_ADDRESS before auth when address param is malformed', async () => {
+    const res = await request(app)
+      .put('/agents/not-a-valid-stellar-address/policy')
+      .send(VALID_POLICY_BODY);
+
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Invalid Stellar address format',
+      code: 'INVALID_ADDRESS',
+    });
+    expect(mockGetAgent).not.toHaveBeenCalled();
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 AUTH_MISSING when x-caller-address header is missing', async () => {
+    const res = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send(VALID_POLICY_BODY);
+
+    expect(res.status).toBe(401);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Caller address missing',
+      code: 'AUTH_MISSING',
+    });
+    expect(mockGetAgent).not.toHaveBeenCalled();
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 AUTH_SIGNATURE_MISSING when x-caller-signature header is missing', async () => {
+    const res = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .send(VALID_POLICY_BODY);
+
+    expect(res.status).toBe(401);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Caller signature missing',
+      code: 'AUTH_SIGNATURE_MISSING',
+    });
+    expect(mockGetAgent).not.toHaveBeenCalled();
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 NOT_FOUND when agent does not exist during ownerAuth check', async () => {
+    mockGetAgent.mockResolvedValueOnce(null);
+
+    const res = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send(VALID_POLICY_BODY);
+
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Agent not found',
+      code: 'NOT_FOUND',
+    });
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 FORBIDDEN when caller is not the agent owner', async () => {
+    mockGetAgent.mockResolvedValueOnce({ address: VALID_ADDR, owner: OWNER_ADDR });
+
+    const res = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OTHER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send(VALID_POLICY_BODY);
+
+    expect(res.status).toBe(403);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Caller is not the owner of this agent',
+      code: 'FORBIDDEN',
+    });
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 INVALID_BODY when request body fields are invalid', async () => {
+    mockGetAgent.mockResolvedValue({ address: VALID_ADDR, owner: OWNER_ADDR });
+
+    const missingMaxPerTx = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send({ ...VALID_POLICY_BODY, maxPerTxStroops: null });
+
+    expect(missingMaxPerTx.status).toBe(400);
+    expect(missingMaxPerTx.headers['content-type']).toMatch(/application\/json/);
+    expect(missingMaxPerTx.body).toEqual({
+      error: '`maxPerTxStroops` is required (string or number)',
+      code: 'INVALID_BODY',
+    });
+
+    const badAllowedCategories = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send({ ...VALID_POLICY_BODY, allowedCategories: 'weather' });
+
+    expect(badAllowedCategories.status).toBe(400);
+    expect(badAllowedCategories.body).toEqual({
+      error: '`allowedCategories` must be an array of strings',
+      code: 'INVALID_BODY',
+    });
+
+    const badMinScore = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send({ ...VALID_POLICY_BODY, minScoreToEarn: '600' });
+
+    expect(badMinScore.status).toBe(400);
+    expect(badMinScore.body).toEqual({
+      error: '`minScoreToEarn` must be a number',
+      code: 'INVALID_BODY',
+    });
+
+    expect(mockUpdatePolicyOnChain).not.toHaveBeenCalled();
+  });
+
+  it('maps contract errors and unexpected failures via handleContractError', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetAgent.mockResolvedValue({ address: VALID_ADDR, owner: OWNER_ADDR });
+
+    mockUpdatePolicyOnChain.mockRejectedValueOnce(
+      new ContractError('Simulation failed', 'SIMULATION_FAILED', 400)
+    );
+
+    const mappedRes = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send(VALID_POLICY_BODY);
+
+    expect(mappedRes.status).toBe(400);
+    expect(mappedRes.headers['content-type']).toMatch(/application\/json/);
+    expect(mappedRes.body).toEqual({
+      error: 'Simulation failed',
+      code: 'SIMULATION_FAILED',
+    });
+
+    mockUpdatePolicyOnChain.mockRejectedValueOnce(new Error('Soroban RPC unreachable'));
+
+    const genericRes = await request(app)
+      .put(`/agents/${VALID_ADDR}/policy`)
+      .set('x-caller-address', OWNER_ADDR)
+      .set('x-caller-signature', 'valid_signature_proof')
+      .send(VALID_POLICY_BODY);
+
+    expect(genericRes.status).toBe(500);
+    expect(genericRes.headers['content-type']).toMatch(/application\/json/);
+    expect(genericRes.body).toEqual({
+      error: 'Policy update failed',
+      code: 'POLICY_ERROR',
+    });
+  });
+});
