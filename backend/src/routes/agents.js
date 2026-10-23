@@ -198,9 +198,17 @@ router.get('/agents/:address/score', requireAgentsContract, async (req, res) => 
 
 // GET /api/agents/:address/eligible?min_score=500
 router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) => {
+  const log = (req.log ?? logger).child({
+    requestId: req.id,
+    route: 'GET /api/agents/:address/eligible',
+    address: req.params.address,
+  });
+  const startedAt = process.hrtime.bigint();
+  const durationMs = () => Number(process.hrtime.bigint() - startedAt) / 1e6;
+  let minScore;
   try {
     const { address } = req.params;
-    const minScore = parseInt(req.query.min_score ?? '0', 10);
+    minScore = parseInt(req.query.min_score ?? '0', 10);
     const [score, eligible] = await Promise.all([
       getAgentScore(address),
       isAgentEligible(address, minScore),
@@ -208,9 +216,16 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
     // `score` is null for an agent that is not registered yet; `eligible` is
     // still reported so the caller can distinguish "not eligible" from
     // "no score to compare against".
+    log.info(
+      { minScore, eligible, outcome: 'success', durationMs: durationMs() },
+      'eligibility check completed',
+    );
     res.json({ eligible, score, required: minScore });
   } catch (err) {
-    logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/eligible failed');
+    log.error(
+      { err, minScore, outcome: 'error', durationMs: durationMs() },
+      'eligibility check failed',
+    );
     return handleContractError(err, res, 'Failed to check eligibility', 'FETCH_ERROR');
   }
 });

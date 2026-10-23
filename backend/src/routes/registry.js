@@ -507,6 +507,26 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   };
 
   let id;
+  let callerAddress;
+  let voteDirection;
+  let contractDurationMs;
+
+  const emitReputationLog = (level, outcome, extra = {}, message = "Reputation update processed") => {
+    const durationMs = Date.now() - startMs;
+    const fields = {
+      ...(requestId ? { requestId } : {}),
+      serviceId: id ?? req.params.id,
+      ...(callerAddress ? { callerAddress, agent: callerAddress } : {}),
+      ...(typeof voteDirection === "boolean" ? { positive: voteDirection } : {}),
+      durationMs,
+      duration: durationMs,
+      ...(contractDurationMs !== undefined ? { contractDurationMs } : {}),
+      outcome,
+      ...extra,
+    };
+    routeLogger[level](fields, message);
+  };
+
   try {
     id = parseInt(req.params.id, 10);
     if (isNaN(id) || id < 1) {
@@ -519,6 +539,13 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
     // Default to {} so a missing/non-JSON body yields a 400 INVALID_BODY rather
     // than a TypeError surfacing as a generic 500.
     const { positive, agent } = req.body ?? {};
+    if (typeof positive === "boolean") {
+      voteDirection = positive;
+    }
+    if (typeof agent === "string" && isValidStellarAddress(agent)) {
+      callerAddress = agent;
+    }
+
     if (typeof positive !== "boolean") {
       return finish("warn", "rejected", { serviceId: id }, 400, {
         error: "`positive` must be a boolean",
