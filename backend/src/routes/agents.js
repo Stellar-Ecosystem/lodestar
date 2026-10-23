@@ -26,7 +26,12 @@ import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { writeRateLimiter } from '../middleware/rateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
-import { handleContractError } from '../lib/ContractError.js';
+import { ContractError, handleContractError } from '../lib/ContractError.js';
+import {
+  AGENT_ERROR_CODES,
+  ROUTE_ERROR_CODES,
+  agentErrorFromHostError,
+} from '../lib/contractErrors.js';
 import {
   isValidIdempotencyKey,
   getEntry,
@@ -409,16 +414,72 @@ router.post(
       logger.info({ address, serviceId, amountUsdc, success, newScore, idempotencyKey }, 'Payment recorded on-chain');
       return res.json({ success: true, newScore });
     } catch (err) {
-      // Derive the HTTP status the error would produce so we can replay it faithfully.
-      const httpStatus =
-        err.name === 'ContractError' && err.code === 'TRANSACTION_TIMEOUT' ? 504
-        : err.name === 'ContractError' ? 400
-        : 500;
-      const error = err.name === 'ContractError' ? err.message : 'Failed to record payment';
-      const code  = err.name === 'ContractError' ? err.code  : 'RECORD_ERROR';
+      const resolvedErr = agentErrorFromHostError(err) ?? err;
+
+      const AGENT_ERROR_BY_CODE = Object.fromEntries(
+        Object.values(AGENT_ERROR_CODES).map((entry) => [entry.code, entry])
+      );
+      const TRANSPORT_ERROR_BY_CODE = {
+        SIMULATION_FAILED: { status: 400, code: 'SIMULATION_FAILED' },
+        TRANSACTION_FAILED: { status: 502, code: 'TRANSACTION_FAILED' },
+        RETURN_VALUE_PARSE_FAILED: { status: 502, code: 'RETURN_VALUE_PARSE_FAILED' },
+        RPC_THROTTLED: { status: 503, code: 'RPC_THROTTLED' },
+        TRANSACTION_TIMEOUT: { status: 504, code: 'TRANSACTION_TIMEOUT' },
+        UPSTREAM_TIMEOUT: ROUTE_ERROR_CODES.UPSTREAM_TIMEOUT,
+      };
+      const VARIANT_TO_CODE = {
+        InvalidAmount: 'INVALID_AMOUNT',
+        ArithmeticOverflow: 'ARITHMETIC_OVERFLOW',
+        AgentAlreadyRegistered: 'AGENT_ALREADY_REGISTERED',
+        AgentListOverflow: 'AGENT_LIST_FULL',
+        AgentListFull: 'AGENT_LIST_FULL',
+        AgentCountOverflow: 'AGENT_COUNT_OVERFLOW',
+        AgentNotFound: 'AGENT_NOT_FOUND',
+        Unauthorized: 'UNAUTHORIZED',
+        PolicyNotFound: 'POLICY_NOT_FOUND',
+        NotInitialized: 'NOT_INITIALIZED',
+        AlreadyInitialized: 'ALREADY_INITIALIZED',
+        SimulationError: 'SIMULATION_FAILED',
+        TransactionFailedError: 'TRANSACTION_FAILED',
+        TransactionTimeoutError: 'TRANSACTION_TIMEOUT',
+        ReturnValueParseError: 'RETURN_VALUE_PARSE_FAILED',
+        RpcThrottledError: 'RPC_THROTTLED',
+        UpstreamTimeoutError: 'UPSTREAM_TIMEOUT',
+      };
+
+      const rawVariant =
+        resolvedErr?.variant ??
+        resolvedErr?.code ??
+        (resolvedErr?.contractErrorCode != null ? AGENT_ERROR_CODES[resolvedErr.contractErrorCode]?.code : null) ??
+        resolvedErr?.name ??
+        'UnknownError';
+      const normalizedCode = VARIANT_TO_CODE[rawVariant] ?? rawVariant;
+      const mappedEntry =
+        AGENT_ERROR_BY_CODE[normalizedCode] ??
+        (Number.isInteger(resolvedErr?.contractErrorCode) ? AGENT_ERROR_CODES[resolvedErr.contractErrorCode] : null) ??
+        TRANSPORT_ERROR_BY_CODE[normalizedCode] ??
+        null;
+
+      let httpStatus;
+      let error;
+      let code;
+
+      if (mappedEntry) {
+        httpStatus = mappedEntry.status;
+        error = resolvedErr.message || mappedEntry.message || 'Failed to record payment';
+        code = mappedEntry.code;
+        logger.error({ err: resolvedErr, variant: rawVariant, code, httpStatus, address, idempotencyKey }, 'POST /api/agents/:address/payment failed');
+      } else {
+        httpStatus = 500;
+        error = 'Failed to record payment';
+        code = 'RECORD_ERROR';
+        logger.error(
+          { err, variant: rawVariant, address, idempotencyKey },
+          `Unmapped contract error on POST /api/agents/:address/payment: ${rawVariant}`
+        );
+      }
 
       markFailed(scopedKey, { httpStatus, error, code });
-      logger.error({ err, address, idempotencyKey }, 'POST /api/agents/:address/payment failed');
       return res.status(httpStatus).json({ error, code });
     }
   }
@@ -540,8 +601,65 @@ router.post('/agents/:address/flag', requireAgentsContract, adminAuth, async (re
     logger.info({ address, reason }, 'Agent flagged (legacy route)');
     res.json({ success: true });
   } catch (err) {
-    logger.error({ err, address }, 'POST /agents/:address/flag failed');
-    return handleContractError(err, res, 'Flagging failed', 'FLAG_ERROR');
+    const resolvedErr = agentErrorFromHostError(err) ?? err;
+
+    const AGENT_ERROR_BY_CODE = Object.fromEntries(
+      Object.values(AGENT_ERROR_CODES).map((entry) => [entry.code, entry])
+    );
+    const TRANSPORT_ERROR_BY_CODE = {
+      SIMULATION_FAILED: { status: 400, code: 'SIMULATION_FAILED' },
+      TRANSACTION_FAILED: { status: 502, code: 'TRANSACTION_FAILED' },
+      RETURN_VALUE_PARSE_FAILED: { status: 502, code: 'RETURN_VALUE_PARSE_FAILED' },
+      RPC_THROTTLED: { status: 503, code: 'RPC_THROTTLED' },
+      TRANSACTION_TIMEOUT: { status: 504, code: 'TRANSACTION_TIMEOUT' },
+      UPSTREAM_TIMEOUT: ROUTE_ERROR_CODES.UPSTREAM_TIMEOUT,
+    };
+    const VARIANT_TO_CODE = {
+      InvalidAmount: 'INVALID_AMOUNT',
+      ArithmeticOverflow: 'ARITHMETIC_OVERFLOW',
+      AgentAlreadyRegistered: 'AGENT_ALREADY_REGISTERED',
+      AgentListOverflow: 'AGENT_LIST_FULL',
+      AgentListFull: 'AGENT_LIST_FULL',
+      AgentCountOverflow: 'AGENT_COUNT_OVERFLOW',
+      AgentNotFound: 'AGENT_NOT_FOUND',
+      Unauthorized: 'UNAUTHORIZED',
+      PolicyNotFound: 'POLICY_NOT_FOUND',
+      NotInitialized: 'NOT_INITIALIZED',
+      AlreadyInitialized: 'ALREADY_INITIALIZED',
+      SimulationError: 'SIMULATION_FAILED',
+      TransactionFailedError: 'TRANSACTION_FAILED',
+      TransactionTimeoutError: 'TRANSACTION_TIMEOUT',
+      ReturnValueParseError: 'RETURN_VALUE_PARSE_FAILED',
+      RpcThrottledError: 'RPC_THROTTLED',
+      UpstreamTimeoutError: 'UPSTREAM_TIMEOUT',
+    };
+
+    const rawVariant =
+      resolvedErr?.variant ??
+      resolvedErr?.code ??
+      (resolvedErr?.contractErrorCode != null ? AGENT_ERROR_CODES[resolvedErr.contractErrorCode]?.code : null) ??
+      resolvedErr?.name ??
+      'UnknownError';
+    const normalizedCode = VARIANT_TO_CODE[rawVariant] ?? rawVariant;
+    const mappedEntry =
+      AGENT_ERROR_BY_CODE[normalizedCode] ??
+      (Number.isInteger(resolvedErr?.contractErrorCode) ? AGENT_ERROR_CODES[resolvedErr.contractErrorCode] : null) ??
+      TRANSPORT_ERROR_BY_CODE[normalizedCode] ??
+      null;
+
+    if (mappedEntry) {
+      const httpStatus = mappedEntry.status;
+      const error = resolvedErr.message || mappedEntry.message || 'Flagging failed';
+      const code = mappedEntry.code;
+      logger.error({ err: resolvedErr, variant: rawVariant, code, httpStatus, address }, 'POST /agents/:address/flag failed');
+      return res.status(httpStatus).json({ error, code });
+    }
+
+    logger.error(
+      { err, variant: rawVariant, address },
+      `Unmapped contract error on POST /agents/:address/flag: ${rawVariant}`
+    );
+    return res.status(500).json({ error: 'Flagging failed', code: 'FLAG_ERROR' });
   }
 });
 
