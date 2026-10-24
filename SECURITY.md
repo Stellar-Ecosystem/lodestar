@@ -47,7 +47,4 @@ and it is published once a patch ships.
 Please give us a reasonable opportunity to ship a fix before disclosing publicly. We are
 happy to credit you in the advisory — tell us how you would like to be named.
 
-## Supported versions
 
-Security fixes land on `main` and are released from there. There is no long-term support
-branch; run the latest release.
