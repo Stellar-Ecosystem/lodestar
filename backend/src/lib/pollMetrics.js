@@ -1,9 +1,9 @@
-/**
+/*
  * Poll cost instrumentation (#852).
  *
  * `waitForActivityTxHash` already backs off with a total-time budget, but the cost
- * of a wait was invisible: nothing recorded how many feed reads (and therefore how
- * many RPC calls) a single wait actually spends. Without that number, a change to
+ * of a wait was invisible: nothing recorded how many feed reads (and therefore how many
+ * RPC calls) a single wait actually spends. Without that number, a change to
  * the backoff parameters cannot be shown to have helped.
  *
  * Every wait records one sample here. The aggregate is exposed for logging and for

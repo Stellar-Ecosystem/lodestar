@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { performance } from 'node:perf_hooks';
 import {
   listAgentsPage,
   getAgent,
@@ -42,7 +43,43 @@ const router = Router();
 const PAGE_SIZE = 12;
 const CONTRACT_PAGE_SIZE_CAP = 20;
 
+// Upstream call timeout for GET /agents/:address/can-spend.
+// A slow or hanging Soroban RPC node must not hold the connection open
+// indefinitely; on expiry we return 504 and count the timeout as a metric.
+const CAN_SPEND_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(String(config.canSpend?.timeoutMs ?? ''), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5_000;
+})();
 
+// Lightweight in-process counter so timeout frequency is observable without
+// pulling in a full metrics dependency. Exposed for tests and future scraping.
+const canSpendMetrics = {
+  timeouts: 0,
+  requests: 0,
+};
+
+export function getCanSpendMetrics() {
+  return { ...canSpendMetrics };
+}
+
+function withTimeout(promise, timeoutMs, onTimeout) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      const err = new Error(`Upstream call timed out after ${timeoutMs}ms`);
+      err.name = 'UpstreamTimeoutError';
+      err.code = 'UPSTREAM_TIMEOUT';
+      reject(err);
+    }, timeoutMs);
+    // Do not keep the event loop alive solely for this timer.
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// In-memory cache: avoids fetching all agents from Soroban on every paginated request.
+// TTL matches the frontend's 30s auto-refresh interval.
 let agentsCache = null;
 let agentsCacheTime = 0;
 const AGENTS_CACHE_TTL = 30_000;
@@ -217,17 +254,28 @@ router.get('/agents/:address/eligible', requireAgentsContract, async (req, res) 
 
 // GET /api/agents/:address/can-spend?amount=0.001&category=weather
 router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res) => {
+  canSpendMetrics.requests += 1;
   try {
     const { address } = req.params;
     const amountUsdc = req.query.amount ?? '0';
     const category = req.query.category ?? '';
     const amountStroops = usdcToStroops(amountUsdc);
 
-    const [allowed, policy, agent] = await Promise.all([
-      checkSpendingAllowed(address, amountStroops),
-      getAgentPolicy(address),
-      getAgent(address),
-    ]);
+    const [allowed, policy, agent] = await withTimeout(
+      Promise.all([
+        checkSpendingAllowed(address, amountStroops),
+        getAgentPolicy(address),
+        getAgent(address),
+      ]),
+      CAN_SPEND_TIMEOUT_MS,
+      () => {
+        canSpendMetrics.timeouts += 1;
+        logger.warn(
+          { address, timeoutMs: CAN_SPEND_TIMEOUT_MS, timeouts: canSpendMetrics.timeouts },
+          'GET /api/agents/:address/can-spend upstream call timed out'
+        );
+      }
+    );
 
     if (!agent) {
       return res.json({ allowed: false, reason: 'Agent not registered' });
@@ -271,6 +319,12 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
 
     res.json({ allowed: true, reason: 'OK' });
   } catch (err) {
+    if (err?.name === 'UpstreamTimeoutError') {
+      return res.status(504).json({
+        error: 'Upstream contract call timed out',
+        code: 'UPSTREAM_TIMEOUT',
+      });
+    }
     logger.error({ err, address: req.params.address }, 'GET /api/agents/:address/can-spend failed');
     return handleContractError(err, res, 'Check failed', 'CHECK_ERROR');
   }
