@@ -10,16 +10,16 @@ if (config.redisUrl) {
 }
 
 /**
- * express-rate-limit middleware for public write routes.
+ * express-rate-limit middleware for public routes.
  *
- * Throttles spammy submissions before they reach the on-chain contracts.
- * Keyed by client IP. Limits default to the values in config.rateLimit but
- * can be overridden per-route (e.g. for tests or stricter endpoints).
+ * Throttles spammy requests before they reach an upstream dependency. Keyed by
+ * client IP. Limits default to the values in config.rateLimit but can be
+ * overridden per-route (e.g. for tests or costlier endpoints).
  *
  * @param {number} [max]      Max requests allowed per window.
  * @param {number} [windowMs] Window length in milliseconds.
  */
-export function writeRateLimiter(
+export function createRateLimiter(
   max = config.rateLimit.max,
   windowMs = config.rateLimit.windowMs,
 ) {
@@ -38,8 +38,11 @@ export function writeRateLimiter(
     handler: (req, res) => {
       logger.warn(
         { ip: req.ip, path: req.originalUrl, max, windowMs },
-        'Write rate limit exceeded',
+        'Rate limit exceeded',
       );
+      // Retry-After tells the client when it may come back — the standard
+      // signal for "slow down", which a JSON body alone does not express.
+      res.set('Retry-After', String(Math.ceil(windowMs / 1000)));
       res.status(429).json({
         error: 'Too many requests. Please slow down and try again later.',
         code: 'RATE_LIMITED',
@@ -48,6 +51,12 @@ export function writeRateLimiter(
     },
   });
 }
+
+/**
+ * Limiter for public write routes — the default ceiling from config.rateLimit.
+ * Kept as a named export because write routes are the ones that cost money.
+ */
+export const writeRateLimiter = createRateLimiter;
 
 /**
  * The shared Redis client, or undefined when REDIS_URL is unset.

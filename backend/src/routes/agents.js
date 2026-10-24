@@ -39,9 +39,7 @@ import { getActivityFeed, parseActivityPagination } from '../lib/activityFeed.js
 
 const router = Router();
 
-// Shared page-size constants — keep in sync with frontend/lib/pagination.ts.
-// CONTRACT_PAGE_SIZE_CAP must match the .min(20u32) clamp in contract/src/lib.rs
-// so the backend never promises a slice larger than the contract can return.
+
 const PAGE_SIZE = 12;
 const CONTRACT_PAGE_SIZE_CAP = 20;
 

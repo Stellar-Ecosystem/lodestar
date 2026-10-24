@@ -7,6 +7,8 @@ import logger from '../lib/logger.js';
 import { recordPaymentOnChain, getAgent } from '../lib/contract.js';
 import { usdcToStroops } from '../lib/stroops.js';
 import { isValidStellarAddress } from '../middleware/addressValidator.js';
+import { createRateLimiter } from '../middleware/rateLimiter.js';
+import { validateWeatherRequest } from './servicesSchemas.js';
 
 const router = Router();
 
@@ -89,6 +91,21 @@ const paymentConfig = {
   },
 };
 
+// Ceiling for GET /demo/weather (#674). Every accepted call costs a
+// facilitator verification plus an upstream Open-Meteo fetch, so the route is
+// an amplifier: a cheap request to Lodestar becomes an expensive one against
+// those upstreams. 30 requests per minute per IP is far above interactive
+// use, yet still bounds the amplification — the number is chosen for this
+// route's cost profile, not inherited from the generic write limit.
+const weatherRateLimiter = createRateLimiter(
+  config.rateLimit.weather.max,
+  config.rateLimit.weather.windowMs,
+);
+
+// Mounted before the x402 middleware so a flood is rejected before it costs a
+// facilitator verification or an upstream weather fetch.
+router.use('/weather', weatherRateLimiter);
+
 router.use(
   paymentMiddlewareFromConfig(paymentConfig, facilitator, [
     { network: 'stellar:testnet', server: stellarScheme },
@@ -97,13 +114,20 @@ router.use(
 
 router.get('/weather', async (req, res) => {
   try {
-    const lat = parseFloat(req.query.lat) || 40.7128;
-    const lon = parseFloat(req.query.lon) || -74.006;
-
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-      logger.warn({ lat, lon }, 'Invalid coordinates supplied to GET /demo/weather');
-      return res.status(400).json({ error: 'Coordinates out of range', code: 'INVALID_COORDINATES' });
+    // The schema is the route boundary (#675): a malformed request is a 400
+    // with a catalogued code, and it never reaches the upstream provider or
+    // the contract layer.
+    const validation = validateWeatherRequest(req);
+    if (!validation.ok) {
+      logger.warn(
+        { field: validation.field, code: validation.code },
+        'Invalid request supplied to GET /demo/weather'
+      );
+      return res.status(validation.status).json({ error: validation.error, code: validation.code });
     }
+
+    const lat = validation.data.query.lat ?? 40.7128;
+    const lon = validation.data.query.lon ?? -74.006;
 
     const url =
       `https://api.open-meteo.com/v1/forecast` +
@@ -137,7 +161,7 @@ router.get('/weather', async (req, res) => {
       service: 'Lodestar Weather Service',
       amount: config.x402.weatherPrice,
       txHash,
-      ...(req.query.demoRunId && { demoRunId: String(req.query.demoRunId) }),
+      ...(validation.data.query.demoRunId && { demoRunId: validation.data.query.demoRunId }),
     });
 
     if (agentAddress && config.contract.agentsId) {
