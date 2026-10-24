@@ -581,6 +581,118 @@ describe('POST /api/registry/prepare-deactivate', () => {
     expect(res.body.code).toBe('INVALID_BODY');
     expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
   });
+
+  it('maps SERVICE_NOT_FOUND contract error to 404', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new ContractError('Service not found', 'SERVICE_NOT_FOUND', 404)
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 999 });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Service not found', code: 'SERVICE_NOT_FOUND' });
+  });
+
+  it('maps PROVIDER_MISMATCH contract error to 403', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new ContractError('Only the provider that registered this service can deactivate it', 'PROVIDER_MISMATCH', 403)
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: 'Only the provider that registered this service can deactivate it',
+      code: 'PROVIDER_MISMATCH',
+    });
+  });
+
+  it('maps ALREADY_INACTIVE contract error to 409', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new ContractError('Service 7 is already deactivated', 'ALREADY_INACTIVE', 409)
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: 'Service 7 is already deactivated',
+      code: 'ALREADY_INACTIVE',
+    });
+  });
+
+  it('maps CATEGORY_INDEX_NOT_FOUND contract error to 404', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new ContractError('Category index not found', 'CATEGORY_INDEX_NOT_FOUND', 404)
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({
+      error: 'Category index not found',
+      code: 'CATEGORY_INDEX_NOT_FOUND',
+    });
+  });
+
+  it('maps RPC_THROTTLED contract error to 503', async () => {
+    const { RpcThrottledError } = await import('../lib/contractErrors.js');
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new RpcThrottledError('Rate limit exceeded', 3)
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('RPC_THROTTLED');
+  });
+
+  it('maps TRANSACTION_TIMEOUT contract error to 504', async () => {
+    const { TransactionTimeoutError } = await import('../lib/contractErrors.js');
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new TransactionTimeoutError('Transaction timeout')
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(504);
+    expect(res.body.code).toBe('TRANSACTION_TIMEOUT');
+  });
+
+  it('falls through to 500 and logs at error level with variant name for unmapped contract errors', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    const logger = (await import('../lib/logger.js')).default;
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new ContractError('Some exotic failure', 'UNKNOWN_CUSTOM_ERROR', 500)
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('UNKNOWN_CUSTOM_ERROR');
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'UNKNOWN_CUSTOM_ERROR' }),
+      expect.stringContaining('UNKNOWN_CUSTOM_ERROR')
+    );
+  });
 });
 
 describe('POST /api/registry/prepare-reactivate', () => {
