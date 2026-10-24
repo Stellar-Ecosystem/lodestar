@@ -165,8 +165,23 @@ router.get('/agents/:address', requireAgentsContract, async (req, res) => {
   }
 });
 
+// Rate limit ceiling for GET /api/agents/:address/policy:
+// Policy lookups query Soroban RPC directly (getAgentPolicy) without an in-memory
+// cache, making this route an amplification vector against the upstream RPC provider.
+// Write routes default to 20 req/min, but policy reads are non-mutating and need to
+// support client polling and UI navigation.
+// We choose a ceiling of 60 requests per minute (1 req/sec average per IP):
+// this provides ample capacity for legitimate frontend and agent workflows while
+// capping RPC consumption to protect Lodestar's shared RPC quota from being throttled.
+const POLICY_RATE_LIMIT_MAX = 60;
+const POLICY_RATE_LIMIT_WINDOW_MS = 60_000;
+
 // GET /api/agents/:address/policy
-router.get('/agents/:address/policy', requireAgentsContract, async (req, res) => {
+router.get(
+  '/agents/:address/policy',
+  requireAgentsContract,
+  writeRateLimiter(POLICY_RATE_LIMIT_MAX, POLICY_RATE_LIMIT_WINDOW_MS),
+  async (req, res) => {
   try {
     const { address } = req.params;
     const policy = await getAgentPolicy(address);

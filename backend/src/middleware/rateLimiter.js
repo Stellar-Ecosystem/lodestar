@@ -66,3 +66,5 @@ export const writeRateLimiter = createRateLimiter;
 export function getRateLimiterRedis() {
   return client;
 }
+
+export const rateLimiter = writeRateLimiter;
