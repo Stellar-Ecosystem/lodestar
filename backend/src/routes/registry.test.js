@@ -42,8 +42,29 @@ vi.mock('../lib/reputationHistory.js', () => ({
   getReputationHistory: (...args) => mockGetReputationHistory(...args),
 }));
 
+// A pino-like stand-in: `child()` returns a logger that remembers the
+// bindings it was created with, and every line it emits is recorded so the
+// structured log context of a route can be asserted (#670).
+const mockLogLines = [];
+
+function createMockLogger(bindings = {}) {
+  const record = (level) => (obj, msg) => {
+    // Pino merges the child bindings into every line, so the mock does too.
+    mockLogLines.push({ level, ...bindings, ...(obj ?? {}), bindings, msg });
+  };
+  return {
+    error: record('error'),
+    info: record('info'),
+    warn: record('warn'),
+    debug: record('debug'),
+    child: vi.fn((extra) => createMockLogger({ ...bindings, ...extra })),
+  };
+}
+
+const mockLogger = createMockLogger();
+
 vi.mock('../lib/logger.js', () => ({
-  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+  default: mockLogger,
 }));
 
 // Rate limiting is verified in isolation in middleware/rateLimiter.test.js;
@@ -783,6 +804,87 @@ describe('POST /api/reputation/:id — authorization', () => {
   });
 });
 
+describe('POST /api/reputation/:id — structured log context (#670)', () => {
+  const VALID_AGENT = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+  let logApp;
+
+  beforeAll(async () => {
+    const router = (await import('./registry.js')).default;
+    const requestIdMiddleware = (await import('../lib/requestId.js')).default;
+    logApp = express();
+    logApp.use(express.json());
+    logApp.use(requestIdMiddleware);
+    logApp.use('/api', router);
+  });
+
+  beforeEach(() => {
+    mockLogLines.length = 0;
+    mockIsAllowedReputationAgent.mockReset();
+    mockUpdateReputation.mockReset();
+  });
+
+  it('emits one structured line per request with duration, outcome and the request id', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(7);
+
+    const res = await request(logApp)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(200);
+    expect(mockLogLines).toHaveLength(1);
+
+    const [line] = mockLogLines;
+    expect(line.level).toBe('info');
+    expect(line.outcome).toBe('updated');
+    expect(typeof line.durationMs).toBe('number');
+    expect(line.durationMs).toBeGreaterThanOrEqual(0);
+    expect(line.serviceId).toBe(1);
+    expect(line.agent).toBe(VALID_AGENT);
+    // The request id is bound to the child logger, so it is on the line
+    // itself and on every line the request emits.
+    expect(line.bindings.requestId).toBe(res.headers['x-request-id']);
+    expect(line.requestId).toBe(res.headers['x-request-id']);
+  });
+
+  it('logs a rejected vote without the request body', async () => {
+    const res = await request(logApp)
+      .post('/api/reputation/1')
+      .send({ positive: 'yes', agent: VALID_AGENT });
+
+    expect(res.status).toBe(400);
+    expect(mockLogLines).toHaveLength(1);
+
+    const [line] = mockLogLines;
+    expect(line.level).toBe('warn');
+    expect(line.outcome).toBe('rejected');
+    expect(line.durationMs).toBeGreaterThanOrEqual(0);
+    expect(line.bindings.requestId).toBe(res.headers['x-request-id']);
+    // Neither the body nor its content is logged.
+    expect(line).not.toHaveProperty('body');
+    expect(JSON.stringify(line)).not.toContain('yes');
+    expect(mockUpdateReputation).not.toHaveBeenCalled();
+  });
+
+  it('logs a failed vote with the error and the duration', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockRejectedValueOnce(new Error('boom'));
+
+    const res = await request(logApp)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(500);
+    expect(mockLogLines).toHaveLength(1);
+
+    const [line] = mockLogLines;
+    expect(line.level).toBe('error');
+    expect(line.outcome).toBe('failed');
+    expect(line.durationMs).toBeGreaterThanOrEqual(0);
+    expect(line.bindings.requestId).toBe(res.headers['x-request-id']);
+  });
+});
+
 describe('POST /api/services/:id/deactivate', () => {
   const VALID_PROVIDER = VALID_STELLAR_ADDRESS;
 
@@ -1091,5 +1193,173 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
 
     expect(res.status).toBe(200);
     expect('ttl_warning' in res.body).toBe(false);
+  });
+});
+
+describe('POST /api/reputation/:id — upstream deadline (#671)', () => {
+  const VALID_AGENT = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+
+  beforeEach(() => {
+    mockIsAllowedReputationAgent.mockReset();
+    mockUpdateReputation.mockReset();
+  });
+
+  it('answers 504 UPSTREAM_TIMEOUT when the contract call outlives the deadline', async () => {
+    const { default: config } = await import('../config.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+
+    // A hanging RPC node: the promise never settles.
+    let signalStarted;
+    const started = new Promise((resolve) => {
+      signalStarted = resolve;
+    });
+    mockUpdateReputation.mockImplementation(() => {
+      signalStarted();
+      return new Promise(() => {});
+    });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      // `.then()` dispatches the request — supertest only sends on demand.
+      const pending = request(app)
+        .post('/api/reputation/1')
+        .send({ positive: true, agent: VALID_AGENT })
+        .then((res) => res);
+
+      // Wait until the handler has actually started the upstream call, so the
+      // deadline is registered before the clock is advanced.
+      await started;
+      await vi.advanceTimersByTimeAsync(config.upstreamTimeout.reputationMs + 1);
+
+      const res = await pending;
+      expect(res.status).toBe(504);
+      expect(res.body.code).toBe('UPSTREAM_TIMEOUT');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout as a metric', async () => {
+    const { default: config } = await import('../config.js');
+    const { getRouteMetrics, resetRouteMetrics } = await import('../lib/routeMetrics.js');
+    resetRouteMetrics();
+
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+
+    let signalStarted;
+    const started = new Promise((resolve) => {
+      signalStarted = resolve;
+    });
+    mockUpdateReputation.mockImplementation(() => {
+      signalStarted();
+      return new Promise(() => {});
+    });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      // `.then()` dispatches the request — supertest only sends on demand.
+      const pending = request(app)
+        .post('/api/reputation/1')
+        .send({ positive: true, agent: VALID_AGENT })
+        .then((res) => res);
+
+      await started;
+      await vi.advanceTimersByTimeAsync(config.upstreamTimeout.reputationMs + 1);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(getRouteMetrics().upstreamTimeouts.total).toBe(1);
+    expect(getRouteMetrics().upstreamTimeouts.byLabel.reputation).toBe(1);
+  });
+
+  it('does not time out a vote that completes inside the deadline', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(7);
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, newReputation: 7 });
+  });
+});
+
+describe('GET /api/health — caching and idempotency (#672, #673)', () => {
+  beforeEach(async () => {
+    const { _resetMemoryCache } = await import('../lib/healthCache.js');
+    const { _reset } = await import('../lib/idempotency.js');
+    const { resetRouteMetrics } = await import('../lib/routeMetrics.js');
+    _resetMemoryCache();
+    _reset();
+    resetRouteMetrics();
+  });
+
+  it('serves Cache-Control and ETag', async () => {
+    const res = await request(app).get('/api/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(res.headers['cache-control']).toMatch(/max-age=\d+/);
+    expect(res.headers.etag).toMatch(/^W\/".+"$/);
+  });
+
+  it('answers a conditional request with 304', async () => {
+    const first = await request(app).get('/api/health');
+    const res = await request(app)
+      .get('/api/health')
+      .set('If-None-Match', first.headers.etag);
+
+    expect(res.status).toBe(304);
+  });
+
+  it('serves a repeated read from the cache instead of rebuilding it', async () => {
+    const { getHealthCacheMetrics } = await import('../lib/routeMetrics.js');
+
+    const first = await request(app).get('/api/health');
+    const second = await request(app).get('/api/health');
+
+    expect(second.body).toEqual(first.body);
+    expect(getHealthCacheMetrics().loads).toBe(1);
+    expect(getHealthCacheMetrics().hits).toBe(1);
+    expect(getHealthCacheMetrics().hitRate).toBe(0.5);
+  });
+
+  it('replays a duplicate Idempotency-Key without re-executing the check', async () => {
+    const { getHealthCacheMetrics } = await import('../lib/routeMetrics.js');
+
+    const first = await request(app).get('/api/health').set('Idempotency-Key', 'retry-key-1');
+    const second = await request(app).get('/api/health').set('Idempotency-Key', 'retry-key-1');
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual(first.body);
+    expect(second.headers['idempotent-replay']).toBe('true');
+    // Exactly one effect: the payload was built once and cached once.
+    expect(getHealthCacheMetrics().loads).toBe(1);
+    expect(getHealthCacheMetrics().lookups).toBe(1);
+  });
+
+  it('rejects a malformed Idempotency-Key', async () => {
+    const res = await request(app).get('/api/health').set('Idempotency-Key', 'not a key');
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('IDEMPOTENCY_KEY_INVALID');
+  });
+
+  it('exposes the cache hit rate and the timeout counters as metrics', async () => {
+    await request(app).get('/api/health');
+    await request(app).get('/api/health');
+
+    const res = await request(app).get('/api/metrics');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body.healthCache.lookups).toBe(2);
+    expect(res.body.healthCache.hits).toBe(1);
+    expect(res.body.healthCache.hitRate).toBe(0.5);
+    expect(res.body.upstreamTimeouts.total).toBe(0);
   });
 });
