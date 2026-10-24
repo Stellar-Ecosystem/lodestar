@@ -332,3 +332,61 @@ describe('GET /api/agents/:address/payment-history', () => {
     expect(res.body.code).toBe('INVALID_PAGINATION');
   });
 });
+
+describe('GET /agents/:address/policy', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns policy for a registered agent', async () => {
+    const mockPolicy = {
+      max_per_tx_stroops: '10000000',
+      daily_spent_stroops: '0',
+      max_per_day_stroops: '50000000',
+      allowed_categories: ['weather'],
+    };
+    mockGetAgentPolicy.mockResolvedValueOnce(mockPolicy);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/policy`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(mockPolicy);
+    expect(mockGetAgentPolicy).toHaveBeenCalledWith(VALID_ADDR);
+  });
+
+  it('returns 404 NOT_FOUND when policy is not found', async () => {
+    mockGetAgentPolicy.mockResolvedValueOnce(null);
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/policy`);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Policy not found', code: 'NOT_FOUND' });
+    expect(mockGetAgentPolicy).toHaveBeenCalledWith(VALID_ADDR);
+  });
+
+  it('rejects invalid stellar address format with 400 and INVALID_ADDRESS without calling contract', async () => {
+    const res = await request(app).get('/agents/short-address/policy');
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_ADDRESS');
+    expect(mockGetAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it('rejects unexpected query params with 400 and INVALID_QUERY without calling contract', async () => {
+    const res = await request(app).get(`/agents/${VALID_ADDR}/policy?query=extra`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_QUERY');
+    expect(mockGetAgentPolicy).not.toHaveBeenCalled();
+  });
+
+  it('rejects unexpected body with 400 and INVALID_BODY without calling contract', async () => {
+    const res = await request(app)
+      .get(`/agents/${VALID_ADDR}/policy`)
+      .send({ some: 'data' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockGetAgentPolicy).not.toHaveBeenCalled();
+  });
+});

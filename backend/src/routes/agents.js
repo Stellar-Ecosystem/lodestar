@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import {
   listAgentsPage,
   getAgent,
@@ -165,8 +166,76 @@ router.get('/agents/:address', requireAgentsContract, async (req, res) => {
   }
 });
 
+// Schema definitions for GET /api/agents/:address/policy
+export const getAgentPolicyParamsSchema = z.object({
+  address: z
+    .string({
+      required_error: '`address` parameter is required',
+      invalid_type_error: '`address` parameter must be a string',
+    })
+    .regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar address format'),
+});
+
+export const getAgentPolicyQuerySchema = z
+  .object({})
+  .strict({ message: 'No query parameters allowed' });
+
+export const getAgentPolicyBodySchema = z
+  .union([
+    z.undefined(),
+    z.object({}).strict({ message: 'No body allowed' }),
+  ]);
+
+export const getAgentPolicySchema = z.object({
+  params: getAgentPolicyParamsSchema,
+  query: getAgentPolicyQuerySchema.optional(),
+  body: getAgentPolicyBodySchema.optional(),
+});
+
+export function validateGetAgentPolicy(req, res, next) {
+  if (!req.params || !req.params.address || typeof req.params.address !== 'string' || req.params.address.trim() === '') {
+    return res.status(400).json({
+      error: '`address` parameter is required',
+      code: 'INVALID_PARAMS',
+    });
+  }
+
+  const paramsResult = getAgentPolicyParamsSchema.safeParse(req.params);
+  if (!paramsResult.success) {
+    const issue = paramsResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message,
+      code: typeof req.params.address !== 'string' ? 'INVALID_PARAMS' : 'INVALID_ADDRESS',
+      details: paramsResult.error.issues,
+    });
+  }
+
+  const queryResult = getAgentPolicyQuerySchema.safeParse(req.query ?? {});
+  if (!queryResult.success) {
+    const issue = queryResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message,
+      code: 'INVALID_QUERY',
+      details: queryResult.error.issues,
+    });
+  }
+
+  const bodyResult = getAgentPolicyBodySchema.safeParse(req.body);
+  if (!bodyResult.success) {
+    const issue = bodyResult.error.issues[0];
+    return res.status(400).json({
+      error: issue.message,
+      code: 'INVALID_BODY',
+      details: bodyResult.error.issues,
+    });
+  }
+
+  req.params = paramsResult.data;
+  next();
+}
+
 // GET /api/agents/:address/policy
-router.get('/agents/:address/policy', requireAgentsContract, async (req, res) => {
+router.get('/agents/:address/policy', validateGetAgentPolicy, requireAgentsContract, async (req, res) => {
   try {
     const { address } = req.params;
     const policy = await getAgentPolicy(address);
