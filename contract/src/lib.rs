@@ -2362,6 +2362,522 @@ mod test {
         assert!(matches!(result, Err(RegistryError::ServiceNotFound)));
     }
 
+    // ── get_service boundary tests ────────────────────────────────────────
+    //
+    // `get_service(id)` has a single numeric input, so its thresholds are the
+    // edges of the id space and of the assigned range: ids are handed out from
+    // 1 (`counter + 1`), so 0 sits one below the first id and `last + 1` one
+    // above the last. The u32/u64 seam is probed too, because other entrypoints
+    // index with u32 and a truncating key would alias ids across that seam.
+    // Each test owns a single `Env`, so it records exactly one snapshot under
+    // `test_snapshots/test/`.
+
+    /// Largest page `list_services` will return; a registry one past this is
+    /// the "maximum collection" case for a point lookup.
+    const LIST_PAGE_CAP: u64 = 50;
+
+    fn expect_service_not_found(registry: &LodestarRegistryClient, id: u64, context: &str) {
+        assert!(
+            matches!(
+                registry.try_get_service(&id),
+                Err(Ok(RegistryError::ServiceNotFound))
+            ),
+            "{}: id={} must return ServiceNotFound",
+            context,
+            id
+        );
+    }
+
+    fn expect_service_found(
+        registry: &LodestarRegistryClient,
+        id: u64,
+        context: &str,
+    ) -> ServiceEntry {
+        match registry.try_get_service(&id) {
+            Ok(Ok(entry)) => {
+                assert_eq!(entry.id, id, "{}: entry.id must equal the key", context);
+                entry
+            }
+            _ => panic!("{}: id={} must be found", context, id),
+        }
+    }
+
+    /// Writes a `ServiceEntry` straight to storage so values the public API
+    /// cannot produce (extreme ids, out-of-clamp reputations) can be read back.
+    fn store_raw_service(
+        env: &Env,
+        registry_id: &Address,
+        id: u64,
+        reputation: i32,
+        registered_at: u64,
+    ) {
+        let entry = ServiceEntry {
+            id,
+            name: String::from_str(env, "Raw Service"),
+            description: String::from_str(env, "Injected directly"),
+            endpoint: String::from_str(env, "https://raw.test"),
+            price_usdc: String::from_str(env, "1"),
+            pay_to: String::from_str(env, "G_RAW"),
+            category: String::from_str(env, "data"),
+            provider: Address::generate(env),
+            reputation,
+            active: true,
+            registered_at,
+        };
+        env.as_contract(registry_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Service(id), &entry);
+        });
+    }
+
+    #[test]
+    fn test_get_service_id_boundaries_on_empty_registry() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        assert_eq!(registry.get_service_count(), 0);
+
+        // Empty collection: nothing is readable, including both extremes and
+        // both sides of the u32/u64 seam.
+        let ids: [u64; 8] = [
+            0,
+            1,
+            2,
+            u32::MAX as u64,
+            u32::MAX as u64 + 1,
+            u64::MAX - 1,
+            u64::MAX,
+            LIST_PAGE_CAP,
+        ];
+        for id in ids {
+            expect_service_not_found(&registry, id, "empty registry");
+        }
+    }
+
+    #[test]
+    fn test_get_service_id_boundaries_around_assigned_range() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+
+        let mut providers: Vec<Address> = vec![&env];
+        for i in 0..3u64 {
+            let provider = Address::generate(&env);
+            let endpoint = String::from_str(&env, &format!("https://svc-{}.test", i + 1));
+            let id =
+                register_service_with_provider_and_endpoint(&env, &registry, &provider, &endpoint);
+            assert_eq!(id, i + 1, "ids must be assigned sequentially from 1");
+            providers.push_back(provider);
+        }
+        let last = registry.get_service_count();
+        assert_eq!(last, 3);
+
+        // (id, expected index into `providers` when found)
+        let cases: [(u64, Option<u32>); 9] = [
+            (0, None),        // one below the first assigned id
+            (1, Some(0)),     // first assigned id
+            (2, Some(1)),     // first + 1 / last - 1
+            (last, Some(2)),  // last assigned id
+            (last + 1, None), // one above the last assigned id
+            (last + 2, None), // well above
+            (u32::MAX as u64, None),
+            (u64::MAX - 1, None), // one below the type maximum
+            (u64::MAX, None),     // type maximum
+        ];
+
+        for (id, expected) in cases {
+            let ctx = format!("assigned range 1..={}", last);
+            match expected {
+                Some(idx) => {
+                    let entry = expect_service_found(&registry, id, &ctx);
+                    assert_eq!(entry.provider, providers.get(idx).unwrap());
+                    assert_eq!(
+                        entry.endpoint,
+                        String::from_str(&env, &format!("https://svc-{}.test", id))
+                    );
+                    assert!(entry.active);
+                    assert_eq!(entry.reputation, 0);
+                }
+                None => expect_service_not_found(&registry, id, &ctx),
+            }
+        }
+
+        // Registering one more moves the threshold up by exactly one.
+        let next = register_a_service(&env, &registry);
+        assert_eq!(next, last + 1);
+        expect_service_found(&registry, next, "after next registration");
+        expect_service_not_found(&registry, next + 1, "after next registration");
+    }
+
+    #[test]
+    fn test_get_service_maximum_collection_beyond_page_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+
+        // One past the largest page `list_services` serves, so ids on both
+        // sides of that cap must still be individually reachable.
+        let total = LIST_PAGE_CAP + 1;
+        let provider = Address::generate(&env);
+        for i in 1..=total {
+            let endpoint = String::from_str(&env, &format!("https://bulk-{}.test", i));
+            let id =
+                register_service_with_provider_and_endpoint(&env, &registry, &provider, &endpoint);
+            assert_eq!(id, i);
+        }
+        assert_eq!(registry.get_service_count(), total);
+        assert_eq!(registry.list_services(&0, &u32::MAX, &None).len(), 50);
+
+        let found: [u64; 5] = [1, 2, LIST_PAGE_CAP - 1, LIST_PAGE_CAP, total];
+        for id in found {
+            let entry = expect_service_found(&registry, id, "full registry");
+            assert_eq!(
+                entry.endpoint,
+                String::from_str(&env, &format!("https://bulk-{}.test", id))
+            );
+        }
+        let missing: [u64; 3] = [0, total + 1, u64::MAX];
+        for id in missing {
+            expect_service_not_found(&registry, id, "full registry");
+        }
+    }
+
+    #[test]
+    fn test_get_service_round_trips_field_length_boundaries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+
+        // (name_len, description_len, endpoint_len, category, expect_ok)
+        // Every validated length is probed one below, at, and one above its
+        // threshold. A rejected registration must leave no readable entry and
+        // must not consume an id.
+        let cases: [(usize, usize, usize, &str, bool); 13] = [
+            (3, 10, 1, "compute", true),     // all minimums
+            (64, 256, 256, "compute", true), // all maximums
+            (2, 10, 1, "compute", false),    // name one below min
+            (4, 10, 1, "compute", true),     // name one above min
+            (63, 10, 1, "compute", true),    // name one below max
+            (65, 10, 1, "compute", false),   // name one above max
+            (3, 9, 1, "compute", false),     // description one below min
+            (3, 11, 1, "compute", true),     // description one above min
+            (3, 255, 1, "compute", true),    // description one below max
+            (3, 257, 1, "compute", false),   // description one above max
+            (3, 10, 255, "compute", true),   // endpoint one below max
+            (3, 10, 257, "compute", false),  // endpoint one above max
+            // Empty endpoint: no minimum is enforced today, so the empty
+            // string round-trips. If a minimum is introduced, move this case
+            // to the rejected side.
+            (3, 10, 0, "compute", true),
+        ];
+
+        let mut expected_next = 1u64;
+        for (case, (name_len, desc_len, endpoint_len, category, expect_ok)) in
+            cases.iter().enumerate()
+        {
+            let provider = Address::generate(&env);
+            let name = String::from_str(&env, &"N".repeat(*name_len));
+            let description = String::from_str(&env, &"D".repeat(*desc_len));
+            let endpoint = String::from_str(&env, &"E".repeat(*endpoint_len));
+            let price = String::from_str(&env, "");
+            let pay_to = String::from_str(&env, "");
+            let result = registry.try_register_service(
+                &provider,
+                &name,
+                &description,
+                &endpoint,
+                &price,
+                &pay_to,
+                &String::from_str(&env, category),
+            );
+            let ctx = format!("case {}", case);
+
+            if *expect_ok {
+                assert!(
+                    matches!(result, Ok(Ok(id)) if id == expected_next),
+                    "{}: registration must succeed with id {}",
+                    ctx,
+                    expected_next
+                );
+                let entry = expect_service_found(&registry, expected_next, &ctx);
+                assert_eq!(entry.name, name, "{}: name", ctx);
+                assert_eq!(entry.name.len() as usize, *name_len, "{}", ctx);
+                assert_eq!(entry.description, description, "{}: description", ctx);
+                assert_eq!(entry.description.len() as usize, *desc_len, "{}", ctx);
+                assert_eq!(entry.endpoint, endpoint, "{}: endpoint", ctx);
+                assert_eq!(entry.endpoint.len() as usize, *endpoint_len, "{}", ctx);
+                // Unvalidated fields accept and return the empty string.
+                assert_eq!(entry.price_usdc.len(), 0, "{}: price_usdc", ctx);
+                assert_eq!(entry.pay_to.len(), 0, "{}: pay_to", ctx);
+                assert_eq!(entry.provider, provider, "{}: provider", ctx);
+                assert_eq!(entry.reputation, 0, "{}: reputation", ctx);
+                assert!(entry.active, "{}: active", ctx);
+                expected_next += 1;
+            } else {
+                assert!(result.is_err(), "{}: registration must be rejected", ctx);
+                expect_service_not_found(&registry, expected_next, &ctx);
+            }
+            assert_eq!(
+                registry.get_service_count(),
+                expected_next - 1,
+                "{}: counter",
+                ctx
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_service_category_length_boundaries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+
+        // Category length is validated as 1..=32 before canonicalisation; the
+        // stored value is always the canonical lowercase name.
+        let padded_32 = format!("{:<32}", "AI"); // "AI" + 30 spaces = 32 bytes
+        let padded_33 = format!("{:<33}", "AI");
+        let padded_31 = format!("{:<31}", "AI");
+        assert_eq!(padded_32.len(), 32);
+
+        // (raw category, Some(canonical) when accepted)
+        let cases: [(&str, Option<&str>); 6] = [
+            ("", None),               // length 0: one below min
+            ("x", None),              // length 1: at min, but unknown
+            ("ai", Some("ai")),       // shortest canonical category
+            (&padded_31, Some("ai")), // one below max
+            (&padded_32, Some("ai")), // at max
+            (&padded_33, None),       // one above max
+        ];
+
+        let mut expected_next = 1u64;
+        for (raw, canonical) in cases {
+            let provider = Address::generate(&env);
+            let result = registry.try_register_service(
+                &provider,
+                &String::from_str(&env, "Category Probe"),
+                &String::from_str(&env, "Category boundary probe"),
+                &String::from_str(&env, "https://cat.test"),
+                &String::from_str(&env, "1"),
+                &String::from_str(&env, "G_CAT"),
+                &String::from_str(&env, raw),
+            );
+            let ctx = format!("category len {}", raw.len());
+            match canonical {
+                Some(cat) => {
+                    assert!(
+                        matches!(result, Ok(Ok(id)) if id == expected_next),
+                        "{}",
+                        ctx
+                    );
+                    let entry = expect_service_found(&registry, expected_next, &ctx);
+                    assert_eq!(entry.category, String::from_str(&env, cat), "{}", ctx);
+                    expected_next += 1;
+                }
+                None => {
+                    assert!(
+                        matches!(result, Err(Ok(RegistryError::InvalidCategory))),
+                        "{}: must be InvalidCategory",
+                        ctx
+                    );
+                    expect_service_not_found(&registry, expected_next, &ctx);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_service_returns_stored_numeric_extremes() {
+        let env = Env::default();
+        let (registry_id, registry, _agents) = deploy_registry_with_id(&env);
+
+        // get_service is a pure read: whatever is stored is returned verbatim.
+        // Probe zero, both reputation clamps (and one past each), the i32
+        // extremes, and zero / u32::MAX / u64::MAX for registered_at.
+        let cases: [(u64, i32, u64); 9] = [
+            (1, 0, 0),
+            (2, MIN_REPUTATION, 1),
+            (3, MIN_REPUTATION - 1, u32::MAX as u64),
+            (4, MAX_REPUTATION, u32::MAX as u64 + 1),
+            (5, MAX_REPUTATION + 1, u64::MAX - 1),
+            (6, i32::MIN, u64::MAX),
+            (7, i32::MAX, u64::MAX),
+            (8, -1, 0),
+            (9, 1, 0),
+        ];
+        for (id, reputation, registered_at) in cases {
+            store_raw_service(&env, &registry_id, id, reputation, registered_at);
+        }
+        for (id, reputation, registered_at) in cases {
+            let entry = expect_service_found(&registry, id, "numeric extremes");
+            assert_eq!(entry.reputation, reputation, "reputation for id {}", id);
+            assert_eq!(
+                entry.registered_at, registered_at,
+                "registered_at for id {}",
+                id
+            );
+        }
+        expect_service_not_found(&registry, 0, "numeric extremes");
+        expect_service_not_found(&registry, cases.len() as u64 + 1, "numeric extremes");
+    }
+
+    #[test]
+    fn test_get_service_storage_key_extremes_do_not_alias() {
+        let env = Env::default();
+        let (registry_id, registry, _agents) = deploy_registry_with_id(&env);
+
+        // Entries parked on the extreme keys the public API never assigns.
+        let seam = u32::MAX as u64 + 1;
+        let stored: [u64; 3] = [0, seam, u64::MAX];
+        for (i, id) in stored.iter().enumerate() {
+            store_raw_service(&env, &registry_id, *id, i as i32, 0);
+        }
+        for (i, id) in stored.iter().enumerate() {
+            let entry = expect_service_found(&registry, *id, "extreme key");
+            assert_eq!(
+                entry.reputation, i as i32,
+                "id {} returned a foreign entry",
+                id
+            );
+        }
+
+        // Neighbours on each side of every stored key stay empty: no
+        // truncation to u32 (seam -> 0) and no wraparound (MAX -> 0).
+        let neighbours: [u64; 5] = [1, u32::MAX as u64, seam + 1, u64::MAX - 1, 2];
+        for id in neighbours {
+            expect_service_not_found(&registry, id, "extreme key neighbour");
+        }
+    }
+
+    #[test]
+    fn test_get_service_returns_entry_across_active_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+        let endpoint = String::from_str(&env, "https://lifecycle.test");
+
+        let left = register_a_service(&env, &registry);
+        let id = register_service_with_provider_and_endpoint(&env, &registry, &provider, &endpoint);
+        let right = register_a_service(&env, &registry);
+        assert_eq!((left, id, right), (1, 2, 3));
+
+        // (step, expected `active`) — list_services hides inactive entries, but
+        // get_service must keep returning them unchanged.
+        let a = expect_service_found(&registry, id, "active");
+        assert!(a.active);
+
+        registry.deactivate_service(&provider, &id);
+        let b = expect_service_found(&registry, id, "deactivated");
+        assert!(!b.active);
+        assert_eq!(b.registered_at, a.registered_at);
+        assert_eq!(b.endpoint, endpoint);
+        assert_eq!(registry.list_services(&0, &50, &None).len(), 2);
+
+        registry.reactivate_service(&provider, &id);
+        let c = expect_service_found(&registry, id, "reactivated");
+        assert!(c.active);
+        assert_eq!(c.registered_at, a.registered_at);
+
+        // Neighbours are untouched by the lifecycle of the middle entry.
+        assert!(expect_service_found(&registry, left, "left neighbour").active);
+        assert!(expect_service_found(&registry, right, "right neighbour").active);
+        expect_service_not_found(&registry, right + 1, "past last");
+    }
+
+    // Resource-consumption snapshot for `get_service`.
+    //
+    // Soroban's JSON snapshots record ledger state and events but not budget
+    // usage, so this test also writes the CPU and memory cost of each boundary
+    // case to `test_snapshots/get_service_cost.snap`. Like the JSON
+    // snapshots, the file is rewritten on every run; commit it so any change in
+    // resource consumption shows up in the diff. Costs are measured natively
+    // (host functions only, no Wasm instructions) and are deterministic for the
+    // pinned `soroban-env-host` version.
+    #[test]
+    fn test_get_service_cost_snapshot() {
+        extern crate std;
+        use std::string::String as StdString;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry_id, registry, _agents) = deploy_registry_with_id(&env);
+
+        let mut rows: alloc::vec::Vec<(&str, u64, u64, bool)> = alloc::vec::Vec::new();
+        let mut measure = |label: &'static str, id: u64| {
+            env.cost_estimate().budget().reset_unlimited();
+            let found = matches!(registry.try_get_service(&id), Ok(Ok(_)));
+            let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+            let mem = env.cost_estimate().budget().memory_bytes_cost();
+            rows.push((label, cpu, mem, found));
+        };
+
+        // Empty registry misses.
+        measure("miss_empty_id_0", 0);
+        measure("miss_empty_id_1", 1);
+        measure("miss_empty_id_u64_max", u64::MAX);
+
+        // Smallest accepted entry (id 1) and largest accepted entry (id 2).
+        let min_provider = Address::generate(&env);
+        registry.register_service(
+            &min_provider,
+            &String::from_str(&env, &"N".repeat(3)),
+            &String::from_str(&env, &"D".repeat(10)),
+            &String::from_str(&env, ""),
+            &String::from_str(&env, ""),
+            &String::from_str(&env, ""),
+            &String::from_str(&env, "ai"),
+        );
+        let max_provider = Address::generate(&env);
+        registry.register_service(
+            &max_provider,
+            &String::from_str(&env, &"N".repeat(64)),
+            &String::from_str(&env, &"D".repeat(256)),
+            &String::from_str(&env, &"E".repeat(256)),
+            &String::from_str(&env, "1000000"),
+            &String::from_str(&env, "GPAYTO"),
+            &String::from_str(&env, "compute"),
+        );
+        registry.deactivate_service(&max_provider, &2);
+        store_raw_service(&env, &registry_id, u64::MAX, i32::MIN, u64::MAX);
+
+        measure("miss_below_first_id_0", 0);
+        measure("hit_min_fields_id_1", 1);
+        measure("hit_max_fields_inactive_id_2", 2);
+        measure("miss_above_last_id_3", 3);
+        measure("hit_raw_id_u64_max", u64::MAX);
+
+        let expected_found = [false, false, false, false, true, true, false, true];
+        assert_eq!(rows.len(), expected_found.len());
+        let mut out = StdString::from(
+            "# get_service resource consumption (native, host functions only)\n\
+             # Regenerated by `cargo test test_get_service_cost_snapshot`.\n\
+             # case cpu_instructions memory_bytes found\n",
+        );
+        for (label, cpu, mem, found) in rows.iter() {
+            out.push_str(&format!("{} {} {} {}\n", label, cpu, mem, found));
+        }
+
+        // Record first so the snapshot reflects this run even if a sanity
+        // check below fails.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_snapshots");
+        std::fs::create_dir_all(&dir).expect("create test_snapshots dir");
+        std::fs::write(dir.join("get_service_cost.snap"), out).expect("write cost snapshot");
+
+        for ((label, cpu, mem, found), expected) in rows.iter().zip(expected_found) {
+            assert_eq!(*found, expected, "{}: unexpected lookup outcome", label);
+            assert!(*cpu > 0 && *mem > 0, "{}: cost must be measured", label);
+            // Loose ceiling: a single keyed read must stay far below the
+            // 100M-instruction per-transaction limit.
+            assert!(
+                *cpu < 5_000_000,
+                "{}: get_service cost regressed: {}",
+                label,
+                cpu
+            );
+        }
+    }
+
     #[test]
     fn test_register_service_returns_typed_duplicate_error() {
         let env = Env::default();
