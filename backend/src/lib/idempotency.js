@@ -14,6 +14,9 @@
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const PURGE_INTERVAL_MS = 60_000; // sweep every 60 s
 
+/** Default lifetime of a stored key. Routes may shorten it per use. */
+export const IDEMPOTENCY_TTL_MS = TTL_MS;
+
 /**
  * @type {Map<string, {
  *   status: 'pending' | 'complete' | 'failed',
@@ -94,12 +97,13 @@ export function getEntry(key) {
  * Must only be called after confirming no live entry exists.
  *
  * @param {string} key
+ * @param {number} [ttlMs] Lifetime of the reservation. Defaults to 24 h.
  */
-export function markPending(key) {
+export function markPending(key, ttlMs = TTL_MS) {
   store.set(key, {
     status: 'pending',
     result: null,
-    expiresAt: Date.now() + TTL_MS,
+    expiresAt: Date.now() + ttlMs,
   });
 }
 

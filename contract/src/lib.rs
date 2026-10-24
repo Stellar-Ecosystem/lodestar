@@ -7,9 +7,7 @@ use soroban_sdk::{
 
 const MAX_TTL: u32 = 3110400;
 
-// Minimum number of ledgers that must elapse before the same agent may vote on
-// the same service again. ~1 hour at 5 s/ledger. This caps how fast any single
-// identity can move a service's reputation, blocking automated inflation loops.
+
 const VOTE_COOLDOWN_LEDGERS: u64 = 720;
 
 const MAX_REPUTATION: i32 = 10_000;
@@ -38,8 +36,7 @@ pub enum RegistryError {
 // re-register under a canonical category returned by `list_categories()`.
 const VALID_CATEGORIES: &[&str] = &["search", "weather", "finance", "ai", "data", "compute"];
 
-// Returns the canonical lower-case form for a user-supplied category string,
-// or `None` if it is not one of the known categories.
+
 fn canonicalize_category(env: &Env, category: &String) -> Option<String> {
     let len = category.len() as usize;
     if len > 32 {

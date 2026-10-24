@@ -140,6 +140,36 @@ const config = Object.freeze({
       windowMs: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_WINDOW_MS, 60_000, 'PAYMENT_RATE_LIMIT_WINDOW_MS'),
       max: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_MAX, 10, 'PAYMENT_RATE_LIMIT_MAX'),
     },
+    // Deliberate per-route ceiling for GET /demo/weather (#674). Each accepted
+    // call costs a facilitator verification plus an upstream weather fetch, so
+    // the route is throttled harder than a plain local read but far more
+    // generously than an on-chain write.
+    weather: {
+      windowMs: parsePositiveInt(process.env.WEATHER_RATE_LIMIT_WINDOW_MS, 60_000, 'WEATHER_RATE_LIMIT_WINDOW_MS'),
+      max: parsePositiveInt(process.env.WEATHER_RATE_LIMIT_MAX, 30, 'WEATHER_RATE_LIMIT_MAX'),
+    },
+  },
+
+  // Upstream deadlines (#671). A slow or hanging RPC node must not hold a
+  // request open indefinitely — the route answers 504 UPSTREAM_TIMEOUT and
+  // frees the connection instead.
+  upstreamTimeout: {
+    // A reputation vote is simulate + submit + confirm + read back on chain,
+    // so the deadline covers the whole sequence, not a single RPC round trip.
+    reputationMs: parsePositiveInt(process.env.REPUTATION_TIMEOUT_MS, 20_000, 'REPUTATION_TIMEOUT_MS'),
+  },
+
+  // Health endpoint caching and idempotency (#672, #673).
+  health: {
+    // Short TTL: the payload changes slowly (network, contract, uptime), so a
+    // few seconds of staleness is cheaper than re-computing it per request.
+    cacheTtlSeconds: parsePositiveInt(process.env.HEALTH_CACHE_TTL_SECONDS, 5, 'HEALTH_CACHE_TTL_SECONDS'),
+    // How long a stored Idempotency-Key response may be replayed.
+    idempotencyTtlSeconds: parsePositiveInt(
+      process.env.HEALTH_IDEMPOTENCY_TTL_SECONDS,
+      300,
+      'HEALTH_IDEMPOTENCY_TTL_SECONDS',
+    ),
   },
 
   demoRun: {
