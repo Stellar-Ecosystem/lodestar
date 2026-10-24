@@ -12,7 +12,8 @@ export function adminAuth(req, res, next) {
     });
   }
 
-  const body = JSON.stringify(req.body);
+  // #566: prefer the raw bytes captured by express.json({ verify })
+  const body = req.rawBody ?? JSON.stringify(req.body);
   const expected = crypto
     .createHmac('sha256', config.server.secret)
     .update(body)

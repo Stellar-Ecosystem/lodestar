@@ -9,7 +9,7 @@ const ALL_CATEGORIES: Category[] = ['search', 'weather', 'finance', 'ai', 'data'
 
 function stroopsToUsdc(stroops: string): string {
   const n = Number(stroops) / STROOPS_PER_USDC;
-  // toFixed(4) then strip trailing zeros, keep at least one decimal if fractional
+  
   const fixed = n.toFixed(4);
   const trimmed = fixed.replace(/0+$/, '').replace(/\.$/, '');
   return trimmed.includes('.') ? trimmed : Number(trimmed).toLocaleString();
@@ -22,11 +22,11 @@ function usdcToStroops(usdc: string): string {
 
 interface Props {
   policy: SpendingPolicy;
-  /** Current connected wallet address */
+ 
   walletAddress?: string;
-  /** Agent owner address */
+ 
   agentOwner?: string;
-  /** Called with form values when user submits update */
+  
   onUpdate?: (params: {
     maxPerTxStroops: string;
     maxPerDayStroops: string;
@@ -42,14 +42,14 @@ export default function SpendingPolicyDisplay({ policy, walletAddress, agentOwne
 
   const isOwner = walletAddress && agentOwner && walletAddress === agentOwner;
 
-  // Form state — initialize from current policy
+  
   const [maxPerTx, setMaxPerTx] = useState(() => stroopsToUsdc(policy.max_per_tx_stroops));
   const [maxPerDay, setMaxPerDay] = useState(() => stroopsToUsdc(policy.max_per_day_stroops));
   const [minScore, setMinScore] = useState(policy.min_score_to_earn);
   const [categories, setCategories] = useState<string[]>(policy.allowed_categories);
 
   function startEdit() {
-    // Reset form to current policy values
+    
     setMaxPerTx(stroopsToUsdc(policy.max_per_tx_stroops));
     setMaxPerDay(stroopsToUsdc(policy.max_per_day_stroops));
     setMinScore(policy.min_score_to_earn);

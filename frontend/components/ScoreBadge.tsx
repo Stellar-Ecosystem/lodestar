@@ -3,11 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { scoreTier, TIER_LABELS, TIER_COLORS } from '@/lib/types';
 
-interface Props {
-  score: number;
-  showScore?: boolean;
-  size?: 'sm' | 'md';
-}
+
 
 export default function ScoreBadge({ score, showScore = true, size = 'md' }: Props) {
   const safeScore = Number.isFinite(score) ? score : 0;

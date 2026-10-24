@@ -6,6 +6,14 @@ import logger from '../lib/logger.js';
  */
 const buckets = new Map();
 
+// #568: drop buckets whose newest timestamp is older than the window
+function sweep(windowMs) {
+  const cutoff = Date.now() - windowMs;
+  for (const [addr, ts] of buckets) {
+    if (ts.length === 0 || ts[ts.length - 1] < cutoff) buckets.delete(addr);
+  }
+}
+
 export function paymentRateLimiter(maxRequests = 10, windowMs = 60_000) {
   return (req, res, next) => {
     const address = req.params.address;

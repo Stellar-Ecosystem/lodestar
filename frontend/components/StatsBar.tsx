@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { fetchStats } from '@/lib/contract';
 import type { StatsResponse } from '@/lib/types';
 
@@ -36,8 +36,10 @@ export default function StatsBar() {
     };
   }, []);
 
+  const latestName = useMemo(() => stats?.latestService?.name ?? '—', [stats]);
+
   return (
-    <div className="flex flex-wrap justify-center gap-8 sm:gap-16 py-8 border-t border-b border-border">
+    <div className="flex flex-wrap justify-center gap-4 sm:gap-16 py-8 px-2 min-w-0 border-t border-b border-border">
       <Stat
         label="Total Services"
         value={stats ? String(stats.totalServices) : '—'}
@@ -48,17 +50,17 @@ export default function StatsBar() {
       />
       <Stat
         label="Latest Registration"
-        value={stats?.latestService ? stats.latestService.name : '—'}
+        value={latestName}
       />
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+const Stat = memo(function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="text-center">
-      <p className="text-2xl font-semibold text-primary truncate max-w-[180px]">{value}</p>
+    <div className="text-center min-w-0">
+      <p title={value} className="text-2xl font-semibold text-primary truncate max-w-[45vw] sm:max-w-[180px]">{value}</p>
       <p className="text-sm text-secondary mt-1">{label}</p>
     </div>
   );
-}
+});

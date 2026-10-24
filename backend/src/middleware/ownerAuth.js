@@ -12,6 +12,10 @@ export async function ownerAuth(req, res, next) {
     if (!callerAddress || typeof callerAddress !== 'string') {
       return res.status(401).json({ error: 'Caller address missing', code: 'AUTH_MISSING' });
     }
+    // #565: require a signed challenge proof alongside the claimed address
+    if (!req.headers['x-caller-signature']) {
+      return res.status(401).json({ error: 'Caller signature missing', code: 'AUTH_SIGNATURE_MISSING' });
+    }
     const { address } = req.params;
     if (!address) {
       return res.status(400).json({ error: 'Agent address param missing', code: 'INVALID_PARAMS' });

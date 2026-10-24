@@ -48,6 +48,10 @@ function parseTrustProxy(value) {
 
 const config = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? 'development',
+  // Demo-only safety gate. Demo scripts that fabricate reputation data
+  // (scripts/demo/boost-scores.js) must refuse to run unless DEMO_MODE=true,
+  // so an accidental run against a live deployment fails closed.
+  demoMode: process.env.DEMO_MODE === 'true',
   port: parseInt(process.env.PORT ?? '3001', 10),
   logLevel: process.env.LOG_LEVEL ?? 'info',
 
@@ -61,6 +65,14 @@ const config = Object.freeze({
   contract: {
     id: process.env.CONTRACT_ID,
     agentsId: process.env.AGENTS_CONTRACT_ID ?? null,
+    // Known non-demo deployment contract IDs; demo-only scripts must refuse
+    // to run against these even when DEMO_MODE=true.
+    knownNonDemoContractIds: Object.freeze(
+      (process.env.KNOWN_NON_DEMO_CONTRACT_IDS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
   },
 
   // Warn at startup if AGENTS_CONTRACT_ID is missing so operators spot it
@@ -128,9 +140,40 @@ const config = Object.freeze({
       windowMs: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_WINDOW_MS, 60_000, 'PAYMENT_RATE_LIMIT_WINDOW_MS'),
       max: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_MAX, 10, 'PAYMENT_RATE_LIMIT_MAX'),
     },
+    // Deliberate per-route ceiling for GET /demo/weather (#674). Each accepted
+    // call costs a facilitator verification plus an upstream weather fetch, so
+    // the route is throttled harder than a plain local read but far more
+    // generously than an on-chain write.
+    weather: {
+      windowMs: parsePositiveInt(process.env.WEATHER_RATE_LIMIT_WINDOW_MS, 60_000, 'WEATHER_RATE_LIMIT_WINDOW_MS'),
+      max: parsePositiveInt(process.env.WEATHER_RATE_LIMIT_MAX, 30, 'WEATHER_RATE_LIMIT_MAX'),
+    },
+  },
+
+  // Upstream deadlines (#671). A slow or hanging RPC node must not hold a
+  // request open indefinitely — the route answers 504 UPSTREAM_TIMEOUT and
+  // frees the connection instead.
+  upstreamTimeout: {
+    // A reputation vote is simulate + submit + confirm + read back on chain,
+    // so the deadline covers the whole sequence, not a single RPC round trip.
+    reputationMs: parsePositiveInt(process.env.REPUTATION_TIMEOUT_MS, 20_000, 'REPUTATION_TIMEOUT_MS'),
+  },
+
+  // Health endpoint caching and idempotency (#672, #673).
+  health: {
+    // Short TTL: the payload changes slowly (network, contract, uptime), so a
+    // few seconds of staleness is cheaper than re-computing it per request.
+    cacheTtlSeconds: parsePositiveInt(process.env.HEALTH_CACHE_TTL_SECONDS, 5, 'HEALTH_CACHE_TTL_SECONDS'),
+    // How long a stored Idempotency-Key response may be replayed.
+    idempotencyTtlSeconds: parsePositiveInt(
+      process.env.HEALTH_IDEMPOTENCY_TTL_SECONDS,
+      300,
+      'HEALTH_IDEMPOTENCY_TTL_SECONDS',
+    ),
   },
 
   demoRun: {
+    cacheTtlSeconds: parsePositiveInt(process.env.DEMO_RUN_CACHE_TTL_SECONDS, 15, 'DEMO_RUN_CACHE_TTL_SECONDS'),
     pollMaxWaitMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_WAIT_MS, 8_000, 'DEMO_RUN_POLL_MAX_WAIT_MS'),
     pollInitialDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_INITIAL_DELAY_MS, 250, 'DEMO_RUN_POLL_INITIAL_DELAY_MS'),
     pollMaxDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_DELAY_MS, 2_000, 'DEMO_RUN_POLL_MAX_DELAY_MS'),

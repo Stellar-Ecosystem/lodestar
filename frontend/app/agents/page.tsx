@@ -23,9 +23,7 @@ export default function AgentsPage() {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE);
 
-  // SWR replaces the manual setInterval poll: it dedupes concurrent requests,
-  // revalidates every 30s, and only re-renders when the returned data changes.
-  // keepPreviousData keeps the old page visible (dimmed) while a refresh is in flight.
+ 
   const {
     data,
     error: agentsError,
@@ -38,9 +36,7 @@ export default function AgentsPage() {
     { refreshInterval: 30_000, revalidateOnFocus: false, keepPreviousData: true }
   );
 
-  // Stats failure is intentionally tolerated (the original code used
-  // Promise.allSettled and only set stats on success) — a stats error must not
-  // block the agent grid. We still expose mutateStats so Retry revalidates both.
+ 
   const { data: stats = null, mutate: mutateStats } = useSWR<AgentStats>(
     'agent-stats',
     () => fetchAgentStats(),
@@ -57,10 +53,10 @@ export default function AgentsPage() {
       : 'Failed to load'
     : null;
 
-  // Sort agents locally based on the selected sort option
+  
   const sortedAgents = sortAgents(agents, sort);
 
-  // Clamp the page if the dataset shrank (e.g. agents removed between polls).
+  
   useEffect(() => {
     if (!data) return;
     const maxPage = data.total > 0 ? Math.max(0, Math.ceil(data.total / pageSize) - 1) : 0;
@@ -136,7 +132,7 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {/* Score tier legend */}
+     
       <div className="card p-4 mb-8 flex flex-wrap gap-3 items-center">
         <span className="text-xs text-secondary font-medium uppercase tracking-widest mr-2">Score tiers</span>
         {([100, 450, 700, 950, 1000] as const).map((score) => (
@@ -147,7 +143,7 @@ export default function AgentsPage() {
         </span>
       </div>
 
-      {/* Content */}
+     
       {loading && (
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
           {Array.from({ length: 3 }).map((_, i) => (

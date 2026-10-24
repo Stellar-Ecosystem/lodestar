@@ -4,8 +4,9 @@ import { useState } from 'react';
 import { useWallet } from './WalletContext';
 import WalletPickerModal from './WalletPickerModal';
 
-function truncate(addr: string) {
-  return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
+function truncate(value: string) {
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 export default function WalletConnect() {

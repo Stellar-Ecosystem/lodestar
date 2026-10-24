@@ -9,16 +9,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Agencybuilds/lodestar.git"
+    "url": "git+https://github.com/Stellar-Ecosystem/lodestar.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/Agencybuilds/lodestar/issues"
+    "url": "https://github.com/Stellar-Ecosystem/lodestar/issues"
   },
-  "homepage": "https://github.com/Agencybuilds/lodestar#readme",
+  "homepage": "https://github.com/Stellar-Ecosystem/lodestar#readme",
   "devDependencies": {
     "eslint": "^10.8.0",
     "husky": "^9.1.7",
@@ -31,7 +31,7 @@
       "eslint --fix"
     ],
     "*.rs": [
-      "cargo fmt --"
+      "cargo fmt --manifest-path contract/agents/Cargo.toml --"
     ]
   }
 }

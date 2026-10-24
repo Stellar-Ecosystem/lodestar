@@ -4,7 +4,7 @@ import StatsBar from '@/components/StatsBar';
 export default function HomePage() {
   return (
     <div className="max-w-6xl mx-auto px-6">
-      {/* Hero */}
+      
       <section className="py-24 text-center">
         <h1 className="text-5xl sm:text-6xl font-semibold tracking-tight leading-tight mb-6">
           Navigate the{' '}
@@ -27,10 +27,10 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Stats */}
+     
       <StatsBar />
 
-      {/* Feature blocks */}
+      
       <section className="grid md:grid-cols-3 gap-6 py-20">
         <FeatureBlock
           title="For Providers"
@@ -46,7 +46,7 @@ export default function HomePage() {
         />
       </section>
 
-      {/* Agent Credit Scoring callout */}
+     
       <section className="border-t border-border py-16">
         <div className="card p-8 md:p-12 flex flex-col md:flex-row items-start gap-8">
           <div className="flex-1">
@@ -86,7 +86,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* How it works */}
+     
       <section className="py-16 border-t border-border">
         <h2 className="text-2xl font-semibold mb-12 text-center">How it works</h2>
         <div className="grid md:grid-cols-2 gap-12">

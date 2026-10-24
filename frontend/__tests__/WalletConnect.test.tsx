@@ -41,7 +41,7 @@ describe('WalletConnect', () => {
     });
 
     render(<WalletConnect />);
-    expect(screen.getByText('GABC...MNOP')).toBeInTheDocument();
+    expect(screen.getByText('GABCDE...MNOP')).toBeInTheDocument();
     expect(screen.getByText('100.0000 USDC')).toBeInTheDocument();
   });
 

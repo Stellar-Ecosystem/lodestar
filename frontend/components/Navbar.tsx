@@ -16,9 +16,7 @@ export default function Navbar() {
   const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
 
-  // Exact match for the home route, prefix match for nested routes so a link
-  // stays highlighted on its sub-pages (e.g. /agents while on /agents/[address])
-  // without "/" matching every path.
+  
   const isActive = (href: string) =>
     href === '/'
       ? pathname === '/'

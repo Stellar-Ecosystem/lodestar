@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import Navbar from '../components/Navbar';
+import { ThemeProvider } from '../components/ThemeProvider';
 
 let mockPathname = '/';
 
@@ -35,10 +36,18 @@ function setPathname(path: string) {
   mockPathname = path;
 }
 
+function renderNavbar() {
+  return render(
+    <ThemeProvider>
+      <Navbar />
+    </ThemeProvider>
+  );
+}
+
 describe('Navbar active-link highlighting', () => {
   it('marks the link for the current route as active', () => {
     setPathname('/registry');
-    render(<Navbar />);
+    renderNavbar();
 
     const registry = screen.getByRole('link', { name: 'Registry' });
     expect(registry).toHaveAttribute('aria-current', 'page');
@@ -53,7 +62,7 @@ describe('Navbar active-link highlighting', () => {
 
   it('highlights a parent link on nested routes via prefix match', () => {
     setPathname('/agents/GABC123');
-    render(<Navbar />);
+    renderNavbar();
 
     const agents = screen.getByRole('link', { name: 'Agents' });
     expect(agents).toHaveAttribute('aria-current', 'page');
@@ -61,7 +70,7 @@ describe('Navbar active-link highlighting', () => {
 
   it('does not highlight /register on the /registry route (no false prefix match)', () => {
     setPathname('/registry');
-    render(<Navbar />);
+    renderNavbar();
 
     const register = screen.getByRole('link', { name: 'Register' });
     expect(register).not.toHaveAttribute('aria-current');
@@ -69,7 +78,7 @@ describe('Navbar active-link highlighting', () => {
 
   it('marks the home link as active on the home route and no others', () => {
     setPathname('/');
-    render(<Navbar />);
+    renderNavbar();
 
     const home = screen.getByRole('link', { name: 'Lodestar' });
     expect(home).toHaveAttribute('aria-current', 'page');

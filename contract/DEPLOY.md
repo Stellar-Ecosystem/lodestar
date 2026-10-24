@@ -133,6 +133,55 @@ registers as an agent. Set `NEXT_PUBLIC_DEMO_AGENT_ADDRESS` (frontend) to that
 address. To let other pre-funded demo agents vote, add their secrets to
 `DEMO_VOTER_SECRETS` (backend).
 
+## Registry Events
+
+The registry emits one event after each successful public service **mutation**.
+The first two topic values are symbols; the third topic value is the service ID.
+
+| Action | Topics | Data |
+| --- | --- | --- |
+| Register | `("registry", "registered", service_id)` | `(provider, name, description, endpoint, category, price_usdc, pay_to)` |
+| Reputation update | `("registry", "reputation", service_id)` | `(caller, positive, reputation)` |
+| Deactivate | `("registry", "deactivated", service_id)` | `(provider, name, category, reputation)` |
+| Reactivate | `("registry", "reactivated", service_id)` | `(provider, name, category, reputation)` |
+
+Indexers can use the action symbol in the second topic to distinguish events
+and should treat the data tuple as the action-specific schema shown above.
+
+### Why the payload is self-sufficient
+
+A consumer that wants to know which services are listed would otherwise have to
+poll `get_service` / `list_services_page` after every change. The lifecycle
+payloads carry the fields that decide *where* a service appears, so a local
+replica can be maintained from events alone:
+
+- `provider` and `name` — identity and display, without a follow-up read.
+- `category` — which category index the service belongs to. Registration adds the
+  id to `ServiceIdsByCategory(category)`, deactivation removes it, and
+  reactivation re-adds it, so a category-filtered listing cannot be tracked
+  without this field.
+- `reputation` — the only field besides `active` that can change after
+  registration, so each lifecycle event carries the current value.
+
+`description`, `endpoint`, `price_usdc`, and `pay_to` are immutable after
+registration (there is no `update_service`), so they only appear in `registered`.
+`active` is implied by the action symbol: `registered` and `reactivated` mean
+`true`, `deactivated` means `false`.
+
+> **Schema change:** `deactivated` and `reactivated` previously carried a bare
+> `(provider)` tuple. Indexers built against the old shape must read the payload
+> as the 4-tuple above.
+
+### Read-only entrypoints emit no events
+
+`get_service`, `list_services`, `list_services_page`, `list_categories`,
+`get_service_count`, `get_reputation_bounds`, and `get_agents_contract` are
+read-only and intentionally publish nothing. Soroban executes read-only calls
+through `simulateTransaction`: the events from a simulation are returned to the
+calling client but never written to a ledger, so no indexer can observe them and
+emitting would only add cost for every caller. Consumers observe changes to the
+listing through the four mutation events above.
+
 ## 9. Run seed script
 
 ```sh
@@ -142,6 +191,25 @@ SEEDING_MODE=true node scripts/seed.js
 ```
 
 This pre-populates the registry with demo services.
+
+## Registry Error Codes
+
+The registry contract returns typed `RegistryError` values for application-level
+failures. These discriminants are stable API surface and must not be reordered:
+
+| Numeric code | Variant | Backend code | Meaning |
+| --- | --- | --- | --- |
+| 1 | `InvalidName` | `INVALID_NAME` | Service name is outside the 3-64 character range. |
+| 2 | `InvalidDescription` | `INVALID_DESCRIPTION` | Service description is outside the 10-256 character range. |
+| 3 | `DuplicateActiveService` | `DUPLICATE_SERVICE` | The provider already has an active service with the same endpoint. |
+| 4 | `ServiceNotFound` | `SERVICE_NOT_FOUND` | The requested service id does not exist. |
+| 5 | `AgentsContractNotConfigured` | `AGENTS_CONTRACT_NOT_CONFIGURED` | Registry storage is missing the configured agents contract address. |
+| 6 | `CallerNotRegisteredAgent` | `CALLER_NOT_REGISTERED_AGENT` | The reputation voter is not registered in the agents contract. |
+| 7 | `ReputationVoteCooldown` | `REPUTATION_VOTE_COOLDOWN` | The same agent voted on the same service too recently. |
+| 8 | `ProviderMismatch` | `PROVIDER_MISMATCH` | A non-provider attempted to deactivate the service. |
+| 9 | `CategoryIndexNotFound` | `CATEGORY_INDEX_NOT_FOUND` | Registry storage is missing the service category index. |
+| 10 | `InvalidEndpoint` | `INVALID_ENDPOINT` | Service endpoint is longer than 256 characters. |
+| 11 | `InvalidCategory` | `INVALID_CATEGORY` | Service category is unsupported or outside the 1-32 character range. |
 
 ## 10. (Optional) Set demo agent secrets
 
@@ -185,7 +253,7 @@ The `register_service` function enforces the following field limits on-chain:
 | `endpoint` | — | 256 | |
 | `category` | 1 | 32 | |
 
-Submissions exceeding these limits are rejected with a typed assertion error.
+Submissions outside these limits are rejected with typed `RegistryError` values.
 The same limits are enforced client-side in the RegisterForm and server-side
 by the `POST /api/registry/prepare-register` route.
 

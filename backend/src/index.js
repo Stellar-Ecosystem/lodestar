@@ -1,12 +1,13 @@
 import express from "express";
 import cors from "cors";
+import { pathToFileURL } from "node:url";
 import config, { validateConfig } from "./config.js";
 import logger from "./lib/logger.js";
 import {
   requestLogger,
   requestContextMiddleware,
 } from "./middleware/requestContext.js";
-import { checkRpcHealth } from "./lib/stellar.js";
+import { checkReadiness } from "./lib/readiness.js";
 import {
   getSubmitQueueDepth,
   drainSubmitQueue,
@@ -40,6 +41,8 @@ if (process.argv.includes("--print-config")) {
         jsonBodyLimit: config.jsonBodyLimit,
         trustProxy: config.trustProxy,
         rateLimit: config.rateLimit,
+        upstreamTimeout: config.upstreamTimeout,
+        health: config.health,
         demoRun: config.demoRun,
       },
       null,
@@ -53,11 +56,15 @@ validateConfig(logger);
 
 logger.info({ corsOrigin: config.corsOrigin }, "Resolved CORS origin allowlist");
 
-const app = express();
+// Exported so the integration tests can drive the routes exactly as they are
+// mounted here — middleware order included — instead of re-assembling a bare
+// router in the test.
+export const app = express();
 
 // Trust the configured number of proxy hops so req.ip reflects the real client
 // (via X-Forwarded-For) behind a reverse proxy — required for correct IP-based
 // rate limiting. Defaults to false (no proxy) to avoid X-Forwarded-For spoofing.
+// #569: hop count must match deployment topology (see backend README).
 app.set("trust proxy", config.trustProxy);
 
 app.use(requestLogger);
@@ -67,35 +74,32 @@ app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(requestIdMiddleware);
 app.use(express.json({ limit: config.jsonBodyLimit }));
 
-app.get("/healthz", async (req, res) => {
+// Liveness (#841): dependency-free by design. Answers only "is this process
+// running?" so an orchestrator never restarts a healthy instance because an
+// upstream is slow. Dependency state lives on /readyz.
+app.get("/healthz", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptimeSeconds: Math.floor(process.uptime()),
+    queueDepth: getSubmitQueueDepth(),
+    pendingTransactions: getPendingTransactionCount(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Readiness (#841): can this instance serve traffic right now? Checks RPC and
+// Redis under a short timeout and returns 503 when a required dependency is
+// unreachable, so traffic stops without the process being restarted.
+app.get("/readyz", async (req, res) => {
   try {
-    const health = await checkRpcHealth();
-    const queueDepth = getSubmitQueueDepth();
-
-    // Determine HTTP status code based on health status
-    let statusCode = 200;
-    if (health.status === "unhealthy") {
-      statusCode = 503; // Service Unavailable
-    } else if (health.status === "degraded") {
-      statusCode = 200; // Still accept requests but indicate degradation
-    }
-
-    const pendingTxCount = getPendingTransactionCount();
-
-    res.status(statusCode).json({
-      status: health.status,
-      rpc: health.rpc,
-      contract: health.contract,
-      timestamp: health.timestamp,
-      queueDepth,
-      pendingTransactions: pendingTxCount,
-      ...(health.error && { error: health.error }),
-    });
+    const result = await checkReadiness();
+    res.status(result.ready ? 200 : 503).json(result);
   } catch (err) {
-    req.log.error({ err }, "Health check failed");
+    logger.error({ err }, "GET /readyz failed");
     res.status(503).json({
-      status: "unhealthy",
-      error: "Health check failed",
+      ready: false,
+      status: "not_ready",
+      error: "Readiness check failed",
       timestamp: new Date().toISOString(),
     });
   }
@@ -138,6 +142,30 @@ app.use((err, req, res, _next) => {
 let server;
 let shuttingDown = false;
 
+/**
+ * Boot the HTTP server.
+ *
+ * Pending transactions from a previous run are resumed first so a vote that
+ * was submitted but not confirmed is not lost.
+ */
+async function start() {
+  try {
+    await resumePendingTransactions();
+  } catch (err) {
+    logger.error({ err }, "Failed to resume pending transactions — continuing startup");
+  }
+
+  server = app.listen(config.port, () => {
+    logger.info(
+      {
+        port: config.port,
+        network: config.stellar.network,
+        contractId: config.contract.id,
+      },
+      "Lodestar backend running",
+    );
+  });
+}
 
 
 async function shutdown() {
@@ -206,4 +234,11 @@ async function doDrainAndDump() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-start();
+// Listen only when this file is executed directly (`npm start`). Importing it
+// — as the integration tests do — must not bind a port.
+const isDirectRun =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  start();
+}
