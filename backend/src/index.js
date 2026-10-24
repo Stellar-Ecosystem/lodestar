@@ -44,6 +44,7 @@ if (process.argv.includes("--print-config")) {
         upstreamTimeout: config.upstreamTimeout,
         health: config.health,
         demoRun: config.demoRun,
+        canSpend: config.canSpend,
       },
       null,
       2,

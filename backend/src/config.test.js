@@ -29,6 +29,7 @@ async function loadConfig(overrides = {}) {
     'DEMO_RUN_POLL_INITIAL_DELAY_MS',
     'DEMO_RUN_POLL_MAX_DELAY_MS',
     'DEMO_RUN_CACHE_TTL_SECONDS',
+    'CAN_SPEND_CACHE_TTL_SECONDS',
   ]) {
     if (!(key in overrides)) delete process.env[key];
   }
@@ -133,6 +134,27 @@ describe('config demo-run cache TTL validation', () => {
   it('accepts a positive integer override and falls back for invalid values', async () => {
     expect((await loadConfig({ DEMO_RUN_CACHE_TTL_SECONDS: '30' })).demoRun.cacheTtlSeconds).toBe(30);
     expect((await loadConfig({ DEMO_RUN_CACHE_TTL_SECONDS: '0' })).demoRun.cacheTtlSeconds).toBe(15);
+    expect(console.warn).toHaveBeenCalled();
+  });
+});
+
+describe('config can-spend cache TTL validation', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+  });
+
+  it('defaults the can-spend cache TTL to 15 seconds', async () => {
+    expect((await loadConfig()).canSpend.cacheTtlSeconds).toBe(15);
+  });
+
+  it('accepts a positive integer override and falls back for invalid values', async () => {
+    expect((await loadConfig({ CAN_SPEND_CACHE_TTL_SECONDS: '30' })).canSpend.cacheTtlSeconds).toBe(30);
+    expect((await loadConfig({ CAN_SPEND_CACHE_TTL_SECONDS: '0' })).canSpend.cacheTtlSeconds).toBe(15);
     expect(console.warn).toHaveBeenCalled();
   });
 });
