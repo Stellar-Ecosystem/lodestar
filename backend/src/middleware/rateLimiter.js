@@ -18,14 +18,18 @@ if (config.redisUrl) {
  *
  * @param {number} [max]      Max requests allowed per window.
  * @param {number} [windowMs] Window length in milliseconds.
+ * @param {string} [prefix]   Redis key prefix. Give each route its own so counters
+ *                            are not shared across routes; keep it stable across instances.
  */
 export function createRateLimiter(
   max = config.rateLimit.max,
   windowMs = config.rateLimit.windowMs,
+  prefix,
 ) {
   let store;
   if (client) {
     store = new RedisStore({
+      ...(prefix ? { prefix } : {}),
       sendCommand: (command, ...args) => client.call(command, ...args),
     });
   }
@@ -66,3 +70,5 @@ export const writeRateLimiter = createRateLimiter;
 export function getRateLimiterRedis() {
   return client;
 }
+
+export const rateLimiter = writeRateLimiter;
