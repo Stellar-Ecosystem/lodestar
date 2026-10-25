@@ -157,6 +157,8 @@ const config = Object.freeze({
     // A reputation vote is simulate + submit + confirm + read back on chain,
     // so the deadline covers the whole sequence, not a single RPC round trip.
     reputationMs: parsePositiveInt(process.env.REPUTATION_TIMEOUT_MS, 20_000, 'REPUTATION_TIMEOUT_MS'),
+    // Bound the upstream Soroban RPC call for GET /services.
+    servicesMs: parsePositiveInt(process.env.SERVICES_TIMEOUT_MS, 10_000, 'SERVICES_TIMEOUT_MS'),
   },
 
   // Health endpoint caching and idempotency (#672, #673).
