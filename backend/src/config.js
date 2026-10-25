@@ -159,6 +159,11 @@ const config = Object.freeze({
     reputationMs: parsePositiveInt(process.env.REPUTATION_TIMEOUT_MS, 20_000, 'REPUTATION_TIMEOUT_MS'),
   },
 
+  // GET /api/services/:id cache configuration.
+  serviceCache: {
+    ttlSeconds: parsePositiveInt(process.env.SERVICE_CACHE_TTL_SECONDS, 15, 'SERVICE_CACHE_TTL_SECONDS'),
+  },
+
   // Health endpoint caching and idempotency (#672, #673).
   health: {
     // Short TTL: the payload changes slowly (network, contract, uptime), so a
