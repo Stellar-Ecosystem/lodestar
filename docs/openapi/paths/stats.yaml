@@ -1,0 +1,180 @@
+# OpenAPI 3.0 path item for GET /api/stats
+# (defined at router path GET /stats in backend/src/routes/registry.js:279-301,
+# mounted under /api in backend/src/index.js:104).
+#
+# Source of truth:
+#   - backend/src/routes/registry.js           (GET /stats handler, lines 279-301)
+#   - backend/src/lib/contract.js              (getServiceCount, listServices)
+#   - backend/src/middleware/requestContext.js (X-Request-Id header & error requestId injection)
+#   - backend/src/index.js                     (413 PAYLOAD_TOO_LARGE / 500 INTERNAL_ERROR)
+#   - frontend/lib/types.ts                    (StatsResponse & ServiceEntry consumer types)
+#   - frontend/lib/contract.ts                 (fetchStats consumer)
+#
+# If you change the handler's response shape, status codes, or error codes,
+# update this file in the same change.
+#
+# Referenced from docs/openapi/openapi.yaml under `paths`.
+
+get:
+  operationId: getRegistryStats
+  summary: Get aggregate service registry statistics
+  description: |
+    Returns aggregate statistics for the on-chain `LodestarRegistry` contract:
+    the total count of registered services (`totalServices`), the deduplicated
+    list of categories across active services (`categories`), and the most
+    recently registered active service (`latestService`).
+
+    ### Handler Behavior
+    1. Calls `getServiceCount()` (`get_service_count` on `LodestarRegistry`) to
+       obtain `totalServices`. Note that `getServiceCount()` catches its own
+       read errors and returns `0` if the count call fails or returns no value.
+    2. Computes `totalPages = Math.ceil(totalServices / 20)` (`PAGE_SIZE = 20`)
+       and iterates through each page sequentially via
+       `listServices({ offset: i * 20, limit: 20 })`.
+    3. Deduplicates `category` values from the collected active services in
+       first-seen order (`[...new Set(allServices.map((s) => s.category))]`).
+    4. Selects `latestService` as the service with the strictly largest
+       `registered_at` ledger sequence (`s.registered_at > (latest?.registered_at ?? 0)`),
+       or `null` when `allServices` is empty.
+    5. Unlike `GET /api/services` and `GET /api/services/:id`, this route does
+       **not** invoke `annotateTtlWarning()`, so `latestService` never carries a
+       `ttl_warning` property.
+
+    ### Request Body & Parameters
+    - Takes **no path parameters**, **no query parameters**, and **no request body**
+      (any query parameters supplied by a caller are ignored).
+    - Requires **no authentication**.
+    - If a caller sends a JSON body exceeding `JSON_BODY_LIMIT` (default `100kb`),
+      `express.json` rejects the request with `413 PAYLOAD_TOO_LARGE` before the
+      route handler executes.
+  tags:
+    - Registry
+  security: []
+  parameters:
+    - $ref: '../openapi.yaml#/components/parameters/RequestIdHeader'
+  responses:
+    '200':
+      description: |
+        Aggregate registry statistics returned successfully.
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '../openapi.yaml#/components/schemas/StatsResponse'
+          examples:
+            populatedRegistry:
+              summary: Registry with active services
+              value:
+                totalServices: 4
+                categories:
+                  - weather
+                  - search
+                  - data
+                latestService:
+                  id: 4
+                  name: Stellar Weather Oracle
+                  description: Real-time global weather forecasts for autonomous AI agents.
+                  endpoint: https://lodestar-8na4.onrender.com/demo/weather
+                  price_usdc: '0.001'
+                  pay_to: GAY42LBQWN7LSFV3F6AFNEET2NVLY2JJ7KAEN4E5SNNT4RIEJLAQKGU3
+                  category: weather
+                  provider: GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3
+                  reputation: 12
+                  active: true
+                  registered_at: 514280
+            emptyRegistry:
+              summary: Empty registry (or no active services)
+              value:
+                totalServices: 0
+                categories: []
+                latestService: null
+    '413':
+      description: |
+        The request included a JSON body exceeding the server's configured body
+        size limit (`JSON_BODY_LIMIT`, default `100kb`), rejected by
+        `express.json()` and formatted by the global error middleware in
+        `backend/src/index.js:123-129`.
+
+        | code                | cause                                                                 |
+        |---------------------|-----------------------------------------------------------------------|
+        | `PAYLOAD_TOO_LARGE` | Request body exceeded `config.jsonBodyLimit` (`entity.too.large`).    |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - PAYLOAD_TOO_LARGE
+          examples:
+            payloadTooLarge:
+              summary: Request body exceeds JSON_BODY_LIMIT
+              value:
+                error: Request body too large. Maximum size is 100kb.
+                code: PAYLOAD_TOO_LARGE
+                requestId: 550e8400-e29b-41d4-a716-446655440000
+    '500':
+      description: |
+        Failed to fetch registry statistics from the Soroban contract, or an
+        unhandled internal server error occurred. Possible `code` values:
+
+        | code             | cause                                                                                                                                         |
+        |------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+        | `FETCH_ERROR`    | Thrown inside `GET /stats` when `listServices()` (or `getServiceCount()`) rejects — e.g. Stellar RPC failure or `ContractError` (`SIMULATION_FAILED`). |
+        | `INTERNAL_ERROR` | Unhandled exception caught by the top-level Express error middleware (`backend/src/index.js:132-136`).                                        |
+      headers:
+        X-Request-Id:
+          $ref: '../openapi.yaml#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../openapi.yaml#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum:
+                      - FETCH_ERROR
+                      - INTERNAL_ERROR
+          examples:
+            fetchError:
+              summary: Contract or RPC read failure in GET /stats
+              value:
+                error: Failed to fetch stats
+                code: FETCH_ERROR
+                requestId: 550e8400-e29b-41d4-a716-446655440000
+            internalError:
+              summary: Unhandled internal server error
+              value:
+                error: Internal server error
+                code: INTERNAL_ERROR
+                requestId: 550e8400-e29b-41d4-a716-446655440000
+  x-codeSamples:
+    - lang: Shell
+      label: curl (request)
+      source: |
+        curl -i -X GET \
+          'http://localhost:3001/api/stats' \
+          -H 'Accept: application/json' \
+          -H 'X-Request-Id: 550e8400-e29b-41d4-a716-446655440000'
+    - lang: JavaScript
+      label: fetch (frontend / agent)
+      source: |
+        const res = await fetch('http://localhost:3001/api/stats', {
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) {
+          const { error, code } = await res.json();
+          throw new Error(`${code}: ${error}`);
+        }
+        const stats = await res.json();
+        // { totalServices, categories, latestService }
