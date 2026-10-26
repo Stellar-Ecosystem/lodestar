@@ -297,3 +297,133 @@ describe('payment header validation — search', () => {
     );
   });
 });
+
+describe('GET /demo/search contract error status mapping (#676)', () => {
+  const mockSearchFetch = () =>
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ organic: [{ title: 'r', link: 'u', snippet: 's' }] }),
+    });
+
+  it('documents the expected HTTP status for every mapped contract error variant', async () => {
+    const { SEARCH_CONTRACT_ERROR_STATUS_MAP } = await import('./services.js');
+    expect(SEARCH_CONTRACT_ERROR_STATUS_MAP).toEqual({
+      INVALID_AMOUNT: 400,
+      ARITHMETIC_OVERFLOW: 400,
+      INVALID_NAME: 400,
+      INVALID_DESCRIPTION: 400,
+      INVALID_ENDPOINT: 400,
+      INVALID_CATEGORY: 400,
+      SIMULATION_FAILED: 400,
+      UNAUTHORIZED: 403,
+      CALLER_NOT_REGISTERED_AGENT: 403,
+      PROVIDER_MISMATCH: 403,
+      AGENT_NOT_FOUND: 404,
+      POLICY_NOT_FOUND: 404,
+      SERVICE_NOT_FOUND: 404,
+      CATEGORY_INDEX_NOT_FOUND: 404,
+      AGENT_ALREADY_REGISTERED: 409,
+      DUPLICATE_SERVICE: 409,
+      REPUTATION_VOTE_COOLDOWN: 409,
+      RPC_THROTTLED: 503,
+      AGENT_LIST_FULL: 503,
+      AGENT_COUNT_OVERFLOW: 503,
+      REGISTRY_PAUSED: 503,
+      REGISTRY_COUNT_OVERFLOW: 503,
+      AGENTS_CONTRACT_NOT_CONFIGURED: 503,
+      TRANSACTION_TIMEOUT: 504,
+      UPSTREAM_TIMEOUT: 504,
+    });
+  });
+
+  it.each([
+    ['AGENT_NOT_FOUND', 'Agent not found', 404],
+    ['POLICY_NOT_FOUND', 'Policy not found', 404],
+    ['SERVICE_NOT_FOUND', 'Service not found', 404],
+    ['CATEGORY_INDEX_NOT_FOUND', 'Category index not found', 404],
+    ['UNAUTHORIZED', 'Unauthorized', 403],
+    ['CALLER_NOT_REGISTERED_AGENT', 'Caller is not a registered agent', 403],
+    ['PROVIDER_MISMATCH', 'Only the provider that registered this service can deactivate it', 403],
+    ['AGENT_ALREADY_REGISTERED', 'Agent already registered', 409],
+    ['DUPLICATE_SERVICE', 'Active service with same provider and endpoint already exists', 409],
+    ['REPUTATION_VOTE_COOLDOWN', 'This agent has voted on this service too recently', 409],
+    ['INVALID_AMOUNT', 'Payment amount must be greater than zero', 400],
+    ['ARITHMETIC_OVERFLOW', 'Payment amount exceeds the supported range', 400],
+    ['INVALID_NAME', 'Service name must be 3-64 characters', 400],
+    ['INVALID_DESCRIPTION', 'Service description must be 10-256 characters', 400],
+    ['INVALID_ENDPOINT', 'Service endpoint must be at most 256 characters', 400],
+    ['INVALID_CATEGORY', 'Service category must be a supported value of 1-32 characters', 400],
+    ['SIMULATION_FAILED', 'Simulation failed', 400],
+    ['RPC_THROTTLED', 'RPC endpoint throttled', 503],
+    ['AGENT_LIST_FULL', 'Agent registry is full', 503],
+    ['AGENT_COUNT_OVERFLOW', 'Agent registry count overflow', 503],
+    ['REGISTRY_PAUSED', 'Registry contract is paused', 503],
+    ['REGISTRY_COUNT_OVERFLOW', 'Service count exceeds the maximum supported value', 503],
+    ['AGENTS_CONTRACT_NOT_CONFIGURED', 'Agents contract is not configured for this registry', 503],
+    ['TRANSACTION_TIMEOUT', 'Transaction not confirmed after polling', 504],
+    ['UPSTREAM_TIMEOUT', 'Upstream call timed out', 504],
+  ])(
+    'maps %s to HTTP %i and returns the variant code',
+    async (code, message, expectedStatus) => {
+      const { ContractError } = await import('../lib/ContractError.js');
+      global.fetch = mockSearchFetch();
+      mockGetAgent.mockResolvedValue(MOCK_AGENT);
+      mockRecordPaymentOnChain.mockRejectedValueOnce(
+        new ContractError(message, code, expectedStatus)
+      );
+
+      const res = await request(app)
+        .get('/demo/search?q=hello')
+        .set('x-payment-address', VALID_STELLAR_ADDRESS)
+        .set('x-payment-transaction', 'searchtx-mapped');
+
+      expect(res.status).toBe(expectedStatus);
+      expect(res.body).toEqual({ error: message, code });
+    }
+  );
+
+  it('resolves raw Soroban host errors against contract error codes', async () => {
+    global.fetch = mockSearchFetch();
+    mockGetAgent.mockResolvedValue(MOCK_AGENT);
+    mockRecordPaymentOnChain.mockRejectedValueOnce(
+      new Error('HostError: Error(Contract, #7)')
+    );
+
+    const res = await request(app)
+      .get('/demo/search?q=hello')
+      .set('x-payment-address', VALID_STELLAR_ADDRESS)
+      .set('x-payment-transaction', 'searchtx-host');
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
+  });
+
+  it.each([
+    ['NOT_INITIALIZED', 'Contract not initialized'],
+    ['ALREADY_INITIALIZED', 'Contract already initialized'],
+    ['TRANSACTION_FAILED', 'Transaction failed on-chain'],
+    ['UNMAPPED_CONTRACT_VARIANT', 'Unknown contract variant failure'],
+  ])(
+    'returns 500 SEARCH_ERROR and logs at error level with variant name for unmapped variant %s',
+    async (variantCode, message) => {
+      const { ContractError } = await import('../lib/ContractError.js');
+      global.fetch = mockSearchFetch();
+      mockGetAgent.mockResolvedValue(MOCK_AGENT);
+      mockRecordPaymentOnChain.mockRejectedValueOnce(
+        new ContractError(message, variantCode, 500)
+      );
+
+      const res = await request(app)
+        .get('/demo/search?q=hello')
+        .set('x-payment-address', VALID_STELLAR_ADDRESS)
+        .set('x-payment-transaction', 'searchtx-unmapped');
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'Search failed', code: 'SEARCH_ERROR' });
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: variantCode }),
+        expect.stringContaining(variantCode)
+      );
+    }
+  );
+});

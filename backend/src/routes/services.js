@@ -5,12 +5,73 @@ import { ExactStellarScheme } from '@x402/stellar/exact/server';
 import config from '../config.js';
 import logger from '../lib/logger.js';
 import { recordPaymentOnChain, getAgent } from '../lib/contract.js';
+import { ContractError } from '../lib/ContractError.js';
+import {
+  agentErrorFromHostError,
+  registryErrorFromHostError,
+} from '../lib/contractErrors.js';
 import { usdcToStroops } from '../lib/stroops.js';
 import { isValidStellarAddress } from '../middleware/addressValidator.js';
 import { createRateLimiter } from '../middleware/rateLimiter.js';
 import { validateWeatherRequest } from './servicesSchemas.js';
 
 const router = Router();
+
+/**
+ * Documented HTTP status mapping for Soroban contract error variants that can
+ * surface on `GET /demo/search` (#676).
+ *
+ * Variants not listed here (such as `NOT_INITIALIZED`, `ALREADY_INITIALIZED`,
+ * `REGISTRY_NOT_INITIALIZED`, `REGISTRY_STORAGE_CORRUPTED`, `TRANSACTION_FAILED`,
+ * `RETURN_VALUE_PARSE_FAILED`, or unknown variants) are treated as unmapped
+ * internal contract failures: they log at `error` level with the variant name
+ * and return `500 SEARCH_ERROR`.
+ */
+export const SEARCH_CONTRACT_ERROR_STATUS_MAP = Object.freeze({
+  // 400 Bad Request — invalid arguments or simulation failure
+  INVALID_AMOUNT: 400,
+  ARITHMETIC_OVERFLOW: 400,
+  INVALID_NAME: 400,
+  INVALID_DESCRIPTION: 400,
+  INVALID_ENDPOINT: 400,
+  INVALID_CATEGORY: 400,
+  SIMULATION_FAILED: 400,
+
+  // 403 Forbidden — unauthorized caller or unregistered agent
+  UNAUTHORIZED: 403,
+  CALLER_NOT_REGISTERED_AGENT: 403,
+  PROVIDER_MISMATCH: 403,
+
+  // 404 Not Found — missing on-chain agent, policy, or service entry
+  AGENT_NOT_FOUND: 404,
+  POLICY_NOT_FOUND: 404,
+  SERVICE_NOT_FOUND: 404,
+  CATEGORY_INDEX_NOT_FOUND: 404,
+
+  // 409 Conflict — duplicate registration or cooldown violation
+  AGENT_ALREADY_REGISTERED: 409,
+  DUPLICATE_SERVICE: 409,
+  REPUTATION_VOTE_COOLDOWN: 409,
+
+  // 503 Service Unavailable — rate-limited/throttled RPC or contract capacity limit
+  RPC_THROTTLED: 503,
+  AGENT_LIST_FULL: 503,
+  AGENT_COUNT_OVERFLOW: 503,
+  REGISTRY_PAUSED: 503,
+  REGISTRY_COUNT_OVERFLOW: 503,
+  AGENTS_CONTRACT_NOT_CONFIGURED: 503,
+
+  // 504 Gateway Timeout — upstream RPC or confirmation timeout
+  TRANSACTION_TIMEOUT: 504,
+  UPSTREAM_TIMEOUT: 504,
+});
+
+function resolveSearchContractError(err) {
+  if (err instanceof ContractError) {
+    return err;
+  }
+  return agentErrorFromHostError(err) ?? registryErrorFromHostError(err);
+}
 
 // Validates and records a payment on-chain. All three guards (txHash presence,
 // address format, and agent registration) must pass before touching the contract,
@@ -235,15 +296,35 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       const priceStroops = usdcToStroops(config.x402.searchPrice);
-      creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search').catch((err) =>
-        logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
-      );
+      await creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search');
     }
 
     logger.info({ q: sanitizedQ }, 'Search request fulfilled');
     if (searchTxHash) res.setHeader('x-payment-transaction', searchTxHash);
     res.json({ query: sanitizedQ, results });
   } catch (err) {
+    const contractErr = resolveSearchContractError(err);
+    if (contractErr) {
+      const variant = contractErr.variant ?? contractErr.code ?? contractErr.name;
+      const mappedStatus = SEARCH_CONTRACT_ERROR_STATUS_MAP[variant];
+      if (mappedStatus !== undefined) {
+        logger.warn(
+          { err: contractErr, variant, status: mappedStatus },
+          `GET /demo/search failed with contract error (${variant})`
+        );
+        return res.status(mappedStatus).json({
+          error: contractErr.message,
+          code: contractErr.code,
+        });
+      }
+
+      logger.error(
+        { err: contractErr, variant },
+        `GET /demo/search encountered unmapped contract error variant: ${variant}`
+      );
+      return res.status(500).json({ error: 'Search failed', code: 'SEARCH_ERROR' });
+    }
+
     logger.error({ err }, 'GET /demo/search failed');
     res.status(500).json({ error: 'Search failed', code: 'SEARCH_ERROR' });
   }
