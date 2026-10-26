@@ -17,7 +17,7 @@ import {
   submitSignedAgentTx,
   isAgentRegistered,
 } from '../lib/contract.js';
-import { usdcToStroops, stroopsToUsdcDisplay } from '../lib/stroops.js';
+import { usdcToStroops, stroopsToUsdc, stroopsToUsdcDisplay } from '../lib/stroops.js';
 import config from '../config.js';
 import { ownerAuth } from '../middleware/ownerAuth.js';
 import { adminAuth } from '../middleware/adminAuth.js';
@@ -41,6 +41,12 @@ const router = Router();
 
 const PAGE_SIZE = 12;
 const CONTRACT_PAGE_SIZE_CAP = 20;
+const DEFAULT_MAX_PER_TX_STROOPS = 10_000n;   // 0.001 USDC
+const DEFAULT_MAX_PER_DAY_STROOPS = 100_000n; // 0.01 USDC
+
+function formatStroopsUsdcTrimmed(stroops) {
+  return stroopsToUsdc(stroops).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+}
 
 
 let agentsCache = null;
@@ -144,8 +150,11 @@ router.get('/agents/stats', requireAgentsContract, async (_req, res) => {
   }
 });
 
-// Param middleware for agent address routes
-router.use('/agents/:address', validateAgentAddressParam);
+// Param middleware for agent address routes (skip literal `/agents/register`)
+router.use('/agents/:address', (req, res, next) => {
+  if (req.params.address === 'register') return next();
+  return validateAgentAddressParam(req, res, next);
+});
 
 // GET /api/agents/:address
 router.get('/agents/:address', requireAgentsContract, async (req, res) => {
@@ -276,10 +285,10 @@ router.get('/agents/:address/can-spend', requireAgentsContract, async (req, res)
   }
 });
 
-// POST /api/agents/register — Body: { agentAddress, name, description }
+// POST /api/agents/register — Body: { agentAddress, name, description, maxPerTxUsdc?, maxPerDayUsdc? }
 router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async (req, res) => {
   try {
-    const { agentAddress, name, description } = req.body;
+    const { agentAddress, name, description, maxPerTxUsdc, maxPerDayUsdc } = req.body;
 
     if (!agentAddress || typeof agentAddress !== 'string') {
       return res.status(400).json({ error: '`agentAddress` is required', code: 'INVALID_BODY' });
@@ -294,22 +303,74 @@ router.post('/agents/register', requireAgentsContract, writeRateLimiter(), async
       return res.status(400).json({ error: '`description` must be 10–256 characters', code: 'INVALID_BODY' });
     }
 
+    let initialMaxPerTxStroops = null;
+    if (maxPerTxUsdc !== undefined && maxPerTxUsdc !== null) {
+      if (typeof maxPerTxUsdc !== 'string' && typeof maxPerTxUsdc !== 'number') {
+        return res.status(400).json({ error: '`maxPerTxUsdc` must be a positive USDC amount', code: 'INVALID_BODY' });
+      }
+      try {
+        initialMaxPerTxStroops = usdcToStroops(maxPerTxUsdc);
+      } catch {
+        return res.status(400).json({ error: `Invalid maxPerTxUsdc: "${maxPerTxUsdc}"`, code: 'INVALID_BODY' });
+      }
+      if (initialMaxPerTxStroops <= 0n) {
+        return res.status(400).json({ error: '`maxPerTxUsdc` must be greater than zero', code: 'INVALID_BODY' });
+      }
+    }
+
+    let initialMaxPerDayStroops = null;
+    if (maxPerDayUsdc !== undefined && maxPerDayUsdc !== null) {
+      if (typeof maxPerDayUsdc !== 'string' && typeof maxPerDayUsdc !== 'number') {
+        return res.status(400).json({ error: '`maxPerDayUsdc` must be a positive USDC amount', code: 'INVALID_BODY' });
+      }
+      try {
+        initialMaxPerDayStroops = usdcToStroops(maxPerDayUsdc);
+      } catch {
+        return res.status(400).json({ error: `Invalid maxPerDayUsdc: "${maxPerDayUsdc}"`, code: 'INVALID_BODY' });
+      }
+      if (initialMaxPerDayStroops <= 0n) {
+        return res.status(400).json({ error: '`maxPerDayUsdc` must be greater than zero', code: 'INVALID_BODY' });
+      }
+    }
+
+    const effectiveMaxPerTx = initialMaxPerTxStroops ?? DEFAULT_MAX_PER_TX_STROOPS;
+    const effectiveMaxPerDay = initialMaxPerDayStroops ?? DEFAULT_MAX_PER_DAY_STROOPS;
+    if (effectiveMaxPerTx > effectiveMaxPerDay) {
+      return res.status(400).json({
+        error: '`maxPerTxUsdc` cannot exceed `maxPerDayUsdc`',
+        code: 'INVALID_BODY',
+      });
+    }
+
     const isRegistered = await isAgentRegistered(agentAddress);
     if (isRegistered) {
       logger.info({ agentAddress }, 'Attempted to register an already registered agent');
       return res.status(409).json({ error: 'Agent already registered', code: 'ALREADY_EXISTS', agentAddress });
     }
 
-    const count = await registerAgentOnChain(agentAddress, name.trim(), description.trim());
+    const count = await registerAgentOnChain(
+      agentAddress,
+      name.trim(),
+      description.trim(),
+      initialMaxPerTxStroops,
+      initialMaxPerDayStroops
+    );
     agentsCache = null; // invalidate so next request reflects the new agent
-    logger.info({ agentAddress, name }, 'Agent registered on-chain');
-    res.status(201).json({ success: true, agentCount: count, agentAddress });
+    const policy = {
+      max_per_tx_stroops: effectiveMaxPerTx.toString(),
+      max_per_day_stroops: effectiveMaxPerDay.toString(),
+      maxPerTxUsdc: formatStroopsUsdcTrimmed(effectiveMaxPerTx),
+      maxPerDayUsdc: stroopsToUsdcDisplay(effectiveMaxPerDay),
+    };
+    logger.info({ agentAddress, name, policy }, 'Agent registered on-chain');
+    res.status(201).json({ success: true, agentCount: count, agentAddress, policy });
   } catch (err) {
     logger.error({ err }, 'POST /api/agents/register failed');
     // Soroban returns contract errors as `Error(<u32>)` in simulation failures.
     // Keep the HTTP contract stable while preserving the typed on-chain cause.
     const contractError = String(err.message || '').match(/(?:Error|contract error)\s*\(?([0-9]+)\)?/i);
     const registerErrorCodes = {
+      1: { status: 400, error: 'Invalid spending policy limits', code: 'INVALID_BODY' },
       3: { status: 409, error: 'Agent already registered', code: 'ALREADY_EXISTS' },
       4: { status: 503, error: 'Agent registry is full', code: 'AGENT_LIST_FULL' },
       5: { status: 503, error: 'Agent registry count overflow', code: 'AGENT_COUNT_OVERFLOW' },

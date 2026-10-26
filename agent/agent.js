@@ -9,7 +9,7 @@ import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { buildRunSummary, writeRunSummary } from './runSummary.js';
-import { stroopsToUsdcDisplay } from '../packages/stroops/index.js';
+import { stroopsToUsdc, stroopsToUsdcDisplay } from '../packages/stroops/index.js';
 
 
 
@@ -135,11 +135,21 @@ export async function ensureRegistered() {
       const agent = data.agent ?? data;
       currentScore = agent.score;
       const policy = data.policy;
-      const dailyLimitUsdc = policy
+      const maxPerTxUsdc = policy?.max_per_tx_stroops
+        ? stroopsToUsdc(policy.max_per_tx_stroops).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1')
+        : null;
+      const dailyLimitUsdc = policy?.max_per_day_stroops
         ? stroopsToUsdcDisplay(policy.max_per_day_stroops)
         : null;
       logger.info(
-        { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: agent.score, dailyLimitUsdc, scoringEnabled: true },
+        {
+          event: EVENT.AGENT_REGISTERED,
+          agentAddress: AGENT_ADDRESS,
+          score: agent.score,
+          maxPerTxUsdc,
+          dailyLimitUsdc,
+          scoringEnabled: true,
+        },
         'Already registered'
       );
       return true;
@@ -162,10 +172,29 @@ export async function ensureRegistered() {
         }),
       });
       if (regRes.ok) {
+        const regData = await regRes.json().catch(() => ({}));
+        const policy = regData?.policy;
+        const maxPerTxUsdc = policy?.maxPerTxUsdc ?? (
+          policy?.max_per_tx_stroops
+            ? stroopsToUsdc(policy.max_per_tx_stroops).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1')
+            : MAX_PER_TX
+        );
+        const dailyLimitUsdc = policy?.maxPerDayUsdc ?? (
+          policy?.max_per_day_stroops
+            ? stroopsToUsdcDisplay(policy.max_per_day_stroops)
+            : MAX_PER_DAY
+        );
         currentScore = 100;
         logger.info(
-          { event: EVENT.AGENT_REGISTERED, agentAddress: AGENT_ADDRESS, score: 100, scoringEnabled: true },
-          'Registered — starting score: 100'
+          {
+            event: EVENT.AGENT_REGISTERED,
+            agentAddress: AGENT_ADDRESS,
+            score: 100,
+            maxPerTxUsdc,
+            dailyLimitUsdc,
+            scoringEnabled: true,
+          },
+          `Registered — starting score: 100 (spending limits: maxPerTx=${maxPerTxUsdc} USDC, maxPerDay=${dailyLimitUsdc} USDC)`
         );
         return true;
       }

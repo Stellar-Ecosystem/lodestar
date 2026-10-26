@@ -18,6 +18,8 @@ const INITIAL_SCORE: i32 = 100;
 const SCORE_SUCCESS: i32 = 10;
 const SCORE_FAILURE: i32 = -25;
 const FLAG_PENALTY: i32 = -200;
+pub const DEFAULT_MAX_PER_TX: i128 = 10_000; // 0.001 USDC stroops (single service call)
+pub const DEFAULT_MAX_PER_DAY: i128 = 100_000; // 0.01 USDC stroops (10 service calls per day)
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -173,10 +175,21 @@ impl LodestarAgents {
         name: String,
         description: String,
         owner: Address,
+        initial_max_per_tx: Option<i128>,
+        initial_max_per_day: Option<i128>,
     ) -> u64 {
         let key = DataKey::Agent(agent_address.clone());
         if env.storage().persistent().has(&key) {
             panic_with_error!(&env, AgentError::AgentAlreadyRegistered);
+        }
+
+        let max_per_tx_stroops = initial_max_per_tx.unwrap_or(DEFAULT_MAX_PER_TX);
+        let max_per_day_stroops = initial_max_per_day.unwrap_or(DEFAULT_MAX_PER_DAY);
+        if max_per_tx_stroops <= 0
+            || max_per_day_stroops <= 0
+            || max_per_tx_stroops > max_per_day_stroops
+        {
+            panic_with_error!(&env, AgentError::InvalidAmount);
         }
 
         let now = env.ledger().sequence() as u64;
@@ -231,11 +244,11 @@ impl LodestarAgents {
             .persistent()
             .extend_ttl(&count_key, MAX_TTL, MAX_TTL);
 
-        // Default spending policy
+        // Default spending policy (or caller-provided initial limits)
         let policy = SpendingPolicy {
             agent_address: agent_address.clone(),
-            max_per_tx_stroops: 10_000_000_000i128, // 1,000,000 USDC stroops
-            max_per_day_stroops: 100_000_000_000i128, // 10,000,000 USDC stroops
+            max_per_tx_stroops,
+            max_per_day_stroops,
             allowed_categories: vec![&env],
             min_score_to_earn: 0,
             daily_spent_stroops: 0,
@@ -1126,6 +1139,8 @@ mod test {
             &String::from_str(env, "Test Agent"),
             &String::from_str(env, "A test agent description"),
             owner,
+            &None,
+            &None,
         );
     }
 
@@ -1385,7 +1400,7 @@ mod test {
 
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -2438,8 +2453,8 @@ mod test {
                 true,
                 500i128,
                 0i128,
-                10_000_000_000i128,
-                100_000_000_000i128,
+                DEFAULT_MAX_PER_TX,
+                DEFAULT_MAX_PER_DAY,
                 initial_reset
             )
         );
@@ -2455,7 +2470,7 @@ mod test {
 
         let _ = env.events().all();
 
-        // Exceeds max_per_tx_stroops (10_000_000_000)
+        // Exceeds max_per_tx_stroops (DEFAULT_MAX_PER_TX = 10_000)
         let allowed = client.check_spending_allowed(&agent_addr, &10_000_000_001i128);
         assert!(!allowed);
 
@@ -2477,8 +2492,8 @@ mod test {
                 false,
                 10_000_000_001i128,
                 0i128,
-                10_000_000_000i128,
-                100_000_000_000i128,
+                DEFAULT_MAX_PER_TX,
+                DEFAULT_MAX_PER_DAY,
                 initial_reset
             )
         );
@@ -2518,8 +2533,8 @@ mod test {
                 true,
                 1_000i128,
                 0i128,
-                10_000_000_000i128,
-                100_000_000_000i128,
+                DEFAULT_MAX_PER_TX,
+                DEFAULT_MAX_PER_DAY,
                 new_seq
             )
         );
@@ -2724,7 +2739,7 @@ mod test {
         let name = String::from_str(&env, "Agent Alpha");
         let description = String::from_str(&env, "Autonomous trading agent");
 
-        client.register_agent(&agent_addr, &name, &description, &owner);
+        client.register_agent(&agent_addr, &name, &description, &owner, &None, &None);
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
@@ -2755,9 +2770,9 @@ mod test {
         let name = String::from_str(&env, "Agent Alpha");
         let description = String::from_str(&env, "Autonomous trading agent");
 
-        client.register_agent(&agent, &name, &description, &owner);
+        client.register_agent(&agent, &name, &description, &owner, &None, &None);
         assert_eq!(
-            client.try_register_agent(&agent, &name, &description, &owner),
+            client.try_register_agent(&agent, &name, &description, &owner, &None, &None),
             Err(Ok(soroban_sdk::Error::from_contract_error(
                 AgentError::AgentAlreadyRegistered as u32,
             )))
@@ -2951,6 +2966,8 @@ mod test {
             &name,
             &String::from_str(&env, "A test agent description"),
             &owner,
+            &None,
+            &None,
         );
 
         client.deactivate_agent(&agent_addr, &owner);
@@ -2991,6 +3008,8 @@ mod test {
             &name,
             &String::from_str(&env, "A test agent description"),
             &owner,
+            &None,
+            &None,
         );
 
         client.admin_deactivate_agent(&agent_addr, &admin);
@@ -3032,6 +3051,8 @@ mod test {
             &name,
             &String::from_str(&env, "A test agent description"),
             &owner,
+            &None,
+            &None,
         );
 
         // Deactivate first so there is a real state transition to reactivate
@@ -3077,6 +3098,8 @@ mod test {
             &name,
             &String::from_str(&env, "A test agent description"),
             &owner,
+            &None,
+            &None,
         );
 
         // Deactivate first so there is a real state transition to reactivate
@@ -3207,6 +3230,8 @@ mod test {
             &String::from_str(&env, "Reconstruction Agent"),
             &String::from_str(&env, "Agent to test score reconstruction"),
             &owner,
+            &None,
+            &None,
         );
         let reg_events = env.events().all();
         assert_eq!(reg_events.len(), 1);
@@ -3309,5 +3334,92 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    #[test]
+    fn test_register_agent_default_spending_policy_limits() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        client.register_agent(
+            &agent_addr,
+            &String::from_str(&env, "Default Policy Agent"),
+            &String::from_str(&env, "Agent with default spending limits"),
+            &owner,
+            &None,
+            &None,
+        );
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.max_per_tx_stroops, DEFAULT_MAX_PER_TX);
+        assert_eq!(policy.max_per_day_stroops, DEFAULT_MAX_PER_DAY);
+        assert_eq!(policy.max_per_tx_stroops, 10_000i128);
+        assert_eq!(policy.max_per_day_stroops, 100_000i128);
+    }
+
+    #[test]
+    fn test_register_agent_custom_spending_policy_limits() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        client.register_agent(
+            &agent_addr,
+            &String::from_str(&env, "Custom Policy Agent"),
+            &String::from_str(&env, "Agent with custom spending limits"),
+            &owner,
+            &Some(20_000i128),
+            &Some(10_000_000i128),
+        );
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.max_per_tx_stroops, 20_000i128);
+        assert_eq!(policy.max_per_day_stroops, 10_000_000i128);
+    }
+
+    #[test]
+    fn test_register_agent_rejects_invalid_spending_policy_limits() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Invalid Policy Agent");
+        let desc = String::from_str(&env, "Agent with invalid limits");
+
+        // Zero max_per_tx
+        let agent1 = Address::generate(&env);
+        assert_eq!(
+            client.try_register_agent(&agent1, &name, &desc, &owner, &Some(0), &Some(100_000)),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                AgentError::InvalidAmount as u32,
+            )))
+        );
+
+        // Negative max_per_day
+        let agent2 = Address::generate(&env);
+        assert_eq!(
+            client.try_register_agent(&agent2, &name, &desc, &owner, &Some(10_000), &Some(-1)),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                AgentError::InvalidAmount as u32,
+            )))
+        );
+
+        // max_per_tx > max_per_day
+        let agent3 = Address::generate(&env);
+        assert_eq!(
+            client.try_register_agent(&agent3, &name, &desc, &owner, &Some(200_000), &Some(100_000)),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                AgentError::InvalidAmount as u32,
+            )))
+        );
     }
 }

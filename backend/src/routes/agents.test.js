@@ -18,6 +18,7 @@ const mockDeactivateAgentOnChain = vi.fn();
 const mockUpdatePolicyOnChain = vi.fn();
 const mockBuildUnsignedAgentTx = vi.fn();
 const mockSubmitSignedAgentTx = vi.fn();
+const mockIsAgentRegistered = vi.fn(() => Promise.resolve(false));
 
 vi.mock('../lib/contract.js', () => ({
   flagAgentOnChain: (...args) => mockFlagAgentOnChain(...args),
@@ -35,6 +36,7 @@ vi.mock('../lib/contract.js', () => ({
   updatePolicyOnChain: (...args) => mockUpdatePolicyOnChain(...args),
   buildUnsignedAgentTx: (...args) => mockBuildUnsignedAgentTx(...args),
   submitSignedAgentTx: (...args) => mockSubmitSignedAgentTx(...args),
+  isAgentRegistered: (...args) => mockIsAgentRegistered(...args),
 }));
 
 vi.mock('../lib/logger.js', () => ({
@@ -330,5 +332,109 @@ describe('GET /api/agents/:address/payment-history', () => {
     const res = await request(app).get(`/agents/${VALID_ADDR}/payment-history?limit=-1`);
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_PAGINATION');
+  });
+});
+
+describe('POST /api/agents/register — spending policy limits (#250)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsAgentRegistered.mockResolvedValue(false);
+    mockRegisterAgentOnChain.mockResolvedValue(1);
+  });
+
+  it('uses conservative default spending limits (0.001 / 0.01 USDC) when omitted', async () => {
+    const res = await request(app)
+      .post('/agents/register')
+      .send({
+        agentAddress: VALID_ADDR,
+        name: 'DefaultBot',
+        description: 'Autonomous agent with default spending limits',
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockRegisterAgentOnChain).toHaveBeenCalledWith(
+      VALID_ADDR,
+      'DefaultBot',
+      'Autonomous agent with default spending limits',
+      null,
+      null
+    );
+    expect(res.body.policy).toEqual({
+      max_per_tx_stroops: '10000',
+      max_per_day_stroops: '100000',
+      maxPerTxUsdc: '0.001',
+      maxPerDayUsdc: '0.01',
+    });
+  });
+
+  it('parses and forwards custom maxPerTxUsdc and maxPerDayUsdc as stroops', async () => {
+    const res = await request(app)
+      .post('/agents/register')
+      .send({
+        agentAddress: VALID_ADDR,
+        name: 'ConfiguredBot',
+        description: 'Autonomous agent with custom spending limits',
+        maxPerTxUsdc: '0.001',
+        maxPerDayUsdc: '1.00',
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockRegisterAgentOnChain).toHaveBeenCalledWith(
+      VALID_ADDR,
+      'ConfiguredBot',
+      'Autonomous agent with custom spending limits',
+      10_000n,
+      10_000_000n
+    );
+    expect(res.body.policy).toEqual({
+      max_per_tx_stroops: '10000',
+      max_per_day_stroops: '10000000',
+      maxPerTxUsdc: '0.001',
+      maxPerDayUsdc: '1.00',
+    });
+  });
+
+  it('returns 400 INVALID_BODY when maxPerTxUsdc or maxPerDayUsdc is zero or negative', async () => {
+    const zeroTx = await request(app)
+      .post('/agents/register')
+      .send({
+        agentAddress: VALID_ADDR,
+        name: 'ZeroBot',
+        description: 'Autonomous agent with invalid zero limit',
+        maxPerTxUsdc: '0',
+        maxPerDayUsdc: '1.00',
+      });
+    expect(zeroTx.status).toBe(400);
+    expect(zeroTx.body.code).toBe('INVALID_BODY');
+
+    const negDay = await request(app)
+      .post('/agents/register')
+      .send({
+        agentAddress: VALID_ADDR,
+        name: 'NegBot',
+        description: 'Autonomous agent with invalid negative limit',
+        maxPerTxUsdc: '0.001',
+        maxPerDayUsdc: '-0.5',
+      });
+    expect(negDay.status).toBe(400);
+    expect(negDay.body.code).toBe('INVALID_BODY');
+    expect(mockRegisterAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 INVALID_BODY when maxPerTxUsdc exceeds maxPerDayUsdc', async () => {
+    const res = await request(app)
+      .post('/agents/register')
+      .send({
+        agentAddress: VALID_ADDR,
+        name: 'InvertedBot',
+        description: 'Autonomous agent where per-tx exceeds per-day',
+        maxPerTxUsdc: '2.00',
+        maxPerDayUsdc: '1.00',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(res.body.error).toMatch(/cannot exceed/i);
+    expect(mockRegisterAgentOnChain).not.toHaveBeenCalled();
   });
 });

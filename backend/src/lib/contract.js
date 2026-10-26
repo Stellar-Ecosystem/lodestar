@@ -981,7 +981,13 @@ export async function getAgentCount() {
   }
 }
 
-export async function registerAgentOnChain(agentAddress, name, description) {
+export async function registerAgentOnChain(
+  agentAddress,
+  name,
+  description,
+  initialMaxPerTxStroops = null,
+  initialMaxPerDayStroops = null
+) {
   try {
     const contract = getAgentsContract();
     const agentAddr = Address.fromString(agentAddress);
@@ -993,7 +999,13 @@ export async function registerAgentOnChain(agentAddress, name, description) {
       nativeToScVal(agentAddr, { type: 'address' }),
       nativeToScVal(name, { type: 'string' }),
       nativeToScVal(description, { type: 'string' }),
-      nativeToScVal(ownerAddress, { type: 'address' })
+      nativeToScVal(ownerAddress, { type: 'address' }),
+      initialMaxPerTxStroops != null
+        ? nativeToScVal(BigInt(initialMaxPerTxStroops), { type: 'i128' })
+        : xdr.ScVal.scvVoid(),
+      initialMaxPerDayStroops != null
+        ? nativeToScVal(BigInt(initialMaxPerDayStroops), { type: 'i128' })
+        : xdr.ScVal.scvVoid()
     );
 
     const result = await simulateAndSubmit(op);

@@ -565,6 +565,45 @@ describe('ensureRegistered — structured event fields', () => {
     expect(call).toBeDefined();
     expect(call[0]).toMatchObject({ event: 'agent_registered', score: 95, scoringEnabled: true });
   });
+
+  it('logs effective spending limits from registration response policy when registering a new agent (#250)', async () => {
+    const { ensureRegistered } = await import('./agent.js');
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ ok: false, status: 404 }))
+      .mockResolvedValueOnce(
+        makeResponse({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({
+              success: true,
+              agentCount: 1,
+              policy: {
+                max_per_tx_stroops: '10000',
+                max_per_day_stroops: '10000000',
+                maxPerTxUsdc: '0.001',
+                maxPerDayUsdc: '1.00',
+              },
+            }),
+        })
+      );
+
+    const registered = await ensureRegistered();
+    expect(registered).toBe(true);
+
+    const call = logInfo.mock.calls.find(
+      ([f]) => f?.event === EVENT.AGENT_REGISTERED && f?.scoringEnabled === true
+    );
+    expect(call).toBeDefined();
+    expect(call[0]).toMatchObject({
+      event: 'agent_registered',
+      score: 100,
+      maxPerTxUsdc: '0.001',
+      dailyLimitUsdc: '1.00',
+      scoringEnabled: true,
+    });
+  });
 });
 
 describe('graceful shutdown', () => {
