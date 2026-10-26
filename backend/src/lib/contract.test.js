@@ -909,3 +909,45 @@ describe('submitQueue management', () => {
     await promise;
   });
 });
+
+describe('getAgentScore Option<i32> decoding (#321)', () => {
+  const VALID_AGENT_ADDRESS = sdkPkg.Keypair.random().publicKey();
+  let configModule;
+
+  beforeEach(async () => {
+    resetMockServer();
+    configModule = (await import('../config.js')).default;
+    configModule.contract.agentsId = VALID_CONTRACT_ID;
+  });
+
+  afterEach(() => {
+    configModule.contract.agentsId = 'mock';
+  });
+
+  it('returns null when get_score returns Option::None (scvVoid) instead of a -1 or 0 sentinel', async () => {
+    mockSimulateTransaction.mockResolvedValueOnce({
+      result: { retval: sdkPkg.xdr.ScVal.scvVoid() },
+    });
+
+    const score = await contractLib.getAgentScore(VALID_AGENT_ADDRESS);
+    expect(score).toBeNull();
+  });
+
+  it('returns 0 when get_score returns Some(0)', async () => {
+    mockSimulateTransaction.mockResolvedValueOnce({
+      result: { retval: sdkPkg.nativeToScVal(0, { type: 'i32' }) },
+    });
+
+    const score = await contractLib.getAgentScore(VALID_AGENT_ADDRESS);
+    expect(score).toBe(0);
+  });
+
+  it('returns the numeric score when get_score returns Some(score)', async () => {
+    mockSimulateTransaction.mockResolvedValueOnce({
+      result: { retval: sdkPkg.nativeToScVal(742, { type: 'i32' }) },
+    });
+
+    const score = await contractLib.getAgentScore(VALID_AGENT_ADDRESS);
+    expect(score).toBe(742);
+  });
+});

@@ -939,15 +939,14 @@ export async function getAgentPolicy(agentAddress) {
 /**
  * Read an agent's credit score.
  *
- * `get_score` returns `Err(AgentError::AgentNotFound)` rather than an in-band
- * sentinel, so a missing agent is reported as `null` instead of being
- * indistinguishable from a real score. Every other failure (RPC, simulation,
- * malformed address) is rethrown so the caller can tell "no score yet" apart
- * from "we could not read the score".
+ * `get_score` returns `Option<i32>` (consistent with `get_agent` and
+ * `get_policy`, #321), so an unregistered agent decodes to `null` rather than
+ * an in-band `-1` sentinel. Every other failure (RPC, simulation, malformed
+ * address) is rethrown so the caller can distinguish "not registered" from
+ * "we could not read the score".
  *
  * @param {string} agentAddress - Stellar address of the agent
  * @returns {Promise<number|null>} The score, or `null` when the agent is not registered
- * @throws {ContractError} `AGENT_NOT_FOUND` if the agent is not registered
  */
 export async function getAgentScore(agentAddress) {
   try {
@@ -958,7 +957,9 @@ export async function getAgentScore(agentAddress) {
     );
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return null;
-    return Number(scValToNative(retval));
+    const native = scValToNative(retval);
+    if (native === null || native === undefined) return null;
+    return Number(native);
   } catch (err) {
     if (err instanceof ContractError && err.contractErrorCode === AGENT_ERROR.AGENT_NOT_FOUND) {
       return null;

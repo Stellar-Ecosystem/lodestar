@@ -57,7 +57,7 @@ export default function CreditScoreDemo() {
         [agent.address]: res.eligible
           ? `Score ${res.score} ≥ ${premiumMinScore} — access granted`
           : res.score === null
-            ? `No score yet — minimum ${res.required} required`
+            ? `Agent not registered — minimum ${res.required} required`
             : `Score ${res.score} — minimum ${res.required} required`,
       }));
     } catch {

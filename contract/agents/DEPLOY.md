@@ -92,9 +92,10 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 Indexers, activity feeds, and dashboards can reconstruct the complete score history of any agent
 purely from chain events by filtering for topics matching `("agents", *, agent_address)`.
 
-`get_score` emits `score_read` only on success. Reading the score of an agent that
-was never registered fails with `AgentError::AgentNotFound` (see below), so no
-event is emitted and the caller must not treat the failure as a zero score.
+`get_score` returns `Option<i32>` (consistent with `get_agent` and `get_policy`) and emits
+`score_read` only when the agent is registered (`Some(score)`). Reading the score of an agent
+that was never registered returns `None` (`null` off-chain), so no event is emitted and the
+caller never relies on an in-band `-1` sentinel.
 
 ## Error Codes
 

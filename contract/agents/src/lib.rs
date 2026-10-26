@@ -315,48 +315,20 @@ impl LodestarAgents {
     /// Read the credit score for a registered agent.
     ///
     /// # Returns
-    /// `Ok(score)` holding the agent's current score.
-    ///
-    /// # Errors
-    /// `AgentError::AgentNotFound` (`6`) — no `DataKey::Agent(agent_address)`
-    /// entry exists, i.e. the address was never registered. This replaces the
-    /// old `-1` return value, which the caller could not tell apart from a
-    /// genuine negative score.
-    ///
-    /// The variant reaches the host as `Error(Contract, #6)`, so the backend can
-    /// map it to a distinct HTTP status instead of guessing from the message.
-    ///
-    /// Note that this is deliberately an `Err` and not a `panic_with_error!`:
-    /// a panic raised inside a `Result`-returning function is downgraded by the
-    /// host to a bare `Error(Context, InvalidAction)`, which drops the numeric
-    /// discriminant the caller needs. `Err` keeps the code, which is why
-    /// `get_service` in the registry contract uses the same shape.
-    ///
-    /// The remaining failure mode — a live key whose value cannot be decoded as
-    /// an `AgentEntry` — is not given a variant on purpose: the SDK's
-    /// `Storage::get` aborts the whole invocation on a decode mismatch before
-    /// any contract code can branch on it, so no variant could be reported.
+    /// `Some(score)` holding the agent's current score when a
+    /// `DataKey::Agent(agent_address)` entry exists, or `None` when the agent
+    /// is not registered (consistent with `get_agent` and `get_policy`, #321).
     ///
     /// # Events
-    /// On success only, emits a `("agents", "score_read", agent_address)` event
-    /// with payload `(score, exists)`:
-    ///   - `score`  — the agent's current score
-    ///   - `exists` — always `true`. The flag is retained so the payload shape
-    ///                is unchanged for indexers built against the original
-    ///                schema; a failed read emits nothing because the
-    ///                invocation is reverted, so the flag can no longer be
-    ///                `false`.
-    ///
-    /// The payload is self-sufficient: consumers can build an activity feed
-    /// without a follow-up `get_agent` read. Note that `get_score` is a view
-    /// and does not mutate storage, but the event is still published so
-    /// off-chain indexers can observe score reads without polling.
-    pub fn get_score(env: Env, agent_address: Address) -> Result<i32, AgentError> {
+    /// When the agent is registered, emits a `("agents", "score_read", agent_address)`
+    /// event with payload `(score, exists)` where `exists` is `true`.
+    pub fn get_score(env: Env, agent_address: Address) -> Option<i32> {
         let key = DataKey::Agent(agent_address.clone());
-        let score = match env.storage().persistent().get::<DataKey, AgentEntry>(&key) {
-            Some(entry) => entry.score,
-            None => return Err(AgentError::AgentNotFound),
-        };
+        let score = env
+            .storage()
+            .persistent()
+            .get::<DataKey, AgentEntry>(&key)?
+            .score;
 
         env.events().publish(
             (
@@ -367,7 +339,7 @@ impl LodestarAgents {
             (score, true),
         );
 
-        Ok(score)
+        Some(score)
     }
 
     /// Returns whether an agent record exists for `agent_address`.
@@ -1385,7 +1357,7 @@ mod test {
 
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -1456,7 +1428,7 @@ mod test {
         let _ = env.events().all();
 
         let score = client.get_score(&agent_addr);
-        assert_eq!(score, INITIAL_SCORE);
+        assert_eq!(score, Some(INITIAL_SCORE));
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
@@ -1477,7 +1449,7 @@ mod test {
     }
 
     #[test]
-    fn test_get_score_returns_agent_not_found_for_unknown_agent() {
+    fn test_get_score_returns_none_for_unknown_agent() {
         let env = Env::default();
         let admin = Address::generate(&env);
         let contract_id = env.register(LodestarAgents, (admin,));
@@ -1485,12 +1457,7 @@ mod test {
 
         let missing = Address::generate(&env);
 
-        assert_eq!(
-            client.try_get_score(&missing),
-            Err(Ok(AgentError::AgentNotFound))
-        );
-        // The variant must carry a stable numeric discriminant so off-chain
-        // callers can branch on it without parsing a message.
+        assert_eq!(client.get_score(&missing), None);
         assert_eq!(AgentError::AgentNotFound as u32, 6);
     }
 
@@ -1508,11 +1475,11 @@ mod test {
         client.deactivate_agent(&agent_addr, &owner);
 
         // Deactivation never removes the record, so a score read still succeeds.
-        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE);
+        assert_eq!(client.get_score(&agent_addr), Some(INITIAL_SCORE));
     }
 
     #[test]
-    fn test_get_score_emits_no_event_when_it_fails() {
+    fn test_get_score_emits_no_event_when_missing() {
         let env = Env::default();
         let admin = Address::generate(&env);
         let contract_id = env.register(LodestarAgents, (admin,));
@@ -1521,10 +1488,10 @@ mod test {
         let missing = Address::generate(&env);
         let _ = env.events().all();
 
-        assert!(client.try_get_score(&missing).is_err());
+        assert_eq!(client.get_score(&missing), None);
 
-        // A failed invocation is reverted, so it must not leave a `score_read`
-        // event claiming a read that did not happen.
+        // Reading an unregistered agent returns None without emitting a
+        // `score_read` event.
         assert_eq!(env.events().all().len(), 0);
     }
 
@@ -1536,9 +1503,7 @@ mod test {
         let client = LodestarAgentsClient::new(&env, &contract_id);
 
         // Write a value under the agent key that is not a decodable `AgentEntry`.
-        // A corrupt entry must not be reported as `AgentNotFound`, because the
-        // two causes need different remediation (the agent does not exist vs.
-        // the contract cannot read what it stored).
+        // A corrupt entry must abort rather than returning `Ok(None)`.
         let agent_addr = Address::generate(&env);
         env.as_contract(&contract_id, || {
             env.storage()
@@ -1548,11 +1513,6 @@ mod test {
 
         let result = client.try_get_score(&agent_addr);
         assert!(result.is_err());
-        assert_ne!(
-            result,
-            Err(Ok(AgentError::AgentNotFound)),
-            "a live but undecodable key must not be reported as a missing agent"
-        );
     }
 
     #[test]
@@ -3222,7 +3182,7 @@ mod test {
         );
         let reg_data = <(Address, String, String, i32)>::from_val(&env, &reg_event.2);
         reconstructed_scores.push_back(reg_data.3);
-        assert_eq!(client.get_score(&agent_addr), 100);
+        assert_eq!(client.get_score(&agent_addr), Some(100));
 
         // 2. Successful payment 1 (+10) -> score 110
         client.record_payment(&agent_addr, &101u64, &1_000_000i128, &true, &provider1);
@@ -3242,7 +3202,7 @@ mod test {
         assert_eq!(pay1_data.3, 100); // old_score
         assert_eq!(pay1_data.4, 110); // new_score
         reconstructed_scores.push_back(pay1_data.4);
-        assert_eq!(client.get_score(&agent_addr), 110);
+        assert_eq!(client.get_score(&agent_addr), Some(110));
 
         // 3. Successful payment 2 (+10) -> score 120
         client.record_payment(&agent_addr, &102u64, &2_000_000i128, &true, &provider2);
@@ -3262,7 +3222,7 @@ mod test {
         assert_eq!(pay2_data.3, 110); // old_score
         assert_eq!(pay2_data.4, 120); // new_score
         reconstructed_scores.push_back(pay2_data.4);
-        assert_eq!(client.get_score(&agent_addr), 120);
+        assert_eq!(client.get_score(&agent_addr), Some(120));
 
         // 4. Failed payment 1 (-25) -> score 95
         client.record_payment(&agent_addr, &101u64, &500_000i128, &false, &provider1);
@@ -3282,7 +3242,7 @@ mod test {
         assert_eq!(pay3_data.3, 120); // old_score
         assert_eq!(pay3_data.4, 95); // new_score
         reconstructed_scores.push_back(pay3_data.4);
-        assert_eq!(client.get_score(&agent_addr), 95);
+        assert_eq!(client.get_score(&agent_addr), Some(95));
 
         // 5. Admin flag agent (-200, clamped to 0) -> score 0
         client.flag_agent(
@@ -3306,7 +3266,7 @@ mod test {
         assert_eq!(flag_data.2, 95); // old_score
         assert_eq!(flag_data.3, 0); // new_score
         reconstructed_scores.push_back(flag_data.3);
-        assert_eq!(client.get_score(&agent_addr), 0);
+        assert_eq!(client.get_score(&agent_addr), Some(0));
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
     }

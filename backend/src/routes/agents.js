@@ -184,8 +184,8 @@ router.get('/agents/:address/policy', requireAgentsContract, async (req, res) =>
 router.get('/agents/:address/score', requireAgentsContract, async (req, res) => {
   try {
     const score = await getAgentScore(req.params.address);
-    // `get_score` returns Err(AgentError::AgentNotFound) for an unknown agent, so
-    // a null score is a real "not found" rather than a successful read of -1.
+    // `get_score` returns Option<i32> (None for an unregistered agent), so a
+    // null score is a real "not registered" rather than a -1 sentinel (#321).
     if (score === null) {
       return res.status(404).json({ error: 'Agent not found', code: 'AGENT_NOT_FOUND' });
     }
