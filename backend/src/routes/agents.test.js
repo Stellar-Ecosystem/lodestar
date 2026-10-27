@@ -76,6 +76,123 @@ beforeAll(async () => {
   app.use('/', router);
 });
 
+describe('POST /agents/:address/flag', () => {
+  const ADDRESS = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('flags an agent on the happy path and returns 200 JSON { success: true }', async () => {
+    mockFlagAgentOnChain.mockResolvedValueOnce(true);
+
+    const body = { reason: 'suspicious activity' };
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', adminKey(body))
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({ success: true });
+    expect(mockFlagAgentOnChain).toHaveBeenCalledTimes(1);
+    expect(mockFlagAgentOnChain).toHaveBeenCalledWith(ADDRESS, 'suspicious activity');
+  });
+
+  it('validates the Stellar address parameter before adminAuth runs', async () => {
+    const res = await request(app)
+      .post('/agents/not-a-stellar-address/flag')
+      .send({ reason: 'suspicious activity' });
+
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Invalid Stellar address format',
+      code: 'INVALID_ADDRESS',
+    });
+    expect(mockFlagAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('enforces adminAuth before body validation when X-Admin-Key is missing', async () => {
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/flag`)
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Missing X-Admin-Key header',
+      code: 'ADMIN_KEY_MISSING',
+    });
+    expect(mockFlagAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 ADMIN_KEY_INVALID when X-Admin-Key signature does not match body', async () => {
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', 'invalid_hmac_signature')
+      .send({ reason: 'suspicious activity' });
+
+    expect(res.status).toBe(401);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Invalid admin key',
+      code: 'ADMIN_KEY_INVALID',
+    });
+    expect(mockFlagAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 INVALID_BODY when reason is missing or not a string', async () => {
+    const body = {};
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', adminKey(body))
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: '`reason` is required',
+      code: 'INVALID_BODY',
+    });
+    expect(mockFlagAgentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a mapped ContractError status and code on contract failure', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockFlagAgentOnChain.mockRejectedValueOnce(
+      new ContractError('Agent not found', 'AGENT_NOT_FOUND', 404),
+    );
+
+    const body = { reason: 'suspicious activity' };
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', adminKey(body))
+      .send(body);
+
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body.code).toBe('AGENT_NOT_FOUND');
+  });
+
+  it('returns 500 FLAG_ERROR when the contract layer throws an unexpected error', async () => {
+    mockFlagAgentOnChain.mockRejectedValueOnce(new Error('RPC timeout'));
+
+    const body = { reason: 'suspicious activity' };
+    const res = await request(app)
+      .post(`/agents/${ADDRESS}/flag`)
+      .set('X-Admin-Key', adminKey(body))
+      .send(body);
+
+    expect(res.status).toBe(500);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      error: 'Flagging failed',
+      code: 'FLAG_ERROR',
+    });
+  });
+});
+
 describe('POST /admin/agents/:address/flag', () => {
   const ADDRESS = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
 
