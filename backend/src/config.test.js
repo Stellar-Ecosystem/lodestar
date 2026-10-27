@@ -24,6 +24,8 @@ async function loadConfig(overrides = {}) {
     'RATE_LIMIT_MAX',
     'PAYMENT_RATE_LIMIT_WINDOW_MS',
     'PAYMENT_RATE_LIMIT_MAX',
+    'DEACTIVATE_RATE_LIMIT_WINDOW_MS',
+    'DEACTIVATE_RATE_LIMIT_MAX',
     'TRUST_PROXY',
     'DEMO_RUN_POLL_MAX_WAIT_MS',
     'DEMO_RUN_POLL_INITIAL_DELAY_MS',
@@ -51,6 +53,8 @@ describe('config rate-limit env validation', () => {
     expect(config.rateLimit.max).toBe(20);
     expect(config.rateLimit.payment.windowMs).toBe(60_000);
     expect(config.rateLimit.payment.max).toBe(10);
+    expect(config.rateLimit.deactivate.windowMs).toBe(60_000);
+    expect(config.rateLimit.deactivate.max).toBe(5);
   });
 
   it('honors valid positive-integer overrides', async () => {

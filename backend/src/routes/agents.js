@@ -578,7 +578,20 @@ router.post('/admin/agents/:address/deactivate', requireAgentsContract, adminAut
   }
 });
 
-router.post('/agents/:address/deactivate', requireAgentsContract, ownerAuth, async (req, res) => {
+// Ceiling for POST /agents/:address/deactivate (#647). Deactivation is a
+// rare lifecycle mutation, and every unthrottled call triggers both an
+// on-chain owner read (inside ownerAuth) and a Soroban contract invocation.
+// 5 requests per minute per IP is far above legitimate owner use while
+// bounding RPC amplification — chosen for this route's cost profile rather
+// than inherited from the generic write limit.
+const deactivateRateLimiter = writeRateLimiter(
+  config.rateLimit?.deactivate?.max ?? 5,
+  config.rateLimit?.deactivate?.windowMs ?? 60_000,
+);
+
+// Mounted before ownerAuth so a request flood is rejected with 429 + Retry-After
+// before it triggers an on-chain getAgent() RPC lookup or contract write.
+router.post('/agents/:address/deactivate', requireAgentsContract, deactivateRateLimiter, ownerAuth, async (req, res) => {
   const { address } = req.params;
   try {
     await deactivateAgentOnChain(address, req.callerAddress);

@@ -148,6 +148,19 @@ const config = Object.freeze({
       windowMs: parsePositiveInt(process.env.WEATHER_RATE_LIMIT_WINDOW_MS, 60_000, 'WEATHER_RATE_LIMIT_WINDOW_MS'),
       max: parsePositiveInt(process.env.WEATHER_RATE_LIMIT_MAX, 30, 'WEATHER_RATE_LIMIT_MAX'),
     },
+    // Deliberate per-route ceiling for POST /agents/:address/deactivate (#647).
+    // Deactivation is a rare lifecycle mutation that triggers both an on-chain
+    // owner read (in ownerAuth) and a Soroban contract invocation. 5 requests
+    // per minute per IP is far above legitimate owner use while preventing RPC
+    // amplification.
+    deactivate: {
+      windowMs: parsePositiveInt(
+        process.env.DEACTIVATE_RATE_LIMIT_WINDOW_MS,
+        60_000,
+        'DEACTIVATE_RATE_LIMIT_WINDOW_MS',
+      ),
+      max: parsePositiveInt(process.env.DEACTIVATE_RATE_LIMIT_MAX, 5, 'DEACTIVATE_RATE_LIMIT_MAX'),
+    },
   },
 
   // Upstream deadlines (#671). A slow or hanging RPC node must not hold a
