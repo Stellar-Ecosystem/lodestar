@@ -68,6 +68,7 @@ const rpcMetrics = {
   simulateTransaction: 0,
   sendTransaction: 0,
   getTransaction: 0,
+  simulateReadTimeout: 0,
 };
 
 function logRpcCall(method, latencyMs) {
@@ -84,6 +85,7 @@ export function resetRpcMetrics() {
   rpcMetrics.simulateTransaction = 0;
   rpcMetrics.sendTransaction = 0;
   rpcMetrics.getTransaction = 0;
+  rpcMetrics.simulateReadTimeout = 0;
 }
 
 const submitQueue = new PQueue({ concurrency: 1 });
@@ -336,7 +338,25 @@ async function simulateRead(operation, scope = REGISTRY_ERROR_SCOPE) {
     .build();
 
   const simStart = Date.now();
-  const simResult = await server.simulateTransaction(tx);
+  const timeoutMs = config.contract.readTimeoutMs ?? 5000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let simResult;
+  try {
+    simResult = await server.simulateTransaction(tx, { signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      rpcMetrics.simulateReadTimeout++;
+      logger.warn({ timeoutMs }, 'simulateRead timed out');
+      throw new ContractError(
+        `Upstream contract read timed out after ${timeoutMs}ms`,
+        'UPSTREAM_TIMEOUT'
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   logRpcCall('simulateTransaction', Date.now() - simStart);
 
   if (rpc.Api.isSimulationError(simResult)) {
