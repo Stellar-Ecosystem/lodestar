@@ -14,7 +14,7 @@ export class ContractError extends Error {
   }
 }
 
-export function handleContractError(err, res, defaultMessage, defaultCode) {
+export function contractErrorResponse(err, defaultMessage, defaultCode) {
   if (err instanceof ContractError) {
     let status = err.status ?? 400;
     if (err.code === 'TRANSACTION_TIMEOUT') {
@@ -23,7 +23,12 @@ export function handleContractError(err, res, defaultMessage, defaultCode) {
     if (err.code === 'RPC_THROTTLED') {
       status = 503;
     }
-    return res.status(status).json({ error: err.message, code: err.code });
+    return { status, body: { error: err.message, code: err.code } };
   }
-  return res.status(500).json({ error: defaultMessage, code: defaultCode });
+  return { status: 500, body: { error: defaultMessage, code: defaultCode } };
+}
+
+export function handleContractError(err, res, defaultMessage, defaultCode) {
+  const { status, body } = contractErrorResponse(err, defaultMessage, defaultCode);
+  return res.status(status).json(body);
 }

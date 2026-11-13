@@ -151,7 +151,10 @@ export async function ensureRegistered() {
       );
       const regRes = await fetchWithTimeout(`${LODESTAR_API_URL}/api/agents/register`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': crypto.randomUUID(),
+        },
         body: JSON.stringify({
           agentAddress: AGENT_ADDRESS,
           name: AGENT_NAME,
