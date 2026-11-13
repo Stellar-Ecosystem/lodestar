@@ -163,6 +163,13 @@ export interface AgentSpendCheckResponse {
   reason: string;
 }
 
+export interface ScoringConfig {
+  initial_score: number;
+  score_success: number;
+  score_failure: number;
+  flag_penalty: number;
+}
+
 // ─ Category Helpers ─ — 
  
 export function isCategory(value: string): value is Category {
