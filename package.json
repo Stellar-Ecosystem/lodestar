@@ -20,10 +20,13 @@
   },
   "homepage": "https://github.com/Stellar-Ecosystem/lodestar#readme",
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "eslint": "^10.8.0",
+    "globals": "^17.13.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.2.0",
-    "prettier": "^3.9.6"
+    "prettier": "^3.9.6",
+    "typescript-eslint": "^8.72.0"
   },
   "lint-staged": {
     "*.{js,ts,jsx,tsx}": [

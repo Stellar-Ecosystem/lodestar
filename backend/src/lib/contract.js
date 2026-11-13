@@ -15,11 +15,11 @@ const {
 } = pkg;
 import PQueue from 'p-queue';
 import { randomUUID } from 'node:crypto';
-import { writeFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs';
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
 import { ContractError } from './ContractError.js';
+import { recordReputationChange } from './reputationHistory.js';
 import {
   ReturnValueParseError,
   SimulationError,
@@ -48,7 +48,6 @@ export {
   resumePendingTransactions,
   __resetPendingTransactions,
 };
-
 
 const TIMEOUT = 30;
 const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -175,7 +174,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const passphrase = getNetworkPassphrase();
 
   const now = Date.now();
-  if (retryCount > 0 || currentSeqNum === null || (now - lastSeqSyncTime > 5000)) {
+  if (retryCount > 0 || currentSeqNum === null || now - lastSeqSyncTime > 5000) {
     const acctStart = Date.now();
     const account = await server.getAccount(keypair.publicKey());
     logRpcCall('getAccount', Date.now() - acctStart);
@@ -217,11 +216,14 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
         if (code === 'txBadSeq' || code === 'txBAD_SEQ') {
           isBadSeq = true;
         }
-      } catch (e) {
+      } catch {
         // Ignore parse errors here
       }
     }
-    if (!isBadSeq && (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))) {
+    if (
+      !isBadSeq &&
+      (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))
+    ) {
       isBadSeq = true;
     }
 
@@ -265,7 +267,11 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
     try {
       getResult.nativeReturnValue = scValToNative(getResult.returnValue);
     } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+      throw new ReturnValueParseError(
+        `Transaction succeeded but return value could not be parsed: ${sendResult.hash}`,
+        sendResult.hash,
+        err,
+      );
     }
   }
 
@@ -380,14 +386,11 @@ export async function simulateReadBatch(operations, scope = REGISTRY_ERROR_SCOPE
   return results;
 }
 
-
 export async function listServices({ category, offset = 0, limit = 20 } = {}) {
   try {
     const contract = getContract();
 
-    const optionArg = category
-      ? nativeToScVal(category, { type: 'string' })
-      : xdr.ScVal.scvVoid();
+    const optionArg = category ? nativeToScVal(category, { type: 'string' }) : xdr.ScVal.scvVoid();
 
     const callOp = contract.call(
       'list_services',
@@ -525,19 +528,12 @@ export async function listServicesByProvider(provider, fetchServices = listServi
  * Register a service on-chain.
  * Only available to seed/ops scripts that explicitly opt into SEEDING_MODE.
  */
-export async function registerServiceOnChain(
-  name,
-  description,
-  endpoint,
-  priceUsdc,
-  category,
-  payTo
-) {
+export async function registerServiceOnChain(name, description, endpoint, priceUsdc, category, payTo) {
   try {
     if (process.env.SEEDING_MODE !== 'true') {
       throw new ContractError(
         'Server-signed service registration is disabled. Set SEEDING_MODE=true for seed scripts or use the wallet-signed registry flow.',
-        'SEEDING_MODE_REQUIRED'
+        'SEEDING_MODE_REQUIRED',
       );
     }
 
@@ -546,17 +542,13 @@ export async function registerServiceOnChain(
     const provider = providerAddress.toString();
 
     if (await contractHelpers.activeServiceExists(provider, endpoint)) {
-      const err = new Error(
-        'Active service with same provider and endpoint already exists'
-      );
+      const err = new Error('Active service with same provider and endpoint already exists');
       logger.warn({ provider, endpoint }, 'Duplicate active service registration blocked');
       throw err;
     }
 
     if (await contractHelpers.activeServiceExistsByName(provider, name)) {
-      const err = new Error(
-        'Active service with same provider and name already exists'
-      );
+      const err = new Error('Active service with same provider and name already exists');
       logger.warn({ provider, name }, 'Duplicate active service registration blocked');
       throw err;
     }
@@ -572,7 +564,7 @@ export async function registerServiceOnChain(
       nativeToScVal(endpoint, { type: 'string' }),
       nativeToScVal(priceUsdc, { type: 'string' }),
       nativeToScVal(payToAddress, { type: 'string' }),
-      nativeToScVal(category, { type: 'string' })
+      nativeToScVal(category, { type: 'string' }),
     );
 
     const result = await simulateAndSubmit(op);
@@ -612,10 +604,7 @@ export async function deactivateServiceOnChain(id, providerAddress) {
       }
       // simulateRead threw — this is an RPC/simulation failure, not "not found"
       logger.error({ err: readErr, id }, 'deactivateServiceOnChain: failed to read service from chain');
-      throw new ContractError(
-        `Failed to read service ${id}: ${readErr.message ?? 'RPC error'}`,
-        'SERVICE_READ_FAILED'
-      );
+      throw new ContractError(`Failed to read service ${id}: ${readErr.message ?? 'RPC error'}`, 'SERVICE_READ_FAILED');
     }
 
     if (!retval) {
@@ -626,10 +615,7 @@ export async function deactivateServiceOnChain(id, providerAddress) {
     const serviceProvider = native.provider?.toString() ?? native.provider;
 
     if (serviceProvider !== providerAddress) {
-      throw new ContractError(
-        'Only the provider that registered this service can deactivate it',
-        'PROVIDER_MISMATCH'
-      );
+      throw new ContractError('Only the provider that registered this service can deactivate it', 'PROVIDER_MISMATCH');
     }
     if (!native.active) {
       throw new ContractError(`Service ${id} is already deactivated`, 'ALREADY_INACTIVE');
@@ -654,11 +640,11 @@ export async function buildUnsignedRegistryTx(action, providerAddress, params = 
 
   if (action === 'register') {
     if (await contractHelpers.activeServiceExists(providerAddress, params.endpoint)) {
-      logger.warn({ provider: providerAddress, endpoint: params.endpoint }, 'Duplicate active service registration blocked');
-      throw new ContractError(
-        'Active service with same provider and endpoint already exists',
-        'DUPLICATE_SERVICE'
+      logger.warn(
+        { provider: providerAddress, endpoint: params.endpoint },
+        'Duplicate active service registration blocked',
       );
+      throw new ContractError('Active service with same provider and endpoint already exists', 'DUPLICATE_SERVICE');
     }
 
     const op = contract.call(
@@ -669,7 +655,7 @@ export async function buildUnsignedRegistryTx(action, providerAddress, params = 
       nativeToScVal(params.endpoint, { type: 'string' }),
       nativeToScVal(String(params.priceUsdc), { type: 'string' }),
       nativeToScVal(params.payTo || config.x402.payTo, { type: 'string' }),
-      nativeToScVal(params.category, { type: 'string' })
+      nativeToScVal(params.category, { type: 'string' }),
     );
 
     const xdr = await buildUnsignedTx(op);
@@ -680,7 +666,7 @@ export async function buildUnsignedRegistryTx(action, providerAddress, params = 
     const op = contract.call(
       'deactivate_service',
       nativeToScVal(provider, { type: 'address' }),
-      nativeToScVal(BigInt(params.id), { type: 'u64' })
+      nativeToScVal(BigInt(params.id), { type: 'u64' }),
     );
 
     const xdr = await buildUnsignedTx(op);
@@ -691,7 +677,7 @@ export async function buildUnsignedRegistryTx(action, providerAddress, params = 
     const op = contract.call(
       'reactivate_service',
       nativeToScVal(provider, { type: 'address' }),
-      nativeToScVal(BigInt(params.id), { type: 'u64' })
+      nativeToScVal(BigInt(params.id), { type: 'u64' }),
     );
 
     const xdr = await buildUnsignedTx(op);
@@ -733,7 +719,7 @@ export function validatePreparedRegistrySubmission(submitToken, signedXdr) {
     operation.type === 'invokeHostFunction' &&
     operation.func.switch().name === 'hostFunctionTypeInvokeContract' &&
     StrKey.encodeContract(operation.func.invokeContract().contractAddress().contractId()) === config.contract.id &&
-    operation.func.invokeContract().functionName().toString() === expectedFunctionName
+    operation.func.invokeContract().functionName().toString() === expectedFunctionName,
   );
 
   if (!isRegistryInvocation) {
@@ -763,7 +749,7 @@ export async function updateReputation(id, positive, agentAddress) {
     if (!voter) {
       throw new ContractError(
         'This agent is not permitted to vote through the hosted backend. Only registered demo agents may; other agents must submit a wallet-signed transaction.',
-        'AGENT_NOT_ALLOWED'
+        'AGENT_NOT_ALLOWED',
       );
     }
 
@@ -777,7 +763,7 @@ export async function updateReputation(id, positive, agentAddress) {
       'update_reputation',
       nativeToScVal(BigInt(id), { type: 'u64' }),
       nativeToScVal(positive, { type: 'bool' }),
-      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
     );
     await simulateAndSubmit(op, voter);
 
@@ -806,7 +792,10 @@ export async function updateReputation(id, positive, agentAddress) {
  * to prevent silent precision loss on i128/u64 values.
  */
 function toNumber(value) {
-  if (typeof value === 'bigint' && (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER))) {
+  if (
+    typeof value === 'bigint' &&
+    (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER))
+  ) {
     return value.toString();
   }
   return Number(value);
@@ -864,7 +853,7 @@ export async function listAgentsPage(page = 0, pageSize = 20) {
     const op = contract.call(
       'list_agents_page',
       nativeToScVal(page, { type: 'u32' }),
-      nativeToScVal(pageSize, { type: 'u32' })
+      nativeToScVal(pageSize, { type: 'u32' }),
     );
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return [];
@@ -880,10 +869,7 @@ export async function listAgentsPage(page = 0, pageSize = 20) {
 export async function getAgent(agentAddress) {
   try {
     const contract = getAgentsContract();
-    const op = contract.call(
-      'get_agent',
-      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
-    );
+    const op = contract.call('get_agent', nativeToScVal(Address.fromString(agentAddress), { type: 'address' }));
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return null;
     const native = scValToNative(retval);
@@ -897,7 +883,7 @@ export async function getAgent(agentAddress) {
 
 /**
  * Checks if an agent is already registered on-chain.
- * 
+ *
  * @param {string} agentAddress - Stellar address of the agent
  * @returns {Promise<boolean>} True if registered, false otherwise
  * @throws {ContractError|Error} If the read call or simulation fails
@@ -905,10 +891,7 @@ export async function getAgent(agentAddress) {
 export async function isAgentRegistered(agentAddress) {
   try {
     const contract = getAgentsContract();
-    const op = contract.call(
-      'is_registered',
-      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
-    );
+    const op = contract.call('is_registered', nativeToScVal(Address.fromString(agentAddress), { type: 'address' }));
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return false;
     return scValToNative(retval);
@@ -921,10 +904,7 @@ export async function isAgentRegistered(agentAddress) {
 export async function getAgentPolicy(agentAddress) {
   try {
     const contract = getAgentsContract();
-    const op = contract.call(
-      'get_policy',
-      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
-    );
+    const op = contract.call('get_policy', nativeToScVal(Address.fromString(agentAddress), { type: 'address' }));
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return null;
     const native = scValToNative(retval);
@@ -952,10 +932,7 @@ export async function getAgentPolicy(agentAddress) {
 export async function getAgentScore(agentAddress) {
   try {
     const contract = getAgentsContract();
-    const op = contract.call(
-      'get_score',
-      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
-    );
+    const op = contract.call('get_score', nativeToScVal(Address.fromString(agentAddress), { type: 'address' }));
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return null;
     return Number(scValToNative(retval));
@@ -993,7 +970,7 @@ export async function registerAgentOnChain(agentAddress, name, description) {
       nativeToScVal(agentAddr, { type: 'address' }),
       nativeToScVal(name, { type: 'string' }),
       nativeToScVal(description, { type: 'string' }),
-      nativeToScVal(ownerAddress, { type: 'address' })
+      nativeToScVal(ownerAddress, { type: 'address' }),
     );
 
     const result = await simulateAndSubmit(op);
@@ -1016,7 +993,7 @@ export async function recordPaymentOnChain(agentAddress, serviceId, amountStroop
       nativeToScVal(BigInt(serviceId), { type: 'u64' }),
       nativeToScVal(BigInt(amountStroops), { type: 'i128' }),
       nativeToScVal(success, { type: 'bool' }),
-      nativeToScVal(callerAddr, { type: 'address' })
+      nativeToScVal(callerAddr, { type: 'address' }),
     );
 
     await simulateAndSubmit(op);
@@ -1033,7 +1010,7 @@ export async function isAgentEligible(agentAddress, minScore) {
     const op = contract.call(
       'is_eligible',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
-      nativeToScVal(minScore, { type: 'i32' })
+      nativeToScVal(minScore, { type: 'i32' }),
     );
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return false;
@@ -1044,19 +1021,23 @@ export async function isAgentEligible(agentAddress, minScore) {
   }
 }
 
-export async function checkSpendingAllowed(agentAddress, amountStroops) {
+export async function checkSpendingAllowed(agentAddress, amountStroops, { onError } = {}) {
   try {
     const contract = getAgentsContract();
     const op = contract.call(
       'check_spending_allowed',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
-      nativeToScVal(BigInt(amountStroops), { type: 'i128' })
+      nativeToScVal(BigInt(amountStroops), { type: 'i128' }),
     );
     const retval = await simulateRead(op, AGENT_ERROR_SCOPE);
     if (!retval) return false;
     return Boolean(scValToNative(retval));
   } catch (err) {
-    logger.error({ err, agentAddress }, 'checkSpendingAllowed failed');
+    if (onError) {
+      onError(err);
+    } else {
+      logger.error({ err, agentAddress }, 'checkSpendingAllowed failed');
+    }
     return false;
   }
 }
@@ -1071,7 +1052,7 @@ export async function flagAgentOnChain(agentAddress, reason, callerAddress) {
       'flag_agent',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
       nativeToScVal(reason, { type: 'string' }),
-      nativeToScVal(caller, { type: 'address' })
+      nativeToScVal(caller, { type: 'address' }),
     );
 
     await simulateAndSubmit(op);
@@ -1091,7 +1072,7 @@ export async function deactivateAgentOnChain(agentAddress, callerAddress) {
     const op = contract.call(
       'deactivate_agent',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
-      nativeToScVal(caller, { type: 'address' })
+      nativeToScVal(caller, { type: 'address' }),
     );
 
     await simulateAndSubmit(op);
@@ -1111,7 +1092,7 @@ export async function adminDeactivateAgentOnChain(agentAddress) {
     const op = contract.call(
       'admin_deactivate_agent',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
-      nativeToScVal(caller, { type: 'address' })
+      nativeToScVal(caller, { type: 'address' }),
     );
 
     await simulateAndSubmit(op);
@@ -1128,7 +1109,7 @@ export async function updatePolicyOnChain(
   maxPerDayStroops,
   allowedCategories,
   minScoreToEarn,
-  callerAddress
+  callerAddress,
 ) {
   try {
     const contract = getAgentsContract();
@@ -1142,7 +1123,7 @@ export async function updatePolicyOnChain(
       nativeToScVal(BigInt(maxPerDayStroops), { type: 'i128' }),
       nativeToScVal(allowedCategories ?? []),
       nativeToScVal(minScoreToEarn, { type: 'i32' }),
-      nativeToScVal(caller, { type: 'address' })
+      nativeToScVal(caller, { type: 'address' }),
     );
 
     await simulateAndSubmit(op);
@@ -1172,7 +1153,7 @@ export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
     op = contract.call(
       'deactivate_agent',
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' }),
-      nativeToScVal(callerAddr, { type: 'address' })
+      nativeToScVal(callerAddr, { type: 'address' }),
     );
   } else if (action === 'update_policy') {
     op = contract.call(
@@ -1182,7 +1163,7 @@ export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
       nativeToScVal(BigInt(params.maxPerDayStroops), { type: 'i128' }),
       nativeToScVal(params.allowedCategories ?? []),
       nativeToScVal(params.minScoreToEarn ?? 0, { type: 'i32' }),
-      nativeToScVal(callerAddr, { type: 'address' })
+      nativeToScVal(callerAddr, { type: 'address' }),
     );
   } else {
     throw new Error(`Unknown action: ${action}`);
@@ -1204,7 +1185,11 @@ async function submitSignedTx(signedXdr) {
   logRpcCall('sendTransaction', Date.now() - sendStart);
   if (sendResult.status === 'ERROR') {
     throwContractErrorIfPresent(sendResult.errorResult || sendResult, REGISTRY_ERROR_SCOPE);
-    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
+    throw new TransactionFailedError(
+      `Transaction failed: ${JSON.stringify(sendResult.errorResult)}`,
+      sendResult.hash,
+      sendResult.errorResult,
+    );
   }
 
   const signedTxHash = sendResult.hash;
@@ -1237,7 +1222,11 @@ async function submitSignedTx(signedXdr) {
     try {
       nativeReturnValue = scValToNative(getResult.returnValue);
     } catch (err) {
-      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+      throw new ReturnValueParseError(
+        `Transaction succeeded but return value could not be parsed: ${sendResult.hash}`,
+        sendResult.hash,
+        err,
+      );
     }
   }
 
