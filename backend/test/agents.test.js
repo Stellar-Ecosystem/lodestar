@@ -1,3 +1,4 @@
+import { _reset as resetIdempotencyStore } from '../src/lib/idempotency.js';
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
@@ -11,6 +12,7 @@ vi.mock("../src/lib/contract.js", async (importOriginal) => {
     ...actual,
     registerAgentOnChain: vi.fn(),
     isAgentRegistered: vi.fn(),
+    buildUnsignedAgentTx: vi.fn(),
 
   };
 });
@@ -58,6 +60,7 @@ app.use("/api", agentsRouter);
 
 describe("POST /api/agents/register", () => {
   beforeEach(() => {
+    resetIdempotencyStore();
     vi.clearAllMocks();
   });
 
@@ -185,5 +188,111 @@ describe('GET /api/agents/:address/payment-history', () => {
     const res = await request(app).get(`/api/agents/${VALID_ADDR}/payment-history?limit=-1`);
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_PAGINATION');
+  });
+});
+
+describe("POST /api/agents/:address/build-tx", () => {
+  const agentAddress = "GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3";
+  const validBody = { action: "deactivate" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("requires Idempotency-Key header", async () => {
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .send(validBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("IDEMPOTENCY_KEY_MISSING");
+  });
+
+  it("rejects invalid Idempotency-Key header (empty or invalid characters)", async () => {
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .set("Idempotency-Key", "invalid key with spaces")
+      .send(validBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("IDEMPOTENCY_KEY_INVALID");
+  });
+
+  it("builds transaction successfully with Idempotency-Key", async () => {
+    contract.buildUnsignedAgentTx.mockResolvedValueOnce("AAAA_MOCK_XDR_DEACTIVATE");
+
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .set("Idempotency-Key", "idem-build-1")
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ xdr: "AAAA_MOCK_XDR_DEACTIVATE" });
+    expect(contract.buildUnsignedAgentTx).toHaveBeenCalledTimes(1);
+    expect(contract.buildUnsignedAgentTx).toHaveBeenCalledWith("deactivate", agentAddress, {});
+  });
+
+  it("replays cached response on duplicate request with same key and produces exactly one effect", async () => {
+    contract.buildUnsignedAgentTx.mockResolvedValueOnce("AAAA_MOCK_XDR_DEACTIVATE");
+
+    // First request
+    const firstRes = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .set("Idempotency-Key", "idem-build-replay-test")
+      .send(validBody);
+
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.body).toEqual({ xdr: "AAAA_MOCK_XDR_DEACTIVATE" });
+    expect(contract.buildUnsignedAgentTx).toHaveBeenCalledTimes(1);
+
+    // Duplicate request with the exact same key
+    const replayRes = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .set("Idempotency-Key", "idem-build-replay-test")
+      .send(validBody);
+
+    expect(replayRes.status).toBe(200);
+    expect(replayRes.body).toEqual({ xdr: "AAAA_MOCK_XDR_DEACTIVATE", idempotent: true });
+    // Exactly one underlying execution
+    expect(contract.buildUnsignedAgentTx).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts X-Idempotency-Key header as an alias", async () => {
+    contract.buildUnsignedAgentTx.mockResolvedValueOnce("AAAA_MOCK_XDR_ALIAS");
+
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .set("X-Idempotency-Key", "idem-alias-key")
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ xdr: "AAAA_MOCK_XDR_ALIAS" });
+    expect(contract.buildUnsignedAgentTx).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays failed response without re-executing buildUnsignedAgentTx", async () => {
+    contract.buildUnsignedAgentTx.mockRejectedValueOnce(new Error("Soroban simulation failed"));
+
+    const firstRes = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .set("Idempotency-Key", "idem-fail-test")
+      .send(validBody);
+
+    expect(firstRes.status).toBe(500);
+    expect(firstRes.body.code).toBe("BUILD_TX_ERROR");
+    expect(contract.buildUnsignedAgentTx).toHaveBeenCalledTimes(1);
+
+    const retryRes = await request(app)
+      .post(`/api/agents/${agentAddress}/build-tx`)
+      .set("Idempotency-Key", "idem-fail-test")
+      .send(validBody);
+
+    expect(retryRes.status).toBe(500);
+    expect(retryRes.body).toEqual({
+      error: "Failed to build transaction",
+      code: "BUILD_TX_ERROR",
+      idempotent: true,
+    });
+    expect(contract.buildUnsignedAgentTx).toHaveBeenCalledTimes(1);
   });
 });
