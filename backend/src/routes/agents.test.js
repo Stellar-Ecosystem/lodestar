@@ -46,6 +46,7 @@ vi.mock('../config.js', () => ({
     contract: { agentsId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4' },
     server: { address: 'GADMINXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', secret: 'test_admin_secret_key' },
     rateLimit: { payment: { max: 10, windowMs: 60000 } },
+    admin: { deactivateTimeoutMs: 5000 },
   },
 }));
 
@@ -69,9 +70,14 @@ function makeApp() {
 }
 
 let app;
+let getAdminDeactivateMetrics;
+let resetAdminDeactivateMetrics;
 
 beforeAll(async () => {
-  const router = (await import('./agents.js')).default;
+  const agentsModule = await import('./agents.js');
+  const router = agentsModule.default;
+  getAdminDeactivateMetrics = agentsModule.getAdminDeactivateMetrics;
+  resetAdminDeactivateMetrics = agentsModule.resetAdminDeactivateMetrics;
   app = makeApp();
   app.use('/', router);
 });
@@ -186,6 +192,46 @@ describe('POST /admin/agents/:address/deactivate', () => {
       .send(body);
 
     expect(res.status).toBe(500);
+  });
+
+  it('returns 504 UPSTREAM_TIMEOUT and increments timeout metric when contract call times out', async () => {
+    resetAdminDeactivateMetrics();
+    vi.useFakeTimers();
+
+    mockAdminDeactivateAgentOnChain.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(resolve, 10_000))
+    );
+
+    const body = {};
+    const req = {
+      params: { address: ADDRESS },
+      headers: { 'x-admin-key': adminKey(body) },
+      body,
+    };
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    };
+
+    const router = (await import('./agents.js')).default;
+    // Find the POST /admin/agents/:address/deactivate route handler
+    const routeLayer = router.stack.find(
+      (layer) => layer.route && layer.route.path === '/admin/agents/:address/deactivate' && layer.route.methods.post
+    );
+    const handler = routeLayer.route.stack[routeLayer.route.stack.length - 1].handle;
+
+    const handlerPromise = handler(req, res);
+    await vi.advanceTimersByTimeAsync(5000);
+    await handlerPromise;
+
+    expect(res.status).toHaveBeenCalledWith(504);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'Upstream call timed out after 5000ms',
+      code: 'UPSTREAM_TIMEOUT',
+    });
+    expect(getAdminDeactivateMetrics().timeouts).toBe(1);
+
+    vi.useRealTimers();
   });
 });
 
