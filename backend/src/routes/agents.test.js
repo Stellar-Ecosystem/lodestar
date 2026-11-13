@@ -239,6 +239,59 @@ describe('GET /api/agents/:address/score', () => {
     expect(res.body.code).toBe('AGENT_NOT_FOUND');
   });
 
+  it('maps unauthorized contract error to 403', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockGetAgentScore.mockRejectedValueOnce(
+      new ContractError('Unauthorized', 'UNAUTHORIZED', 403)
+    );
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
+  });
+
+  it('maps RPC_THROTTLED contract error to 503', async () => {
+    const { RpcThrottledError } = await import('../lib/contractErrors.js');
+    mockGetAgentScore.mockRejectedValueOnce(
+      new RpcThrottledError('Rate limit exceeded', 3)
+    );
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('RPC_THROTTLED');
+  });
+
+  it('maps TRANSACTION_TIMEOUT contract error to 504', async () => {
+    const { TransactionTimeoutError } = await import('../lib/contractErrors.js');
+    mockGetAgentScore.mockRejectedValueOnce(
+      new TransactionTimeoutError('Transaction timeout')
+    );
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(504);
+    expect(res.body.code).toBe('TRANSACTION_TIMEOUT');
+  });
+
+  it('falls through to 500 and logs at error level with variant name for unmapped contract errors', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    const logger = (await import('../lib/logger.js')).default;
+    mockGetAgentScore.mockRejectedValueOnce(
+      new ContractError('Some exotic failure', 'UNKNOWN_CUSTOM_ERROR', 500)
+    );
+
+    const res = await request(app).get(`/agents/${VALID_ADDR}/score`);
+
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('UNKNOWN_CUSTOM_ERROR');
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'UNKNOWN_CUSTOM_ERROR' }),
+      expect.stringContaining('UNKNOWN_CUSTOM_ERROR')
+    );
+  });
+
   it('returns 500 for an unexpected read failure', async () => {
     mockGetAgentScore.mockRejectedValueOnce(new Error('RPC down'));
 
