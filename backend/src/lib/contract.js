@@ -22,6 +22,7 @@ import logger from './logger.js';
 import { ContractError } from './ContractError.js';
 import {
   ReturnValueParseError,
+  RpcError,
   SimulationError,
   TransactionFailedError,
   TransactionTimeoutError,
@@ -177,7 +178,16 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const now = Date.now();
   if (retryCount > 0 || currentSeqNum === null || (now - lastSeqSyncTime > 5000)) {
     const acctStart = Date.now();
-    const account = await server.getAccount(keypair.publicKey());
+    let account;
+    try {
+      account = await server.getAccount(keypair.publicKey());
+    } catch (err) {
+      throw new RpcError(
+        `getAccount failed: ${err.message ?? String(err)}`,
+        'getAccount',
+        err,
+      );
+    }
     logRpcCall('getAccount', Date.now() - acctStart);
     currentSeqNum = BigInt(account.sequence);
     lastSeqSyncTime = now;
@@ -302,7 +312,17 @@ async function buildUnsignedTx(operation) {
   const keypair = getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
-  const account = await server.getAccount(keypair.publicKey());
+  let account;
+  try {
+    account = await server.getAccount(keypair.publicKey());
+  } catch (err) {
+    throw new RpcError(
+      `getAccount failed while building unsigned transaction: ${err.message ?? String(err)}`,
+      'getAccount',
+      err,
+    );
+  }
+
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: passphrase,
@@ -311,7 +331,17 @@ async function buildUnsignedTx(operation) {
     .setTimeout(TIMEOUT)
     .build();
 
-  const simResult = await server.simulateTransaction(tx);
+  let simResult;
+  try {
+    simResult = await server.simulateTransaction(tx);
+  } catch (err) {
+    throw new RpcError(
+      `simulateTransaction failed while building unsigned transaction: ${err.message ?? String(err)}`,
+      'simulateTransaction',
+      err,
+    );
+  }
+
   if (rpc.Api.isSimulationError(simResult)) {
     throwContractErrorIfPresent(simResult.error, REGISTRY_ERROR_SCOPE);
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
@@ -546,19 +576,19 @@ export async function registerServiceOnChain(
     const provider = providerAddress.toString();
 
     if (await contractHelpers.activeServiceExists(provider, endpoint)) {
-      const err = new Error(
-        'Active service with same provider and endpoint already exists'
-      );
       logger.warn({ provider, endpoint }, 'Duplicate active service registration blocked');
-      throw err;
+      throw new ContractError(
+        'Active service with same provider and endpoint already exists',
+        'DUPLICATE_SERVICE',
+      );
     }
 
     if (await contractHelpers.activeServiceExistsByName(provider, name)) {
-      const err = new Error(
-        'Active service with same provider and name already exists'
-      );
       logger.warn({ provider, name }, 'Duplicate active service registration blocked');
-      throw err;
+      throw new ContractError(
+        'Active service with same provider and name already exists',
+        'DUPLICATE_SERVICE',
+      );
     }
 
     const contract = getContract();
@@ -1200,7 +1230,16 @@ async function submitSignedTx(signedXdr) {
   tx.sign(keypair);
 
   const sendStart = Date.now();
-  const sendResult = await server.sendTransaction(tx);
+  let sendResult;
+  try {
+    sendResult = await server.sendTransaction(tx);
+  } catch (err) {
+    throw new RpcError(
+      `sendTransaction failed: ${err.message ?? String(err)}`,
+      'sendTransaction',
+      err,
+    );
+  }
   logRpcCall('sendTransaction', Date.now() - sendStart);
   if (sendResult.status === 'ERROR') {
     throwContractErrorIfPresent(sendResult.errorResult || sendResult, REGISTRY_ERROR_SCOPE);
@@ -1215,7 +1254,15 @@ async function submitSignedTx(signedXdr) {
   let getResult;
   for (let i = 0; i < 20; i++) {
     const txStart = Date.now();
-    getResult = await server.getTransaction(sendResult.hash);
+    try {
+      getResult = await server.getTransaction(sendResult.hash);
+    } catch (err) {
+      throw new RpcError(
+        `getTransaction failed while polling: ${err.message ?? String(err)}`,
+        'getTransaction',
+        err,
+      );
+    }
     logRpcCall('getTransaction', Date.now() - txStart);
     if (getResult.status !== 'NOT_FOUND') break;
     await new Promise((r) => setTimeout(r, 1500));

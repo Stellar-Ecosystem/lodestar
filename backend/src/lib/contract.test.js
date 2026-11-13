@@ -909,3 +909,286 @@ describe('submitQueue management', () => {
     await promise;
   });
 });
+
+// ── RpcError wrapping tests ───────────────────────────────────────────────────
+
+import { RpcError } from './contractErrors.js';
+import config from '../config.js';
+
+// The public key that corresponds to the server secret used in the mock config.
+// Address.fromString() is strict about validity, so we must use a real G address.
+const SERVER_PUBLIC_KEY = 'GDQEW5QRCDPSHAE5XFCXIYDWUDZ6DTQSJJH3CLDN35TD2CR5HTFCJPGV';
+
+describe('buildUnsignedRegistryTx — RpcError wrapping', () => {
+  let savedContractId;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+    // Temporarily set a valid contract ID so new Contract(id) succeeds
+    savedContractId = config.contract.id;
+    config.contract.id = VALID_CONTRACT_ID;
+  });
+
+  afterEach(() => {
+    config.contract.id = savedContractId;
+    contractLib.__setAssembleTransactionForTest();
+  });
+
+  it('wraps a getAccount network failure in RpcError with operation=getAccount', async () => {
+    const networkErr = new Error('ECONNREFUSED: connection refused');
+    networkErr.code = 'ECONNREFUSED';
+    mockGetAccount.mockRejectedValueOnce(networkErr);
+
+    await expect(
+      contractLib.buildUnsignedRegistryTx('deactivate', SERVER_PUBLIC_KEY, { id: 1 })
+    ).rejects.toMatchObject({
+      name: 'RpcError',
+      code: 'RPC_ERROR',
+      operation: 'getAccount',
+      status: 502,
+    });
+  });
+
+  it('preserves the original cause on the RpcError from getAccount', async () => {
+    const networkErr = new Error('upstream timeout');
+    mockGetAccount.mockRejectedValueOnce(networkErr);
+
+    let thrown;
+    try {
+      await contractLib.buildUnsignedRegistryTx('deactivate', SERVER_PUBLIC_KEY, { id: 1 });
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect(thrown.cause).toBe(networkErr);
+  });
+
+  it('wraps a simulateTransaction failure in RpcError with operation=simulateTransaction', async () => {
+    mockGetAccount.mockResolvedValueOnce({ sequence: '1' });
+    const rpcErr = new Error('HTTP 503 Service Unavailable');
+    rpcErr.status = 503;
+    mockSimulateTransaction.mockRejectedValueOnce(rpcErr);
+
+    await expect(
+      contractLib.buildUnsignedRegistryTx('deactivate', SERVER_PUBLIC_KEY, { id: 1 })
+    ).rejects.toMatchObject({
+      name: 'RpcError',
+      code: 'RPC_ERROR',
+      operation: 'simulateTransaction',
+      status: 502,
+    });
+  });
+
+  it('preserves the original cause on the RpcError from simulateTransaction', async () => {
+    mockGetAccount.mockResolvedValueOnce({ sequence: '1' });
+    const rpcErr = new Error('SDK internal error');
+    mockSimulateTransaction.mockRejectedValueOnce(rpcErr);
+
+    let thrown;
+    try {
+      await contractLib.buildUnsignedRegistryTx('deactivate', SERVER_PUBLIC_KEY, { id: 1 });
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect(thrown.cause).toBe(rpcErr);
+  });
+});
+
+describe('_simulateAndSubmit — RpcError wrapping (getAccount path)', () => {
+  let contract;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contractLib.__resetPendingTransactions();
+    contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+    // Advance time > 5 s past the last sync so the getAccount branch always runs
+    vi.useFakeTimers({ now: Date.now() + 10_000 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    contractLib.__setAssembleTransactionForTest();
+    contractLib.__resetPendingTransactions();
+  });
+
+  it('wraps a getAccount network failure in RpcError', async () => {
+    const networkErr = new Error('ETIMEDOUT: connection timed out');
+    networkErr.code = 'ETIMEDOUT';
+    mockGetAccount.mockRejectedValueOnce(networkErr);
+
+    await expect(
+      contractLib.simulateAndSubmit(contract.call('get_service_count'))
+    ).rejects.toMatchObject({
+      name: 'RpcError',
+      code: 'RPC_ERROR',
+      operation: 'getAccount',
+      status: 502,
+    });
+  });
+
+  it('preserves the original cause on the RpcError', async () => {
+    const networkErr = new Error('DNS resolution failed');
+    mockGetAccount.mockRejectedValueOnce(networkErr);
+
+    let thrown;
+    try {
+      await contractLib.simulateAndSubmit(contract.call('get_service_count'));
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect(thrown.cause).toBe(networkErr);
+  });
+});
+
+describe('submitSignedAgentTx — RpcError wrapping', () => {
+  const VALID_SECRET = 'SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2';
+  let signedXdr;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contractLib.__resetPendingTransactions();
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+
+    // Build a genuine signed Stellar transaction XDR directly, without going
+    // through the contract lib, so there are no RPC mock dependencies during setup.
+    const keypair = sdkPkg.Keypair.fromSecret(VALID_SECRET);
+    const account = new sdkPkg.Account(keypair.publicKey(), '1');
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    const tx = new sdkPkg.TransactionBuilder(account, {
+      fee: sdkPkg.BASE_FEE,
+      networkPassphrase: 'Test SDF Network ; September 2015',
+    })
+      .addOperation(contract.call('deactivate_agent',
+        sdkPkg.nativeToScVal(sdkPkg.Address.fromString(keypair.publicKey()), { type: 'address' }),
+        sdkPkg.nativeToScVal(sdkPkg.Address.fromString(keypair.publicKey()), { type: 'address' }),
+      ))
+      .setTimeout(30)
+      .build();
+    tx.sign(keypair);
+    signedXdr = tx.toXDR();
+  });
+
+  afterEach(() => {
+    contractLib.__setAssembleTransactionForTest();
+    contractLib.__resetPendingTransactions();
+  });
+
+  it('wraps a sendTransaction network failure in RpcError with operation=sendTransaction', async () => {
+    const networkErr = new Error('EPIPE: broken pipe');
+    networkErr.code = 'EPIPE';
+    mockSendTransaction.mockRejectedValueOnce(networkErr);
+
+    await expect(
+      contractLib.submitSignedAgentTx(signedXdr)
+    ).rejects.toMatchObject({
+      name: 'RpcError',
+      code: 'RPC_ERROR',
+      operation: 'sendTransaction',
+      status: 502,
+    });
+  });
+
+  it('preserves the original cause on the RpcError from sendTransaction', async () => {
+    const networkErr = new Error('connection reset');
+    mockSendTransaction.mockRejectedValueOnce(networkErr);
+
+    let thrown;
+    try {
+      await contractLib.submitSignedAgentTx(signedXdr);
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect(thrown.cause).toBe(networkErr);
+  });
+
+  it('wraps a getTransaction polling failure in RpcError with operation=getTransaction', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'poll-hash' });
+    const networkErr = new Error('upstream 503');
+    mockGetTransaction.mockRejectedValueOnce(networkErr);
+
+    await expect(
+      contractLib.submitSignedAgentTx(signedXdr)
+    ).rejects.toMatchObject({
+      name: 'RpcError',
+      code: 'RPC_ERROR',
+      operation: 'getTransaction',
+      status: 502,
+    });
+  });
+
+  it('preserves the original cause on the RpcError from getTransaction', async () => {
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'cause-hash' });
+    const networkErr = new Error('network blip');
+    mockGetTransaction.mockRejectedValueOnce(networkErr);
+
+    let thrown;
+    try {
+      await contractLib.submitSignedAgentTx(signedXdr);
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect(thrown.cause).toBe(networkErr);
+  });
+});
+
+describe('registerServiceOnChain duplicate checks — typed errors', () => {
+  let activeServiceExistsSpy;
+  let activeServiceExistsByNameSpy;
+
+  beforeEach(() => {
+    process.env.SEEDING_MODE = 'true';
+    resetMockServer();
+    activeServiceExistsSpy = vi.spyOn(contractLib.contractHelpers, 'activeServiceExists');
+    activeServiceExistsByNameSpy = vi.spyOn(contractLib.contractHelpers, 'activeServiceExistsByName');
+  });
+
+  afterEach(() => {
+    delete process.env.SEEDING_MODE;
+    vi.restoreAllMocks();
+  });
+
+  it('throws ContractError (not plain Error) on duplicate endpoint', async () => {
+    const { ContractError } = await import('./ContractError.js');
+    activeServiceExistsSpy.mockResolvedValueOnce(true);
+
+    let thrown;
+    try {
+      await contractLib.registerServiceOnChain('SvcName', 'Long enough description here.', 'https://test.example.com', '0.001', 'weather');
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(ContractError);
+    expect(thrown.code).toBe('DUPLICATE_SERVICE');
+  });
+
+  it('throws ContractError (not plain Error) on duplicate name', async () => {
+    const { ContractError } = await import('./ContractError.js');
+    activeServiceExistsSpy.mockResolvedValueOnce(false);
+    activeServiceExistsByNameSpy.mockResolvedValueOnce(true);
+
+    let thrown;
+    try {
+      await contractLib.registerServiceOnChain('SvcName', 'Long enough description here.', 'https://test.example.com', '0.001', 'weather');
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(ContractError);
+    expect(thrown.code).toBe('DUPLICATE_SERVICE');
+  });
+});
