@@ -1,0 +1,184 @@
+openapi: 3.0.3
+info:
+  title: Lodestar Backend API
+  version: 0.1.0
+  description: |
+    OpenAPI specification for the Lodestar backend (`backend/src`), assembled
+    route by route. Each route lives in its own path-item file under
+    `docs/openapi/paths/` and is referenced from `paths` below; shared
+    schemas, parameters, security schemes, and headers live in `components`.
+
+    All error responses share the `ErrorResponse` envelope
+    (`{ "error": string, "code": string }`); each operation enumerates the
+    `code` values it can emit per status.
+servers:
+  - url: http://localhost:3001
+    description: Local development server (routes mounted under `/api`)
+  - url: http://localhost:3001/api
+    description: Local development server (`/api` base path)
+tags:
+  - name: Agents
+    description: Agent registry, policy, scoring, and payment endpoints (`backend/src/routes/agents.js`).
+  - name: Admin
+    description: Admin-authenticated agent moderation endpoints (`backend/src/routes/agents.js`).
+
+paths:
+  /api/admin/agents/{address}/flag:
+    $ref: './paths/admin-agents-flag.yaml'
+  /admin/agents/{address}/flag:
+    $ref: './paths/admin-agents-flag.yaml'
+
+components:
+  securitySchemes:
+    AdminHmacAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: |
+        Hex-encoded HMAC-SHA256 digest of the raw request body (`req.rawBody ?? JSON.stringify(req.body)`),
+        keyed with `config.server.secret` (`SERVER_STELLAR_SECRET`). Verified in constant time by
+        `adminAuth` (`backend/src/middleware/adminAuth.js`).
+
+  parameters:
+    AdminAgentAddress:
+      name: address
+      in: path
+      required: true
+      description: |
+        Stellar public key (G-address) of the registered agent to moderate.
+        Note that `router.use('/agents/:address', validateAgentAddressParam)` is not
+        mounted on `/admin/agents/:address/*`; the address is decoded via
+        `Address.fromString(address)` inside `flagAgentOnChain` after `requireAgentsContract`,
+        `adminAuth`, and request body validation have passed.
+      schema:
+        $ref: '#/components/schemas/StellarAddress'
+      example: GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3
+
+    AdminKeyHeader:
+      name: X-Admin-Key
+      in: header
+      required: true
+      description: |
+        Hex-encoded HMAC-SHA256 signature of the raw JSON request body computed with
+        `SERVER_STELLAR_SECRET`. Missing header returns `401 ADMIN_KEY_MISSING`;
+        mismatched or malformed digest returns `401 ADMIN_KEY_INVALID`.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+      example: 5a7d8b3e1f2c4a6d8e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d
+
+  headers:
+    X-Request-Id:
+      description: |
+        Correlation ID for the request (`backend/src/lib/requestId.js`). Echoes
+        the inbound `X-Request-Id` header when valid, otherwise a server-generated UUID v4.
+      schema:
+        type: string
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+  schemas:
+    StellarAddress:
+      type: string
+      pattern: '^G[A-Z2-7]{55}$'
+      minLength: 56
+      maxLength: 56
+      description: 56-character Stellar Ed25519 public key (StrKey G-address).
+      example: GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3
+
+    FlagAgentRequest:
+      type: object
+      description: Request payload for `POST /admin/agents/:address/flag`.
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          description: |
+            Non-empty human-readable reason for flagging the agent. Checked with
+            `!reason || typeof reason !== 'string'` in the route handler and stored
+            on-chain in `AgentEntry.flag_reason` as well as emitted in the
+            `("agents", "flagged", agent_address)` contract event.
+          example: violation of terms
+      example:
+        reason: violation of terms
+
+    FlagAgentResponse:
+      type: object
+      description: Successful response payload for `POST /admin/agents/:address/flag`.
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+          enum:
+            - true
+          description: Always `true` when `flagAgentOnChain` completes without error.
+      example:
+        success: true
+
+    FlagAgentErrorCode:
+      type: string
+      description: |
+        All machine-readable `code` values that `POST /admin/agents/:address/flag`
+        can return across middleware, body validation, Soroban RPC submission,
+        and contract error mapping.
+      enum:
+        - INVALID_BODY
+        - ADMIN_KEY_MISSING
+        - ADMIN_KEY_INVALID
+        - AGENTS_NOT_CONFIGURED
+        - FLAG_ERROR
+        - SIMULATION_FAILED
+        - TRANSACTION_FAILED
+        - TRANSACTION_TIMEOUT
+        - RETURN_VALUE_PARSE_FAILED
+        - RPC_THROTTLED
+        - UPSTREAM_TIMEOUT
+        - INVALID_AMOUNT
+        - ARITHMETIC_OVERFLOW
+        - AGENT_ALREADY_REGISTERED
+        - AGENT_LIST_FULL
+        - AGENT_COUNT_OVERFLOW
+        - AGENT_NOT_FOUND
+        - UNAUTHORIZED
+        - POLICY_NOT_FOUND
+        - NOT_INITIALIZED
+        - ALREADY_INITIALIZED
+        - INVALID_NAME
+        - INVALID_DESCRIPTION
+        - DUPLICATE_SERVICE
+        - SERVICE_NOT_FOUND
+        - AGENTS_CONTRACT_NOT_CONFIGURED
+        - CALLER_NOT_REGISTERED_AGENT
+        - REPUTATION_VOTE_COOLDOWN
+        - PROVIDER_MISMATCH
+        - CATEGORY_INDEX_NOT_FOUND
+        - INVALID_ENDPOINT
+        - INVALID_CATEGORY
+        - REGISTRY_NOT_INITIALIZED
+        - REGISTRY_PAUSED
+        - REGISTRY_COUNT_OVERFLOW
+        - REGISTRY_STORAGE_CORRUPTED
+        - PAYLOAD_TOO_LARGE
+        - INTERNAL_ERROR
+
+    ErrorResponse:
+      type: object
+      description: Standard error envelope returned by every non-2xx JSON response.
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable error message. Not stable; do not branch on it.
+          example: '`reason` is required'
+        code:
+          type: string
+          description: Stable machine-readable error code. Branch on this.
+          example: INVALID_BODY
+        requestId:
+          type: string
+          description: Present on unhandled 500 responses produced by the global error middleware.
+          example: 550e8400-e29b-41d4-a716-446655440000
