@@ -103,6 +103,7 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
   not the owner, or did not sign) emits nothing, so every event corresponds to a committed
   change. Only the agent's owner can change a policy; the admin, the provider and the agent
   itself cannot unless they are also the owner.
+- **`is_category_allowed(agent, category)`** is a read-only check: an empty list allows every category, otherwise the category must be listed (exact match), and an unregistered agent is allowed nothing. Callers should check it before paying.
 - **`allowed_categories` is recorded and announced, not enforced on-chain.**
   `check_spending_allowed` and `record_payment` take no category, so a payment to a service
   outside the list is neither refused nor flagged by this contract. Enforcement is left to the

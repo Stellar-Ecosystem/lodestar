@@ -690,3 +690,74 @@ fn allowed_categories_are_recorded_and_announced_but_not_enforced_on_chain() {
 
     assert_eq!(stored_policy(&world, &agent).daily_spent_stroops, CAP);
 }
+
+#[test]
+fn is_category_allowed_follows_the_policy_list() {
+    let env = Env::default();
+    let world = world(&env, true);
+    let (agent, owner) = register(&world, "a");
+    let weather = text(&world, "weather");
+    let search = text(&world, "search");
+
+    // Default policy: no restriction.
+    assert!(world.client.is_category_allowed(&agent, &weather));
+
+    world.client.update_policy(
+        &agent,
+        &CAP,
+        &DAILY,
+        &vec![&env, weather.clone()],
+        &0,
+        &owner,
+    );
+    assert!(world.client.is_category_allowed(&agent, &weather));
+    assert!(!world.client.is_category_allowed(&agent, &search));
+    assert!(
+        !world
+            .client
+            .is_category_allowed(&agent, &text(&world, "Weather")),
+        "exact match only"
+    );
+
+    // Clearing the list lifts the restriction again.
+    world
+        .client
+        .update_policy(&agent, &CAP, &DAILY, &vec![&env], &0, &owner);
+    assert!(world.client.is_category_allowed(&agent, &search));
+}
+
+#[test]
+fn is_category_allowed_is_false_for_an_unregistered_agent_and_changes_nothing() {
+    let env = Env::default();
+    let world = world(&env, false); // read-only: no signature needed
+    let stranger = Address::generate(&env);
+
+    assert!(!world
+        .client
+        .is_category_allowed(&stranger, &text(&world, "weather")));
+    assert_eq!(last_events(&world).len(), 0);
+}
+
+#[test]
+fn a_denied_category_is_reported_by_the_check_but_a_payment_is_still_recorded() {
+    // The check is advisory: record_payment takes no category. Pins that so enforcement is a
+    // deliberate later change.
+    let env = Env::default();
+    let world = world(&env, true);
+    let (agent, owner) = register(&world, "a");
+    world.client.update_policy(
+        &agent,
+        &CAP,
+        &DAILY,
+        &vec![&env, text(&world, "weather")],
+        &0,
+        &owner,
+    );
+
+    assert!(!world
+        .client
+        .is_category_allowed(&agent, &text(&world, "test")));
+    pay(&world, &agent, 100, true);
+
+    assert_eq!(stored_policy(&world, &agent).daily_spent_stroops, 100);
+}
