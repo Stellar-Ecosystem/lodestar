@@ -92,6 +92,43 @@ without requiring a follow-up contract read.
 - Topics: `("agents", "spending_checked", "CAAAAA...HK3M")`
 - Data: `(true, 500, 0, 10000000000, 100000000000, 12345)`
 
+### `record_payment` events
+
+`spending_checked` comes from a read-style check, so by itself it does not tie a spending
+decision to a payment that was actually committed. `record_payment` closes that gap. Each
+successful call emits two events from the same invocation, **in this order**, after both
+storage writes (the agent record, then the policy):
+
+1. `("agents", "payment", agent)` with
+   `(service_id, amount_stroops, success, old_score, new_score, caller)`.
+2. `("agents", "spending_committed", agent)` with
+   `(service_id, amount_stroops, success, within_tx_cap, within_daily_cap, daily_spent_before, daily_spent_after, max_per_tx_stroops, max_per_day_stroops, last_reset_ledger, window_reset)`.
+
+| Field | Meaning |
+| --- | --- |
+| `within_tx_cap` | `amount_stroops <= max_per_tx_stroops`. A payment exactly at the cap is within it. |
+| `within_daily_cap` | `daily_spent_after <= max_per_day_stroops`. |
+| `daily_spent_before` | Spend in effect before this payment, after applying any daily reset. It is `0` on the first payment of a new window. |
+| `daily_spent_after` | Exactly the `daily_spent_stroops` now stored in the policy. A failed payment (`success = false`) adds nothing. |
+| `last_reset_ledger` | The start of the window the payment fell in, as now stored. |
+| `window_reset` | `true` when this payment opened a new daily window. |
+
+Because the two events share the agent in their third topic and are committed together or not
+at all, a consumer can trace one committed payment to the exact caps and window it was judged
+against, and chain `daily_spent_after` of one payment to `daily_spent_before` of the next to
+check that no spend is lost or counted twice. A call that fails (wrong provider, invalid
+amount, overflow) reverts and emits neither event.
+
+`record_payment` records an outcome; it does not refuse a payment over the caps. The caps are
+decided by `check_spending_allowed`, and the `within_*` flags show whether a committed payment
+was inside them. The daily window starts at the first payment after the previous one expired
+(`now >= last_reset_ledger + DAY_LEDGERS`), so two payments in the same ledger after the
+expiry open the window once: the first sets `window_reset = true`, the second `false`.
+
+**Example Event:**
+- Topics: `("agents", "spending_committed", "CAAAAA...HK3M")`
+- Data: `(7, 500, true, true, true, 0, 500, 10000000000, 100000000000, 12345, false)`
+
 ## Trust Boundaries
 
 - **Providers vs. Registry:** Providers are untrusted. They can register any endpoint. The registry relies on the x402 payment success/failure feedback loop (reputation) from agents to bubble up good services and bury bad ones.

@@ -549,6 +549,28 @@ impl LodestarAgents {
     /// Writes `DataKey::Agent(agent_address)` and `DataKey::Policy(agent_address)`.
     /// Both written entries have their TTL extended.
     ///
+    /// # Events
+    /// Emits two events, in this order, after both storage writes above:
+    ///
+    /// 1. `("agents", "payment", agent_address)` with
+    ///    `(service_id, amount_stroops, success, old_score, new_score, caller)`.
+    /// 2. `("agents", "spending_committed", agent_address)` with
+    ///    `(service_id, amount_stroops, success, within_tx_cap, within_daily_cap,
+    ///    daily_spent_before, daily_spent_after, max_per_tx_stroops, max_per_day_stroops,
+    ///    last_reset_ledger, window_reset)`:
+    ///    - `within_tx_cap`     — `amount_stroops <= max_per_tx_stroops`.
+    ///    - `within_daily_cap`  — `daily_spent_after <= max_per_day_stroops`.
+    ///    - `daily_spent_before` — spend in effect before this payment, after applying any
+    ///      daily reset (so it is `0` on the first payment of a new window).
+    ///    - `daily_spent_after` — exactly the `daily_spent_stroops` now stored in the policy.
+    ///      A failed payment does not add to it.
+    ///    - `last_reset_ledger` — start of the window the payment fell in, as now stored.
+    ///    - `window_reset`      — `true` when this payment opened a new daily window.
+    ///
+    /// `record_payment` records an outcome; it does not refuse a payment over the caps.
+    /// Caps are decided by `check_spending_allowed`. The `within_*` flags let a consumer
+    /// see whether a committed payment was inside them, with no follow-up read.
+    ///
     /// # Cost
     /// One auth check, one persistent read for the registry address, one cross-contract call,
     /// two persistent reads, up to two persistent writes, and two TTL extensions.
@@ -624,6 +646,13 @@ impl LodestarAgents {
             .persistent()
             .extend_ttl(&agent_key, MAX_TTL, MAX_TTL);
 
+        // What the payment is judged against, captured before the policy is consumed below,
+        // so the committed event can say exactly which window and caps applied.
+        let max_per_tx_stroops = policy.max_per_tx_stroops;
+        let max_per_day_stroops = policy.max_per_day_stroops;
+        let previous_reset_ledger = policy.last_reset_ledger;
+        let (daily_spent_before, _) = Self::get_daily_spend_with_reset(&env, &policy);
+
         // Update daily spend in policy using helper
         let updated_policy = if success {
             Self::update_daily_spend(&env, policy, amount_stroops)?
@@ -646,7 +675,7 @@ impl LodestarAgents {
             (
                 Symbol::new(&env, "agents"),
                 Symbol::new(&env, "payment"),
-                agent_address,
+                agent_address.clone(),
             ),
             (
                 service_id,
@@ -655,6 +684,30 @@ impl LodestarAgents {
                 old_score,
                 new_score,
                 caller,
+            ),
+        );
+
+        // Committed spending result. Emitted from the same invocation as `payment`, after
+        // the writes above and right after that event, so both are committed together or
+        // not at all. `daily_spent_after` is exactly the value now stored in the policy.
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "spending_committed"),
+                agent_address,
+            ),
+            (
+                service_id,
+                amount_stroops,
+                success,
+                amount_stroops <= max_per_tx_stroops,
+                updated_policy.daily_spent_stroops <= max_per_day_stroops,
+                daily_spent_before,
+                updated_policy.daily_spent_stroops,
+                max_per_tx_stroops,
+                max_per_day_stroops,
+                updated_policy.last_reset_ledger,
+                updated_policy.last_reset_ledger != previous_reset_ledger,
             ),
         );
         Ok(())
@@ -1060,6 +1113,9 @@ impl LodestarAgents {
 }
 
 #[cfg(test)]
+mod spending_pagination_tests;
+
+#[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::{
@@ -1383,9 +1439,11 @@ mod test {
         let new_admin = Address::generate(&env);
         let impostor = Address::generate(&env);
 
+        // `transfer_admin` panics with the error rather than returning a Result, so the
+        // client reports it as a generic contract error carrying the code.
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            soroban_sdk::Error::from_contract_error(AgentError::Unauthorized as u32)
         );
     }
 
@@ -2785,8 +2843,9 @@ mod test {
         client.record_payment(&agent_addr, &service_id, &amount, &true, &provider);
 
         let events = env.events().all();
-        assert_eq!(events.len(), initial_events_count + 1);
-        let event = events.get(events.len() - 1).unwrap();
+        // `payment` is followed by `spending_committed`, both from the one invocation.
+        assert_eq!(events.len(), initial_events_count + 2);
+        let event = events.get(events.len() - 2).unwrap();
         assert_eq!(
             event.1,
             (
@@ -2829,7 +2888,8 @@ mod test {
         client.record_payment(&agent_addr, &service_id, &amount, &false, &provider);
 
         let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        // `payment` is followed by `spending_committed`, both from the one invocation.
+        assert_eq!(events.len(), 2);
         let event = events.get(0).unwrap();
         assert_eq!(
             event.1,
@@ -2883,7 +2943,8 @@ mod test {
         client.record_payment(&agent_addr, &service_id, &amount, &true, &provider);
 
         let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        // `payment` is followed by `spending_committed`, both from the one invocation.
+        assert_eq!(events.len(), 2);
         let event = events.get(0).unwrap();
         assert_eq!(
             event.1,
@@ -3227,7 +3288,7 @@ mod test {
         // 2. Successful payment 1 (+10) -> score 110
         client.record_payment(&agent_addr, &101u64, &1_000_000i128, &true, &provider1);
         let pay1_events = env.events().all();
-        assert_eq!(pay1_events.len(), 1);
+        assert_eq!(pay1_events.len(), 2); // payment + spending_committed
         let pay1_event = pay1_events.get(0).unwrap();
         assert_eq!(
             pay1_event.1,
@@ -3247,7 +3308,7 @@ mod test {
         // 3. Successful payment 2 (+10) -> score 120
         client.record_payment(&agent_addr, &102u64, &2_000_000i128, &true, &provider2);
         let pay2_events = env.events().all();
-        assert_eq!(pay2_events.len(), 1);
+        assert_eq!(pay2_events.len(), 2); // payment + spending_committed
         let pay2_event = pay2_events.get(0).unwrap();
         assert_eq!(
             pay2_event.1,
@@ -3267,7 +3328,7 @@ mod test {
         // 4. Failed payment 1 (-25) -> score 95
         client.record_payment(&agent_addr, &101u64, &500_000i128, &false, &provider1);
         let pay3_events = env.events().all();
-        assert_eq!(pay3_events.len(), 1);
+        assert_eq!(pay3_events.len(), 2); // payment + spending_committed
         let pay3_event = pay3_events.get(0).unwrap();
         assert_eq!(
             pay3_event.1,
