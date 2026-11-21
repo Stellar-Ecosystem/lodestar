@@ -239,7 +239,7 @@ export function dispose() {
 // the backend cannot disagree on rounding (#853). The previous local copies
 // used floating-point math and were removed.
 
-function buildHttpClient() {
+export function buildHttpClient() {
   // Re-read the secret for the x402 signer since the module-level reference
   // has already been zeroed. loadSecret() re-reads from the env var or file.
   const secretForSigner = loadSecret();

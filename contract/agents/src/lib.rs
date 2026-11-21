@@ -1048,6 +1048,27 @@ impl LodestarAgents {
         );
     }
 
+    /// Whether the agent's policy allows paying a service in `category`.
+    ///
+    /// An empty `allowed_categories` list means no category restriction, which is the default
+    /// policy. Otherwise the category must be in the list (exact match; registry categories are
+    /// canonical lowercase). An unregistered agent has no policy and is allowed nothing.
+    ///
+    /// This is a read-only check for callers to make before paying. `record_payment` takes no
+    /// category and does not call it, so it is advisory until a caller enforces it.
+    pub fn is_category_allowed(env: Env, agent_address: Address, category: String) -> bool {
+        let policy: Option<SpendingPolicy> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Policy(agent_address));
+        match policy {
+            None => false,
+            Some(policy) => {
+                policy.allowed_categories.is_empty() || policy.allowed_categories.contains(&category)
+            }
+        }
+    }
+
     // Get the current scoring configuration constants
     pub fn get_scoring_config(_env: Env) -> ScoringConfig {
         ScoringConfig {
@@ -1058,6 +1079,9 @@ impl LodestarAgents {
         }
     }
 }
+
+#[cfg(test)]
+mod registration_authority_tests;
 
 #[cfg(test)]
 mod test {
@@ -1383,9 +1407,11 @@ mod test {
         let new_admin = Address::generate(&env);
         let impostor = Address::generate(&env);
 
+        // `transfer_admin` panics with the error rather than returning a Result, so the
+        // client reports it as a generic contract error carrying the code.
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            soroban_sdk::Error::from_contract_error(AgentError::Unauthorized as u32)
         );
     }
 

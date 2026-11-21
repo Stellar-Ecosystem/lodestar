@@ -92,6 +92,19 @@ without requiring a follow-up contract read.
 - Topics: `("agents", "spending_checked", "CAAAAA...HK3M")`
 - Data: `(true, 500, 0, 10000000000, 100000000000, 12345)`
 
+### Registration and policy-change events
+
+`register_agent` emits a single `("agents", "registered", agent)` event with
+`(owner, name, description, initial_score)` after all of its writes, and `update_policy` emits
+a single `("agents", "policy_updated", agent)` event with
+`(caller, max_per_tx_stroops, max_per_day_stroops, allowed_categories, min_score_to_earn)`.
+Both carry exactly what was stored and neither is emitted when the call fails. See
+`contract/agents/DEPLOY.md`.
+
+`allowed_categories` is stored and announced but not enforced by the contract: neither
+`check_spending_allowed` nor `record_payment` takes a category, so "denied categories cannot
+consume funds" is not something the chain guarantees today.
+
 ## Trust Boundaries
 
 - **Providers vs. Registry:** Providers are untrusted. They can register any endpoint. The registry relies on the x402 payment success/failure feedback loop (reputation) from agents to bubble up good services and bury bad ones.
