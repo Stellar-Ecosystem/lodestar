@@ -62,3 +62,15 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_MIN_SERVICE_REPUTATION` | No | `0` | Minimum reputation to consider a service |
 | `AGENT_MAX_SERVICE_RETRIES` | No | `3` | Max weighted retry attempts per task |
 | `LOG_LEVEL` | No | `info` | pino log level |
+## 402 payment behaviour
+
+`buildHttpClient().fetch(url, init)` sends the request unsigned. If the service answers `402`, it
+reads the challenge, signs **one** payment and repeats the request with the payment header. It
+never signs or sends a second payment for the same call: if the paid request is lost after the
+service settled it, or is answered with another `402`, the result (or error) is returned to the
+caller as is. A response that is not a `402` is returned without signing anything.
+
+`runTask` does not use that client. It builds a payment header from `{ url, method }` and sends one
+request, recording a failure if the request throws or the service answers with an error. The
+fixtures in `x402Retry.test.js` cover `buildHttpClient` with a scripted `fetch` and a recorded x402
+library, so `npm test` needs no network and no funds.
