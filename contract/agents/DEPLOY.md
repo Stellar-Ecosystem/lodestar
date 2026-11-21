@@ -89,6 +89,25 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 | Transfer admin | `("agents", "admin_transferred", new_admin)` | `(caller, new_admin)` |
 | Initialize | `("agents", "initialized", registry_contract)` | `(registry_contract)` |
 
+### Registration and policy-change events
+
+- `registered` is the **only** event `register_agent` emits, and it is emitted once the agent
+  entry, the agent list, the count and the default policy have all been written. Its payload
+  `(owner, name, description, initial_score)` is what was stored; `initial_score` is the
+  starting score (100), not the current one. The default policy (10,000,000,000 per
+  transaction, 100,000,000,000 per day, no categories) is created without a `policy_updated`
+  event, so `registered` is what announces it. A failed registration (for example a duplicate)
+  emits nothing.
+- `policy_updated` is emitted once per successful `update_policy`, with exactly the caps,
+  `allowed_categories` and `min_score_to_earn` that were stored. A rejected change (caller is
+  not the owner, or did not sign) emits nothing, so every event corresponds to a committed
+  change. Only the agent's owner can change a policy; the admin, the provider and the agent
+  itself cannot unless they are also the owner.
+- **`allowed_categories` is recorded and announced, not enforced on-chain.**
+  `check_spending_allowed` and `record_payment` take no category, so a payment to a service
+  outside the list is neither refused nor flagged by this contract. Enforcement is left to the
+  caller. Consumers must not read the list as proof that a payment was category-checked.
+
 Indexers, activity feeds, and dashboards can reconstruct the complete score history of any agent
 purely from chain events by filtering for topics matching `("agents", *, agent_address)`.
 

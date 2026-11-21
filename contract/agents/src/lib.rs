@@ -1060,6 +1060,9 @@ impl LodestarAgents {
 }
 
 #[cfg(test)]
+mod registration_authority_tests;
+
+#[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::{
@@ -1383,9 +1386,11 @@ mod test {
         let new_admin = Address::generate(&env);
         let impostor = Address::generate(&env);
 
+        // `transfer_admin` panics with the error rather than returning a Result, so the
+        // client reports it as a generic contract error carrying the code.
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            soroban_sdk::Error::from_contract_error(AgentError::Unauthorized as u32)
         );
     }
 
