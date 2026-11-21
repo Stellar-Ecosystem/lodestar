@@ -9,6 +9,9 @@ const mockRawServer = {
   getNetwork: mockGetNetwork,
   getAccount: mockGetAccount,
   getLatestLedger: mockGetLatestLedger,
+  // The real Server exposes the HTTP client it uses, and the deadline is set
+  // there so a hung request is aborted rather than left open.
+  httpClient: { defaults: {} },
 };
 
 // ── SDK mock (mimics @stellar/stellar-sdk structure) ──────────────────────────
@@ -67,6 +70,7 @@ const defaultConfig = {
     baseDelayMs: 10,
     maxDelayMs: 100,
   },
+  rpcTimeoutMs: 8_000,
 };
 
 function setConfig(overrides = {}) {
@@ -460,5 +464,60 @@ describe("RpcThrottledError", () => {
     expect(err.attempts).toBe(5);
     expect(err.cause).toBe(original);
     expect(err.message).toBe("Throttled after 5 tries");
+  });
+});
+
+// #635: a request that runs out of its deadline must be aborted instead of
+// being left open against a hung node, and it must not be retried — a retry
+// would hold another socket open for the same duration.
+describe("upstream timeout", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // The mock server is shared, so the deadline it was last given would
+    // otherwise leak into the next test.
+    mockRawServer.httpClient.defaults = {};
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sets the deadline on the HTTP client so the request is aborted", async () => {
+    setConfig();
+    const { getStellarServer } = await freshImport();
+
+    const server = getStellarServer();
+
+    expect(server.httpClient.defaults.timeout).toBe(8_000);
+  });
+
+  it("honours a configured deadline", async () => {
+    // The module registry is reset so stellar.js re-reads the new config mock
+    // instead of the one it was first imported with.
+    vi.resetModules();
+    setConfig({ rpcTimeoutMs: 1_500 });
+    const { getStellarServer } = await freshImport();
+
+    const server = getStellarServer();
+
+    expect(server.httpClient.defaults.timeout).toBe(1_500);
+  });
+
+  it("surfaces a timed-out request as UPSTREAM_TIMEOUT without retrying", async () => {
+    setConfig();
+    const { getStellarServer } = await freshImport();
+
+    const timeoutErr = Object.assign(new Error("timeout of 8000ms exceeded"), {
+      code: "ECONNABORTED",
+    });
+    mockGetNetwork.mockRejectedValue(timeoutErr);
+
+    const server = getStellarServer();
+    await expect(server.getNetwork()).rejects.toMatchObject({
+      name: "UpstreamTimeoutError",
+      code: "UPSTREAM_TIMEOUT",
+      status: 504,
+    });
+    expect(mockGetNetwork).toHaveBeenCalledTimes(1);
   });
 });
