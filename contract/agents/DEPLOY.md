@@ -96,6 +96,11 @@ purely from chain events by filtering for topics matching `("agents", *, agent_a
 was never registered fails with `AgentError::AgentNotFound` (see below), so no
 event is emitted and the caller must not treat the failure as a zero score.
 
+`list_agents_page(page, page_size)` is zero-indexed and returns agents in
+registration order. New registrations append without changing the order of
+agents already registered; the last page may be partial, and an out-of-range
+page is empty.
+
 ## Error Codes
 
 Failures are reported as typed `AgentError` values, not as in-band sentinel

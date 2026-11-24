@@ -964,7 +964,7 @@ impl LodestarAgents {
         if start >= total {
             return result;
         }
-        let end = (start + page_size as usize).min(total);
+        let end = start.saturating_add(page_size as usize).min(total);
         for i in start..end {
             let addr = ids.get(i as u32).unwrap();
             if let Some(agent) = env
@@ -1300,9 +1300,11 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
 
         let policy_after = client.get_policy(&agent_addr);
-        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+        assert!(
+            policy_after.is_some(),
+            "policy entry must remain readable after TTL boundary"
+        );
     }
-
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
@@ -1384,8 +1386,11 @@ mod test {
         let impostor = Address::generate(&env);
 
         assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            client
+                .try_transfer_admin(&new_admin, &impostor)
+                .unwrap_err()
+                .unwrap(),
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -1609,6 +1614,50 @@ mod test {
 
         let after_last = Address::generate(&env);
         assert!(client.get_agent(&after_last).is_none());
+    }
+
+    #[test]
+    fn test_agent_pages_keep_registration_order_when_new_agent_is_added() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        assert!(client.list_agents_page(&0, &2).is_empty());
+
+        let mut expected = vec![&env];
+        for _ in 0..4 {
+            let address = Address::generate(&env);
+            let owner = Address::generate(&env);
+            setup_agent(&env, &contract_id, &address, &owner);
+            expected.push_back(address);
+        }
+
+        let mut traversed = vec![&env];
+        let first_page = client.list_agents_page(&0, &2);
+        assert_eq!(first_page.len(), 2);
+        for entry in first_page {
+            traversed.push_back(entry.address);
+        }
+
+        let new_address = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &new_address, &new_owner);
+        expected.push_back(new_address);
+
+        let second_page = client.list_agents_page(&1, &2);
+        assert_eq!(second_page.len(), 2);
+        for entry in second_page {
+            traversed.push_back(entry.address);
+        }
+
+        let final_page = client.list_agents_page(&2, &2);
+        assert_eq!(final_page.len(), 1);
+        for entry in final_page {
+            traversed.push_back(entry.address);
+        }
+
+        assert_eq!(traversed, expected);
     }
 
     /// Seed a non-zero `daily_spent_stroops` directly into contract storage.
