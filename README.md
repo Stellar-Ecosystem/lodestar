@@ -39,6 +39,10 @@ Lodestar is currently an early-stage, demo-ready project for the Stellar ecosyst
 
 ### Roadmap
 The short-term direction is to harden the core experience, improve documentation, and expand the set of supported payment and discovery flows. Follow the GitHub milestones for ongoing priorities: https://github.com/harshita4ever/lodestar/milestones
+- Validate network, address, token, and service settings before autonomous payment signing without revealing secrets.
+- Trace each run from discovery to verified result with redacted service/payment references and highest-ranked endpoints becoming inactive.
+- Cover equal reputation with unequal price and inactive top endpoints using deterministic fixtures that assert chosen service IDs and ranking reasons without live funds.
+- Bound a legitimate 402 challenge to one signed payment and one verified service result before failover or failure reporting.
 
 ---
 
