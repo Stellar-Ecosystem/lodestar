@@ -107,6 +107,41 @@ pub struct ScoringConfig {
 pub struct LodestarAgents;
 
 impl LodestarAgents {
+    fn score_tier(env: &Env, score: i32) -> Symbol {
+        match score.clamp(0, MAX_SCORE) {
+            1_000 => Symbol::new(env, "elite"),
+            900..=999 => Symbol::new(env, "trusted"),
+            600..=899 => Symbol::new(env, "established"),
+            300..=599 => Symbol::new(env, "building"),
+            _ => Symbol::new(env, "new"),
+        }
+    }
+
+    fn publish_score_tier_result(
+        env: &Env,
+        agent_address: &Address,
+        source: Symbol,
+        caller: Address,
+        old_score: i32,
+        new_score: i32,
+    ) {
+        env.events().publish(
+            (
+                Symbol::new(env, "agents"),
+                Symbol::new(env, "score_tier_result"),
+                agent_address.clone(),
+            ),
+            (
+                source,
+                caller,
+                old_score.clamp(0, MAX_SCORE),
+                new_score.clamp(0, MAX_SCORE),
+                Self::score_tier(env, old_score),
+                Self::score_tier(env, new_score),
+            ),
+        );
+    }
+
     fn get_daily_spend_with_reset(env: &Env, policy: &SpendingPolicy) -> (i128, u64) {
         let now = env.ledger().sequence() as u64;
         if now >= policy.last_reset_ledger + DAY_LEDGERS {
@@ -596,6 +631,7 @@ impl LodestarAgents {
             .get(&policy_key)
             .unwrap_or_else(|| panic_with_error!(&env, AgentError::PolicyNotFound));
 
+        agent.score = agent.score.clamp(0, MAX_SCORE);
         let old_score = agent.score;
 
         agent.total_payments += 1;
@@ -610,11 +646,17 @@ impl LodestarAgents {
             // Enforce min_score_to_earn: agents below the threshold do not gain
             // score from successful payments, though payment stats are still recorded.
             if agent.score >= policy.min_score_to_earn {
-                agent.score = agent.score.saturating_add(SCORE_SUCCESS).min(MAX_SCORE);
+                agent.score = agent
+                    .score
+                    .saturating_add(SCORE_SUCCESS)
+                    .clamp(0, MAX_SCORE);
             }
         } else {
             agent.failed_payments += 1;
-            agent.score = agent.score.saturating_add(SCORE_FAILURE).max(0);
+            agent.score = agent
+                .score
+                .saturating_add(SCORE_FAILURE)
+                .clamp(0, MAX_SCORE);
         }
 
         let new_score = agent.score;
@@ -646,7 +688,7 @@ impl LodestarAgents {
             (
                 Symbol::new(&env, "agents"),
                 Symbol::new(&env, "payment"),
-                agent_address,
+                agent_address.clone(),
             ),
             (
                 service_id,
@@ -654,8 +696,16 @@ impl LodestarAgents {
                 success,
                 old_score,
                 new_score,
-                caller,
+                caller.clone(),
             ),
+        );
+        Self::publish_score_tier_result(
+            &env,
+            &agent_address,
+            Symbol::new(&env, "payment"),
+            caller,
+            old_score,
+            new_score,
         );
         Ok(())
     }
@@ -687,11 +737,12 @@ impl LodestarAgents {
             .get(&key)
             .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
+        agent.score = agent.score.clamp(0, MAX_SCORE);
         let old_score = agent.score;
 
         agent.flagged = true;
         agent.flag_reason = reason.clone();
-        agent.score = (agent.score + FLAG_PENALTY).max(0);
+        agent.score = agent.score.saturating_add(FLAG_PENALTY).clamp(0, MAX_SCORE);
 
         let new_score = agent.score;
 
@@ -706,9 +757,17 @@ impl LodestarAgents {
             (
                 Symbol::new(&env, "agents"),
                 Symbol::new(&env, "flagged"),
-                agent_address,
+                agent_address.clone(),
             ),
-            (caller, reason, old_score, new_score),
+            (caller.clone(), reason, old_score, new_score),
+        );
+        Self::publish_score_tier_result(
+            &env,
+            &agent_address,
+            Symbol::new(&env, "flag"),
+            caller,
+            old_score,
+            new_score,
         );
     }
 
@@ -1036,15 +1095,24 @@ impl LodestarAgents {
             (
                 Symbol::new(&env, "agents"),
                 Symbol::new(&env, "policy_updated"),
-                agent_address,
+                agent_address.clone(),
             ),
             (
-                caller,
+                caller.clone(),
                 max_per_tx_stroops,
                 max_per_day_stroops,
                 allowed_categories,
                 min_score_to_earn,
             ),
+        );
+        let score = agent.score.clamp(0, MAX_SCORE);
+        Self::publish_score_tier_result(
+            &env,
+            &agent_address,
+            Symbol::new(&env, "policy"),
+            caller,
+            score,
+            score,
         );
     }
 
@@ -1300,9 +1368,11 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
 
         let policy_after = client.get_policy(&agent_addr);
-        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+        assert!(
+            policy_after.is_some(),
+            "policy entry must remain readable after TTL boundary"
+        );
     }
-
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
@@ -1384,8 +1454,11 @@ mod test {
         let impostor = Address::generate(&env);
 
         assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            client
+                .try_transfer_admin(&new_admin, &impostor)
+                .unwrap_err()
+                .unwrap(),
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -1439,6 +1512,32 @@ mod test {
         assert_eq!(config.score_success, SCORE_SUCCESS);
         assert_eq!(config.score_failure, SCORE_FAILURE);
         assert_eq!(config.flag_penalty, FLAG_PENALTY);
+    }
+
+    #[test]
+    fn test_score_tier_matches_score_boundaries() {
+        let env = Env::default();
+        let cases = [
+            (-1, "new"),
+            (0, "new"),
+            (299, "new"),
+            (300, "building"),
+            (599, "building"),
+            (600, "established"),
+            (899, "established"),
+            (900, "trusted"),
+            (999, "trusted"),
+            (1_000, "elite"),
+            (1_001, "elite"),
+        ];
+
+        for (score, expected_tier) in cases {
+            assert_eq!(
+                LodestarAgents::score_tier(&env, score),
+                Symbol::new(&env, expected_tier),
+                "score {score} should map to {expected_tier}"
+            );
+        }
     }
 
     #[test]
@@ -2785,8 +2884,8 @@ mod test {
         client.record_payment(&agent_addr, &service_id, &amount, &true, &provider);
 
         let events = env.events().all();
-        assert_eq!(events.len(), initial_events_count + 1);
-        let event = events.get(events.len() - 1).unwrap();
+        assert_eq!(events.len(), initial_events_count + 2);
+        let event = events.get(events.len() - 2).unwrap();
         assert_eq!(
             event.1,
             (
@@ -2804,9 +2903,60 @@ mod test {
                 true,
                 INITIAL_SCORE,
                 INITIAL_SCORE + SCORE_SUCCESS,
-                provider
+                provider.clone()
             )
         );
+        let tier_event = events.get(events.len() - 1).unwrap();
+        assert_eq!(
+            tier_event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "score_tier_result"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(Symbol, Address, i32, i32, Symbol, Symbol)>::from_val(&env, &tier_event.2),
+            (
+                Symbol::new(&env, "payment"),
+                provider.clone(),
+                INITIAL_SCORE,
+                INITIAL_SCORE + SCORE_SUCCESS,
+                Symbol::new(&env, "new"),
+                Symbol::new(&env, "new"),
+            )
+        );
+    }
+
+    #[test]
+    fn test_score_tier_event_reports_committed_tier_transition() {
+        let env = Env::default();
+        let (contract_id, client, agent_addr, provider) = setup_record_payment_boundary_agent(&env);
+        seed_record_payment_state(&env, &contract_id, &agent_addr, 895, 0, 0);
+
+        client.record_payment(&agent_addr, &1u64, &1i128, &true, &provider);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            <(Symbol, Address, i32, i32, Symbol, Symbol)>::from_val(
+                &env,
+                &events.get(1).unwrap().2,
+            ),
+            (
+                Symbol::new(&env, "payment"),
+                provider,
+                895,
+                905,
+                Symbol::new(&env, "established"),
+                Symbol::new(&env, "trusted"),
+            )
+        );
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, 905);
+        assert!((0..=MAX_SCORE).contains(&agent.score));
     }
 
     #[test]
@@ -2829,7 +2979,7 @@ mod test {
         client.record_payment(&agent_addr, &service_id, &amount, &false, &provider);
 
         let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         let event = events.get(0).unwrap();
         assert_eq!(
             event.1,
@@ -2848,7 +2998,19 @@ mod test {
                 false,
                 INITIAL_SCORE,
                 INITIAL_SCORE + SCORE_FAILURE,
-                provider
+                provider.clone()
+            )
+        );
+        let tier_event = events.get(1).unwrap();
+        assert_eq!(
+            <(Symbol, Address, i32, i32, Symbol, Symbol)>::from_val(&env, &tier_event.2),
+            (
+                Symbol::new(&env, "payment"),
+                provider.clone(),
+                INITIAL_SCORE,
+                INITIAL_SCORE + SCORE_FAILURE,
+                Symbol::new(&env, "new"),
+                Symbol::new(&env, "new"),
             )
         );
     }
@@ -2883,7 +3045,7 @@ mod test {
         client.record_payment(&agent_addr, &service_id, &amount, &true, &provider);
 
         let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         let event = events.get(0).unwrap();
         assert_eq!(
             event.1,
@@ -2897,7 +3059,21 @@ mod test {
         // Score unchanged at 100 because min_score_to_earn (500) was not met
         assert_eq!(
             <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &event.2),
-            (service_id, amount, true, 100i32, 100i32, provider)
+            (service_id, amount, true, 100i32, 100i32, provider.clone())
+        );
+        assert_eq!(
+            <(Symbol, Address, i32, i32, Symbol, Symbol)>::from_val(
+                &env,
+                &events.get(1).unwrap().2,
+            ),
+            (
+                Symbol::new(&env, "payment"),
+                provider,
+                100,
+                100,
+                Symbol::new(&env, "new"),
+                Symbol::new(&env, "new"),
+            )
         );
     }
 
@@ -2917,7 +3093,7 @@ mod test {
         client.flag_agent(&agent_addr, &reason, &admin);
 
         let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         let event = events.get(0).unwrap();
         assert_eq!(
             event.1,
@@ -2931,7 +3107,21 @@ mod test {
         // Initial score 100 + (-200) clamped to 0
         assert_eq!(
             <(Address, String, i32, i32)>::from_val(&env, &event.2),
-            (admin, reason, 100i32, 0i32)
+            (admin.clone(), reason, 100i32, 0i32)
+        );
+        assert_eq!(
+            <(Symbol, Address, i32, i32, Symbol, Symbol)>::from_val(
+                &env,
+                &events.get(1).unwrap().2,
+            ),
+            (
+                Symbol::new(&env, "flag"),
+                admin,
+                100,
+                0,
+                Symbol::new(&env, "new"),
+                Symbol::new(&env, "new"),
+            )
         );
     }
 
@@ -3166,7 +3356,7 @@ mod test {
         );
 
         let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         let event = events.get(0).unwrap();
         assert_eq!(
             event.1,
@@ -3179,7 +3369,21 @@ mod test {
         );
         assert_eq!(
             <(Address, i128, i128, Vec<String>, i32)>::from_val(&env, &event.2),
-            (owner, max_tx, max_day, categories, min_score)
+            (owner.clone(), max_tx, max_day, categories, min_score)
+        );
+        assert_eq!(
+            <(Symbol, Address, i32, i32, Symbol, Symbol)>::from_val(
+                &env,
+                &events.get(1).unwrap().2,
+            ),
+            (
+                Symbol::new(&env, "policy"),
+                owner,
+                INITIAL_SCORE,
+                INITIAL_SCORE,
+                Symbol::new(&env, "new"),
+                Symbol::new(&env, "new"),
+            )
         );
     }
 
@@ -3227,7 +3431,7 @@ mod test {
         // 2. Successful payment 1 (+10) -> score 110
         client.record_payment(&agent_addr, &101u64, &1_000_000i128, &true, &provider1);
         let pay1_events = env.events().all();
-        assert_eq!(pay1_events.len(), 1);
+        assert_eq!(pay1_events.len(), 2);
         let pay1_event = pay1_events.get(0).unwrap();
         assert_eq!(
             pay1_event.1,
@@ -3241,13 +3445,21 @@ mod test {
         let pay1_data = <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &pay1_event.2);
         assert_eq!(pay1_data.3, 100); // old_score
         assert_eq!(pay1_data.4, 110); // new_score
+        let pay1_tier = <(Symbol, Address, i32, i32, Symbol, Symbol)>::from_val(
+            &env,
+            &pay1_events.get(1).unwrap().2,
+        );
+        assert_eq!(pay1_tier.2, 100);
+        assert_eq!(pay1_tier.3, 110);
+        assert_eq!(pay1_tier.4, Symbol::new(&env, "new"));
+        assert_eq!(pay1_tier.5, Symbol::new(&env, "new"));
         reconstructed_scores.push_back(pay1_data.4);
         assert_eq!(client.get_score(&agent_addr), 110);
 
         // 3. Successful payment 2 (+10) -> score 120
         client.record_payment(&agent_addr, &102u64, &2_000_000i128, &true, &provider2);
         let pay2_events = env.events().all();
-        assert_eq!(pay2_events.len(), 1);
+        assert_eq!(pay2_events.len(), 2);
         let pay2_event = pay2_events.get(0).unwrap();
         assert_eq!(
             pay2_event.1,
@@ -3267,7 +3479,7 @@ mod test {
         // 4. Failed payment 1 (-25) -> score 95
         client.record_payment(&agent_addr, &101u64, &500_000i128, &false, &provider1);
         let pay3_events = env.events().all();
-        assert_eq!(pay3_events.len(), 1);
+        assert_eq!(pay3_events.len(), 2);
         let pay3_event = pay3_events.get(0).unwrap();
         assert_eq!(
             pay3_event.1,
@@ -3291,7 +3503,7 @@ mod test {
             &admin,
         );
         let flag_events = env.events().all();
-        assert_eq!(flag_events.len(), 1);
+        assert_eq!(flag_events.len(), 2);
         let flag_event = flag_events.get(0).unwrap();
         assert_eq!(
             flag_event.1,
