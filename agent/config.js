@@ -91,7 +91,9 @@ export function loadAgentConfig(env = process.env) {
   // passphrase is a startup error; a missing passphrase uses the network's
   // well-known value.
   const network = env.STELLAR_NETWORK ?? 'testnet';
-  if (!NETWORKS[network]) {
+  // Object.hasOwn: a plain lookup would accept inherited names like
+  // "constructor" and then return a function as the passphrase.
+  if (!Object.hasOwn(NETWORKS, network)) {
     throw new ConfigError('STELLAR_NETWORK', 'must be "testnet" or "mainnet"');
   }
   let networkPassphrase = env.STELLAR_NETWORK_PASSPHRASE;
@@ -99,6 +101,14 @@ export function loadAgentConfig(env = process.env) {
     networkPassphrase = NETWORKS[network];
   } else if (networkPassphrase.trim() === '') {
     throw new ConfigError('STELLAR_NETWORK_PASSPHRASE', 'is set but empty');
+  } else if (networkPassphrase !== NETWORKS[network]) {
+    // The x402 signer derives the passphrase from the network name; a custom
+    // value could never reach the signing path, so accepting it would
+    // silently mislead operators.
+    throw new ConfigError(
+      'STELLAR_NETWORK_PASSPHRASE',
+      `must match the ${network} network passphrase (custom passphrases are not supported by the signer)`
+    );
   }
 
   const agentsContractId = optionalContractId(env, 'AGENTS_CONTRACT_ID');
@@ -124,6 +134,10 @@ export function loadAgentConfig(env = process.env) {
 
   return {
     network,
+    // CAIP-2 identifier the @x402/stellar signer understands. Its network map
+    // only knows stellar:pubnet and stellar:testnet, so "mainnet" must be
+    // translated here rather than interpolated at the call site.
+    networkCaip2: network === 'mainnet' ? 'stellar:pubnet' : 'stellar:testnet',
     networkPassphrase,
     agentsContractId,
     usdcContractId,
