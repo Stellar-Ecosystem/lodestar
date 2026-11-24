@@ -11,9 +11,9 @@
  * back to the in-process copy rather than failing.
  */
 
-import { createHash } from 'node:crypto';
 import { Redis } from 'ioredis';
 import config from '../config.js';
+import { computeWeakEtag } from './conditionalRequest.js';
 import logger from './logger.js';
 import {
   recordHealthCacheError,
@@ -57,7 +57,7 @@ if (redis) {
  * @returns {string}
  */
 export function computeHealthEtag(body) {
-  return `W/"${createHash('sha256').update(body).digest('hex')}"`;
+  return computeWeakEtag(body);
 }
 
 function ttlSeconds() {

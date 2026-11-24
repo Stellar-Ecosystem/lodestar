@@ -12,6 +12,11 @@
 const state = {
   upstreamTimeouts: 0,
   upstreamTimeoutsByLabel: Object.create(null),
+  // Health representations actually sent. A 304 counts: the client asked,
+  // and that request still looked the health cache up (#1183).
+  requests: {
+    health: 0,
+  },
   healthCache: {
     lookups: 0,
     hits: 0,
@@ -20,6 +25,14 @@ const state = {
     loads: 0,
   },
 };
+
+/**
+ * Record a health representation that was served (HTTP 200 or 304).
+ * Idempotent replays count; rejected keys and failed checks do not.
+ */
+export function recordHealthRequest() {
+  state.requests.health += 1;
+}
 
 /**
  * Record an upstream call that exceeded its deadline.
@@ -77,6 +90,7 @@ export function getHealthCacheMetrics() {
 
 export function getRouteMetrics() {
   return {
+    requests: { health: state.requests.health },
     upstreamTimeouts: getUpstreamTimeoutMetrics(),
     healthCache: getHealthCacheMetrics(),
   };
@@ -86,5 +100,6 @@ export function getRouteMetrics() {
 export function resetRouteMetrics() {
   state.upstreamTimeouts = 0;
   state.upstreamTimeoutsByLabel = Object.create(null);
+  state.requests = { health: 0 };
   state.healthCache = { lookups: 0, hits: 0, misses: 0, errors: 0, loads: 0 };
 }
