@@ -567,6 +567,75 @@ describe('ensureRegistered — structured event fields', () => {
   });
 });
 
+describe('configuration & run traceability (LDS-2026-194)', () => {
+  afterEach(() => {
+    delete process.env.AGENT_USDC_TOKEN;
+    delete process.env.FACILITATOR_URL;
+    delete process.env.AGENT_RUN_SUMMARY_PATH;
+  });
+
+  it('logs redacted serviceRef and paymentRef on service_selected and payment_success', async () => {
+    const serviceWithQuery = {
+      ...MOCK_SERVICE,
+      endpoint: 'https://user:secret@api.example.com/weather?token=topsecret',
+    };
+    global.fetch = buildFetch({ services: [serviceWithQuery] });
+
+    const result = await runTask('weather', (ep) => ep, true, mockHttpClient, { runId: 'trace-run-1' });
+
+    expect(result.success).toBe(true);
+    expect(result.serviceRef).toBe('https://api.example.com/weather');
+    expect(result.paymentRef).toBe('txha...h123');
+
+    const selectedCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SERVICE_SELECTED);
+    expect(selectedCall[0]).toMatchObject({
+      runId: 'trace-run-1',
+      serviceRef: 'https://api.example.com/weather',
+    });
+
+    const paymentCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_SUCCESS);
+    expect(paymentCall[0]).toMatchObject({
+      runId: 'trace-run-1',
+      serviceRef: 'https://api.example.com/weather',
+      paymentRef: 'txha...h123',
+    });
+  });
+
+  it('traces one full run from config validation and discovery to verified result and logs invalid config', async () => {
+    process.env.AGENT_USDC_TOKEN = 'BAD_USDC_TOKEN_VALUE';
+    process.env.FACILITATOR_URL = 'not-a-valid-url';
+    process.env.AGENT_RUN_SUMMARY_PATH = '';
+
+    await main();
+
+    const startCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_START);
+    expect(startCall).toBeDefined();
+    const { runId } = startCall[0];
+    expect(typeof runId).toBe('string');
+    expect(runId.length).toBeGreaterThan(0);
+
+    const invalidCalls = logWarn.mock.calls.filter(([f]) => f?.event === EVENT.CONFIG_INVALID);
+    expect(invalidCalls).toHaveLength(2);
+    expect(invalidCalls.map(([f]) => f.reason)).toEqual(
+      expect.arrayContaining(['invalid_usdc_token', 'invalid_facilitator_url']),
+    );
+    for (const [fields] of invalidCalls) {
+      expect(fields.runId).toBe(runId);
+    }
+
+    const validatedCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.CONFIG_VALIDATED);
+    expect(validatedCall[0]).toMatchObject({ runId, valid: false, issueCount: 2 });
+
+    const taskStartCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.TASK_START);
+    const paymentCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_SUCCESS);
+    const completeCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.AGENT_COMPLETE);
+
+    expect(taskStartCall[0].runId).toBe(runId);
+    expect(paymentCall[0].runId).toBe(runId);
+    expect(completeCall[0].runId).toBe(runId);
+  });
+});
+
 describe('graceful shutdown', () => {
   afterEach(() => {
     delete process.env.AGENT_SHUTDOWN_TIMEOUT_MS;

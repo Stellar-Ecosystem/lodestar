@@ -41,8 +41,10 @@ export function resolveRunSummaryPath(env = process.env) {
  * @returns {object} the summary document
  */
 export function buildRunSummary({
+  runId = null,
   agentAddress = null,
   agentName = null,
+  config = null,
   startedAt,
   finishedAt = Date.now(),
   tasks = [],
@@ -65,8 +67,10 @@ export function buildRunSummary({
 
   return {
     schemaVersion: RUN_SUMMARY_SCHEMA_VERSION,
+    ...(runId !== null ? { runId } : {}),
     status,
     agent: { address: agentAddress, name: agentName },
+    ...(config !== null ? { config } : {}),
     startedAt: toIso(startedAt),
     finishedAt: toIso(finishedAt),
     durationMs: startedAt ? Math.max(0, finishedAt - startedAt) : null,
@@ -102,6 +106,8 @@ function normaliseTask(task) {
     attempts: task.attempts ?? 0,
     priceUsdc: task.priceUsdc ?? null,
     txHash: task.txHash ?? null,
+    ...(task.serviceRef !== undefined ? { serviceRef: task.serviceRef } : {}),
+    ...(task.paymentRef !== undefined ? { paymentRef: task.paymentRef } : {}),
     scoreAfter: task.scoreAfter ?? null,
     durationMs: task.durationMs ?? null,
     failureReason: task.failureReason ?? null,
