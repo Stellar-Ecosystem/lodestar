@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { Keypair } from '@stellar/stellar-sdk';
+import { createEd25519Signer } from '@x402/stellar';
 import {
   loadAgentConfig,
   ConfigError,
@@ -43,9 +45,15 @@ describe('loadAgentConfig — defaults', () => {
 });
 
 describe('loadAgentConfig — network passphrase boundary (LDS-2026-191)', () => {
-  it('honours an explicit non-empty passphrase', () => {
-    const cfg = loadAgentConfig(baseEnv({ STELLAR_NETWORK_PASSPHRASE: 'Custom Net ; 2026' }));
-    expect(cfg.networkPassphrase).toBe('Custom Net ; 2026');
+  it('honours an explicit passphrase equal to the well-known value', () => {
+    const cfg = loadAgentConfig(baseEnv({ STELLAR_NETWORK_PASSPHRASE: TESTNET_PASSPHRASE }));
+    expect(cfg.networkPassphrase).toBe(TESTNET_PASSPHRASE);
+  });
+
+  it('rejects a custom passphrase the signer could never use', () => {
+    expect(() =>
+      loadAgentConfig(baseEnv({ STELLAR_NETWORK_PASSPHRASE: 'Custom Net ; 2026' }))
+    ).toThrow(/must match the testnet network passphrase/);
   });
 
   it('rejects a set-but-empty passphrase instead of silently defaulting', () => {
@@ -53,6 +61,29 @@ describe('loadAgentConfig — network passphrase boundary (LDS-2026-191)', () =>
     expect(() => loadAgentConfig(baseEnv({ STELLAR_NETWORK_PASSPHRASE: '' }))).toThrow(
       /STELLAR_NETWORK_PASSPHRASE is set but empty/
     );
+  });
+
+  it('exposes the CAIP-2 network id the signer accepts', () => {
+    expect(loadAgentConfig(baseEnv()).networkCaip2).toBe('stellar:testnet');
+    expect(loadAgentConfig(baseEnv({ STELLAR_NETWORK: 'mainnet' })).networkCaip2).toBe(
+      'stellar:pubnet'
+    );
+  });
+
+  it('builds the real x402 signer for every configured network (offline)', () => {
+    // Construction must not throw "Unknown Stellar network": the signer only
+    // accepts CAIP-2 ids, so this guards the networkCaip2 mapping itself.
+    const secret = Keypair.random().secret();
+    for (const network of ['testnet', 'mainnet']) {
+      const cfg = loadAgentConfig(baseEnv({ STELLAR_NETWORK: network }));
+      expect(() => createEd25519Signer(secret, cfg.networkCaip2)).not.toThrow();
+    }
+  });
+
+  it('rejects inherited object property names as networks', () => {
+    for (const bogus of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect(() => loadAgentConfig(baseEnv({ STELLAR_NETWORK: bogus }))).toThrow(ConfigError);
+    }
   });
 
   it('rejects an unknown network', () => {
