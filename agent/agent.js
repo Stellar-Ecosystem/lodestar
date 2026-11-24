@@ -253,7 +253,7 @@ function buildHttpClient() {
   // Re-read the secret for the x402 signer since the module-level reference
   // has already been zeroed. loadSecret() re-reads from the env var or file.
   const secretForSigner = loadSecret();
-  const signer = createEd25519Signer(secretForSigner, `stellar:${config.network}`);
+  const signer = createEd25519Signer(secretForSigner, config.networkCaip2);
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
