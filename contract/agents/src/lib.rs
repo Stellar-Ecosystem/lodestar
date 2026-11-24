@@ -3334,4 +3334,89 @@ mod test {
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
     }
+    #[test]
+    fn test_record_payment_replay_same_id_no_second_score_change() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 42u64;
+        let provider = Address::generate(&env);
+        let mock_client = MockRegistryClient::new(&env, &registry_id);
+        mock_client.set_service(&service_id, &provider);
+
+        let amount = 5_000_000i128;
+        let payment_id = pid(&env, 99);
+
+        client.record_payment(
+            &agent_addr,
+            &service_id,
+            &amount,
+            &true,
+            &provider,
+            &payment_id,
+        );
+        let score1 = client.get_score(&agent_addr).unwrap();
+        let agent1 = client.get_agent(&agent_addr);
+        let volume1 = agent1.total_volume_stroops;
+        let total1 = agent1.total_payments;
+
+        let replay = client.try_record_payment(
+            &agent_addr,
+            &service_id,
+            &amount,
+            &true,
+            &provider,
+            &payment_id,
+        );
+        assert_eq!(replay, Err(Ok(AgentError::PaymentAlreadyRecorded)));
+
+        let score2 = client.get_score(&agent_addr).unwrap();
+        let agent2 = client.get_agent(&agent_addr);
+        assert_eq!(score2, score1);
+        assert_eq!(agent2.total_volume_stroops, volume1);
+        assert_eq!(agent2.total_payments, total1);
+    }
+
+    #[test]
+    fn test_record_payment_distinct_ids_apply_twice() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 1u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        client.record_payment(
+            &agent_addr,
+            &service_id,
+            &100i128,
+            &true,
+            &provider,
+            &pid(&env, 1),
+        );
+        let s1 = client.get_score(&agent_addr).unwrap();
+
+        client.record_payment(
+            &agent_addr,
+            &service_id,
+            &100i128,
+            &true,
+            &provider,
+            &pid(&env, 2),
+        );
+        let s2 = client.get_score(&agent_addr).unwrap();
+        assert!(s2 > s1);
+    }
 }
