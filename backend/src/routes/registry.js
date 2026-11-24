@@ -21,7 +21,7 @@ import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
 import { withUpstreamTimeout } from "../lib/upstreamTimeout.js";
-import { getCachedHealth, getHealthCacheStatus } from "../lib/healthCache.js";
+import { computeHealthEtag, getCachedHealth, getHealthCacheStatus } from "../lib/healthCache.js";
 import {
   getEntry,
   isValidIdempotencyKey,
@@ -607,21 +607,23 @@ function sendHealthResponse(req, res, body, etag, replayed) {
     "Cache-Control",
     `public, max-age=${config.health.cacheTtlSeconds}, must-revalidate`,
   );
-  res.set("ETag", etag);
   if (replayed) {
     res.set("Idempotent-Replay", "true");
   }
 
-  const ifNoneMatch = req.get("If-None-Match");
-  if (
-    ifNoneMatch
-      ?.split(",")
-      .map((value) => value.trim())
-      .includes(etag)
-  ) {
+  return sendConditionalJson(req, res, body, etag);
+}
+
+function sendConditionalJson(req, res, body, etag) {
+  res.set("ETag", etag);
+  const validators = req.get("If-None-Match")?.split(",") ?? [];
+  const opaqueTag = etag.replace(/^W\//, "");
+  if (validators.some((value) => {
+    const tag = value.trim();
+    return tag === "*" || tag.replace(/^W\//, "") === opaqueTag;
+  })) {
     return res.status(304).end();
   }
-
   return res.type("application/json").send(body);
 }
 
@@ -707,10 +709,11 @@ router.get("/health", async (req, res) => {
 router.get("/metrics", (req, res) => {
   res.set("Cache-Control", "no-store");
   const metrics = getRouteMetrics();
-  res.json({
+  const body = JSON.stringify({
     ...metrics,
     healthCache: { ...metrics.healthCache, ...getHealthCacheStatus() },
   });
+  return sendConditionalJson(req, res, body, computeHealthEtag(body));
 });
 
 /**

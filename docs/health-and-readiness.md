@@ -62,3 +62,12 @@ against a backend that has not finished booting.
 
 In an orchestrator that distinguishes the two (Kubernetes, ECS), wire the
 liveness probe to `/healthz` and the readiness probe to `/readyz`.
+
+## Conditional reads
+
+GET /api/health and GET /api/metrics return an ETag. A matching If-None-Match
+validator (including a weak match or wildcard) returns 304 with an empty body
+and the same ETag and Cache-Control policy. A stale validator returns 200 and
+the current JSON. Metrics keeps its no-store policy. Health revalidation uses
+the usual cache lookup and hit counters. Reading metrics does not increment them.
+Health validation errors keep their usual status and JSON error and code fields.

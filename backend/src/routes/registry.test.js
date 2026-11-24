@@ -1306,13 +1306,20 @@ describe('GET /api/health — caching and idempotency (#672, #673)', () => {
     expect(res.headers.etag).toMatch(/^W\/".+"$/);
   });
 
-  it('answers a conditional request with 304', async () => {
-    const first = await request(app).get('/api/health');
-    const res = await request(app)
-      .get('/api/health')
-      .set('If-None-Match', first.headers.etag);
-
+  it.each(['/api/health', '/api/metrics'])('revalidates %s without a response body', async (path) => {
+    const first = await request(app).get(path);
+    const matching = first.headers.etag.replace(/^W\//, '');
+    const res = await request(app).get(path).set('If-None-Match', '"stale", ' + matching);
     expect(res.status).toBe(304);
+    expect(res.text).toBe('');
+    expect(res.headers.etag).toBe(first.headers.etag);
+    expect(res.headers['cache-control']).toBe(first.headers['cache-control']);
+    const metrics = await request(app).get('/api/metrics');
+    expect(metrics.body.healthCache.lookups).toBe(path === '/api/health' ? 2 : 0);
+    expect(metrics.body.healthCache.hits).toBe(path === '/api/health' ? 1 : 0);
+    const stale = await request(app).get(path).set('If-None-Match', '"stale"');
+    expect(stale.status).toBe(200);
+    expect(stale.body).toEqual(first.body);
   });
 
   it('serves a repeated read from the cache instead of rebuilding it', async () => {
