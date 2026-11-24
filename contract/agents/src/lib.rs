@@ -1060,6 +1060,11 @@ impl LodestarAgents {
 }
 
 #[cfg(test)]
+mod category_policy_tests;
+#[cfg(test)]
+mod payment_outcome_tests;
+
+#[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::{
@@ -1385,7 +1390,7 @@ mod test {
 
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            soroban_sdk::Error::from(AgentError::Unauthorized)
         );
     }
 
