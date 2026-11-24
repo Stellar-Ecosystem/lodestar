@@ -41,10 +41,24 @@ Invalid AGENT_STELLAR_SECRET: unable to parse secret key
 Not registered — registering now
 No services found for category {"event":"task_start","category":"weather","servicesFound":0}
 No services meet minimum reputation threshold {"event":"task_start","category":"weather","servicesFound":0,"minReputation":50}
-Payment failed — network error {"event":"payment_failed","category":"weather","serviceId":1,"serviceName":"WeatherService","priceUsdc":"0.001","err":{}}
+Endpoint inactive — no payment signed, skipping to next candidate {"event":"endpoint_inactive","category":"weather","serviceId":1,"serviceName":"WeatherService","priceUsdc":"0.001","httpStatus":503}
 Payment failed — endpoint error {"event":"payment_failed","category":"weather","serviceId":1,"serviceName":"WeatherService","priceUsdc":"0.001","httpStatus":500}
-All candidate services exhausted {"event":"payment_failed","category":"weather","servicesAttempted":2}
+Payment state unknown — signed payment sent but no response received {"event":"payment_unknown","category":"weather","serviceId":1,"serviceName":"WeatherService","priceUsdc":"0.001","idempotencyKey":"..."}
+All candidate services exhausted {"event":"task_exhausted","category":"weather","servicesAttempted":2}
 ```
+
+## Payment and retry safety
+
+Each service selection goes through a two-phase x402 flow:
+
+1. **Probe** — the endpoint is contacted without payment headers. If it returns anything other than `402 Payment Required` (or the connection fails), the service is treated as inactive, no payment is ever signed, and the agent moves on to the next candidate.
+2. **Signed fetch** — only after a `402` is confirmed does the agent sign and submit the payment. If this second fetch throws (connection reset, timeout), the payment state is **unknown**: the transaction may or may not have reached the network.
+
+An endpoint in the unknown state is excluded from further retries within the same run. The run summary records it under `unresolvedPayments` so an operator can verify on-chain status manually before restarting.
+
+### Idempotency key
+
+Every `POST /api/agents/:address/payment` call includes an `X-Idempotency-Key` header scoped to `{agentAddress}-svc{serviceId}-t{taskStartMs}`. The key is stable for the lifetime of a single task attempt, so if `recordOutcome` is called more than once for the same settled request (e.g. after a process restart that replays the run), the backend deduplicates it and no second on-chain record is written.
 
 ## Environment Variables
 
@@ -62,3 +76,21 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_MIN_SERVICE_REPUTATION` | No | `0` | Minimum reputation to consider a service |
 | `AGENT_MAX_SERVICE_RETRIES` | No | `3` | Max weighted retry attempts per task |
 | `LOG_LEVEL` | No | `info` | pino log level |
+
+## Event reference
+
+| Event | Level | Meaning |
+|-------|-------|---------|
+| `agent_start` | info | Agent process started |
+| `agent_registered` | info | Registration check complete |
+| `task_start` | info | Task loop entered for a category |
+| `service_selected` | info | A candidate service was chosen for this attempt |
+| `spend_check_passed` | info | Spending policy allows this service |
+| `spend_check_blocked` | warn | Spending policy blocked this service; moving to next candidate |
+| `endpoint_inactive` | warn | Probe returned non-402 or threw; **no payment was signed**; moving to next candidate |
+| `payment_unknown` | error | Probe returned 402, payment was signed, but signed fetch threw; this service is excluded from further retries in this run |
+| `payment_failed` | error | Signed fetch returned a non-2xx; payment was settled but service returned an error |
+| `payment_success` | info | Signed fetch returned 2xx; payment confirmed |
+| `score_updated` | info | Backend confirmed the new credit score |
+| `task_exhausted` | error | All candidates were tried (or excluded) without a successful outcome |
+| `agent_complete` | info | All tasks finished; run summary follows |

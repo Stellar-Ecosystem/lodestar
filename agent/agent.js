@@ -112,6 +112,9 @@ export const EVENT = {
   SPEND_CHECK_BLOCKED: 'spend_check_blocked',
   PAYMENT_SUCCESS:     'payment_success',
   PAYMENT_FAILED:      'payment_failed',
+  PAYMENT_UNKNOWN:     'payment_unknown',
+  ENDPOINT_INACTIVE:   'endpoint_inactive',
+  TASK_EXHAUSTED:      'task_exhausted',
   SCORE_UPDATED:       'score_updated',
   AGENT_COMPLETE:      'agent_complete',
 };
@@ -198,10 +201,10 @@ async function checkSpend(amountUsdc, category) {
   }
 }
 
-async function recordOutcome(amountUsdc, success, serviceId) {
+async function recordOutcome(amountUsdc, success, serviceId, idempotencyKey) {
   try {
     const body = JSON.stringify({ amountUsdc, success, serviceId });
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = { 'Content-Type': 'application/json', 'X-Idempotency-Key': idempotencyKey };
     if (LODESTAR_HMAC_SECRET) {
       headers['X-Lodestar-Signature'] = crypto
         .createHmac('sha256', LODESTAR_HMAC_SECRET)
@@ -218,13 +221,30 @@ async function recordOutcome(amountUsdc, success, serviceId) {
       const scoreBefore = currentScore;
       currentScore = data.newScore;
       logger.info(
-        { event: EVENT.SCORE_UPDATED, agentAddress: AGENT_ADDRESS, scoreBefore, scoreAfter: currentScore },
+        { event: EVENT.SCORE_UPDATED, agentAddress: AGENT_ADDRESS, scoreBefore, scoreAfter: currentScore, idempotencyKey },
         'Score updated'
       );
     }
   } catch {
     // non-critical
   }
+}
+
+/**
+ * Generate a stable idempotency key for a payment outcome.
+ *
+ * The key is scoped to the agent address, service, and the run-start timestamp
+ * so that:
+ *   - Two different runs never share a key (the timestamp component differs).
+ *   - Retrying recordOutcome within the same run always reuses the same key,
+ *     preventing a second on-chain record for an already-settled request.
+ *
+ * @param {number} serviceId
+ * @param {number} runStartMs - value of `taskStart` captured when the attempt began
+ * @returns {string}
+ */
+export function buildPaymentIdempotencyKey(serviceId, runStartMs) {
+  return `${AGENT_ADDRESS}-svc${serviceId}-t${runStartMs}`;
 }
 
 // ── x402 client ───────────────────────────────────────────────────────────────
@@ -348,8 +368,15 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
   const candidates = [...eligible].sort((a, b) => b.reputation - a.reputation).slice(0, maxRetries);
   const failed = new Set();
 
+  // Track services whose payment was signed and submitted but whose on-chain
+  // outcome is unknown (probe returned 402, payment headers were sent, but the
+  // second fetch failed before a response arrived).  Such services must NOT be
+  // retried within this run — a second payment header would constitute a second
+  // on-chain transaction for a request that may already be settled.
+  const paymentUnknown = new Set();
+
   for (let attempt = 1; attempt <= candidates.length; attempt++) {
-    const available = candidates.filter(s => !failed.has(s.id));
+    const available = candidates.filter(s => !failed.has(s.id) && !paymentUnknown.has(s.id));
     if (!available.length) break;
 
     const selected = selectWeighted(available);
@@ -396,15 +423,31 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
       'Sending x402 payment on Stellar'
     );
 
+    // A stable key scoped to this agent + service + run start.  Using the same
+    // key on a retry sends a replay request to the backend instead of a second
+    // on-chain record (#LDS-2026-182).
+    const idempotencyKey = buildPaymentIdempotencyKey(selected.id, taskStart);
+
+    // ── x402 probe ────────────────────────────────────────────────────────────
+    // Phase 1: probe the endpoint without a payment header.
+    // If the endpoint is inactive it will return something other than 402
+    // (typically 503 / connection refused / timeout), so no payment is ever
+    // signed.  Only a genuine 402 response causes the payment to be signed and
+    // submitted (Phase 2).  We track that transition explicitly so that a
+    // network failure between Phase 1 and the confirmation of Phase 2 is
+    // treated as an unknown state rather than a safe no-op.
     const paymentPayload = { url: endpointUrl, method: 'GET' };
     const paymentHeaders = client.encodePaymentSignatureHeader(paymentPayload);
-    let response;
+
+    // Phase 1: probe without payment
+    let probeResponse;
     try {
-      response = await fetchWithTimeout(endpointUrl, { headers: paymentHeaders, keepalive: true });
+      probeResponse = await fetchWithTimeout(endpointUrl, { keepalive: true });
     } catch (err) {
-      logger.error(
+      // Endpoint unreachable — no payment was signed.
+      logger.warn(
         {
-          event: EVENT.PAYMENT_FAILED,
+          event: EVENT.ENDPOINT_INACTIVE,
           category,
           serviceId: selected.id,
           serviceName: selected.name,
@@ -412,10 +455,59 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
           err,
           taskDurationMs: Date.now() - taskStart,
         },
-        'Payment failed — network error'
+        'Endpoint inactive — no payment signed, skipping to next candidate'
       );
-      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
       failed.add(selected.id);
+      continue;
+    }
+
+    if (probeResponse.status !== 402) {
+      // Endpoint returned a non-402 status — it may be down, misconfigured, or
+      // temporarily unavailable.  No payment has been signed yet.
+      logger.warn(
+        {
+          event: EVENT.ENDPOINT_INACTIVE,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+          httpStatus: probeResponse.status,
+          taskDurationMs: Date.now() - taskStart,
+        },
+        'Endpoint inactive — unexpected status (not 402), no payment signed'
+      );
+      failed.add(selected.id);
+      continue;
+    }
+
+    // Phase 2: payment is about to be signed and submitted.  From this point on,
+    // any network failure puts this service into the UNKNOWN state: the
+    // transaction may or may not have reached the network.
+    let response;
+    try {
+      response = await fetchWithTimeout(endpointUrl, { headers: paymentHeaders, keepalive: true });
+    } catch (err) {
+      // The payment header was sent but we never received a confirmation.
+      // Mark this service as unknown so it is excluded from further retries
+      // within this run — a retry could sign and submit a second payment.
+      paymentUnknown.add(selected.id);
+      logger.error(
+        {
+          event: EVENT.PAYMENT_UNKNOWN,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+          err,
+          idempotencyKey,
+          taskDurationMs: Date.now() - taskStart,
+        },
+        'Payment state unknown — signed payment sent but no response received; will not retry this service'
+      );
+      // Record the unresolved outcome so the run summary captures it.  The
+      // idempotency key ensures the backend deduplicates if this call and a
+      // future retry of the entire run both reach the backend.
+      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id, idempotencyKey);
       continue;
     }
 
@@ -432,7 +524,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
         },
         'Payment failed — endpoint error'
       );
-      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
+      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id, idempotencyKey);
       // Payment settled but service returned bad data — penalise service reputation.
       await submitReputation(selected.id, false);
       failed.add(selected.id);
@@ -441,7 +533,7 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
 
     const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
     const scoreBefore = currentScore;
-    if (scoringEnabled) await recordOutcome(selected.price_usdc, true, selected.id);
+    if (scoringEnabled) await recordOutcome(selected.price_usdc, true, selected.id, idempotencyKey);
 
     logger.info(
       {
@@ -483,8 +575,34 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
   }
 
   const taskDurationMs = Date.now() - taskStart;
+  const hasUnknown = paymentUnknown.size > 0;
+
+  if (hasUnknown) {
+    logger.error(
+      {
+        event: EVENT.TASK_EXHAUSTED,
+        category,
+        servicesAttempted: failed.size + paymentUnknown.size,
+        servicesWithUnknownPayment: paymentUnknown.size,
+        unknownServiceIds: [...paymentUnknown],
+        taskDurationMs,
+      },
+      'Task ended with unknown payment state — check on-chain status before retrying'
+    );
+    return {
+      success: false,
+      priceUsdc: null,
+      servicesDiscovered: services.length,
+      servicesEligible: eligible.length,
+      attempts: failed.size + paymentUnknown.size,
+      durationMs: taskDurationMs,
+      failureReason: 'payment_state_unknown',
+      _unresolved: { serviceIds: [...paymentUnknown] },
+    };
+  }
+
   logger.error(
-    { event: EVENT.PAYMENT_FAILED, category, servicesAttempted: failed.size, taskDurationMs },
+    { event: EVENT.TASK_EXHAUSTED, category, servicesAttempted: failed.size, taskDurationMs },
     'All candidate services exhausted'
   );
   return {
@@ -581,7 +699,9 @@ export async function main() {
     } else {
       failCount++;
       if (result._unresolved) {
-        unresolvedPayments.push({ category, serviceId: result._unresolved.serviceId, priceUsdc: result.priceUsdc });
+        for (const serviceId of result._unresolved.serviceIds) {
+          unresolvedPayments.push({ category, serviceId, priceUsdc: result.priceUsdc });
+        }
       }
     }
   }

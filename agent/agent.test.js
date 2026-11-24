@@ -42,7 +42,7 @@ const mockHttpClient = {
   fetch: (...args) => global.fetch(...args),
 };
 
-const { runTask, main, EVENT } = await import('./agent.js');
+const { runTask, main, EVENT, buildPaymentIdempotencyKey } = await import('./agent.js');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -64,7 +64,16 @@ function makeResponse(overrides = {}) {
   };
 }
 
+/**
+ * Build a mock fetch for standard agent test scenarios.
+ *
+ * The endpoint URL is called twice per attempt: once as a probe (which must
+ * return 402 for the agent to sign a payment) and once with payment headers
+ * (which returns the final result).  `endpointOk` controls whether the
+ * second (signed) fetch succeeds.
+ */
 function buildFetch({ services = [MOCK_SERVICE], canSpend = true, endpointOk = true } = {}) {
+  const endpointCallCount = new Map();
   return vi.fn().mockImplementation((url) => {
     if (url.includes('/api/services')) {
       return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services }) }));
@@ -80,7 +89,14 @@ function buildFetch({ services = [MOCK_SERVICE], canSpend = true, endpointOk = t
     if (url.includes('/reputation')) {
       return Promise.resolve(makeResponse());
     }
-    // endpoint fetch
+    // Endpoint fetch: alternate probe (402) / signed fetch (result)
+    const count = (endpointCallCount.get(url) ?? 0) + 1;
+    endpointCallCount.set(url, count);
+    if (count % 2 === 1) {
+      // Odd calls = probe → always 402 (agent will sign and re-fetch)
+      return Promise.resolve(makeResponse({ ok: false, status: 402 }));
+    }
+    // Even calls = signed fetch → success or failure per endpointOk
     return endpointOk
       ? Promise.resolve(makeResponse())
       : Promise.resolve(makeResponse({ ok: false, status: 500 }));
@@ -220,6 +236,7 @@ describe('runTask — spend check blocked', () => {
   it('falls back to the next candidate if the first is blocked by spend check', async () => {
     const serviceA = { id: 1, name: 'Svc A', price_usdc: '0.002', endpoint: 'http://a', reputation: 100 };
     const serviceB = { id: 2, name: 'Svc B', price_usdc: '0.001', endpoint: 'http://b', reputation: 90 };
+    const endpointCalls = new Map();
 
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
@@ -238,9 +255,13 @@ describe('runTask — spend check blocked', () => {
       if (url.includes('/reputation')) {
         return Promise.resolve(makeResponse());
       }
-      // Endpoint fetch (should call serviceB endpoint http://b)
+      // serviceB endpoint: probe → 402, signed → 200
+      const count = (endpointCalls.get(url) ?? 0) + 1;
+      endpointCalls.set(url, count);
       if (url.includes('http://b')) {
-        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ result: 'ok' }) }));
+        return count === 1
+          ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+          : Promise.resolve(makeResponse({ json: () => Promise.resolve({ result: 'ok' }) }));
       }
       return Promise.resolve(makeResponse({ ok: false, status: 500 }));
     });
@@ -261,9 +282,22 @@ describe('runTask — spend check blocked', () => {
   });
 });
 
-describe('runTask — service error after payment', () => {
-  it('logs payment_failed with httpStatus when endpoint returns non-2xx', async () => {
-    global.fetch = buildFetch({ endpointOk: false });
+describe('runTask — service error after payment (402 → non-2xx)', () => {
+  it('logs payment_failed with httpStatus when endpoint returns non-2xx after 402 probe', async () => {
+    let endpointCalls = 0;
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/can-spend') || url.includes('/payment') || url.includes('/reputation')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      endpointCalls++;
+      // probe → 402, signed fetch → 500
+      return endpointCalls === 1
+        ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+        : Promise.resolve(makeResponse({ ok: false, status: 500 }));
+    });
 
     await runTask('weather', (ep) => ep, false, mockHttpClient);
 
@@ -277,28 +311,71 @@ describe('runTask — service error after payment', () => {
     });
   });
 
-  it('returns { success: false, priceUsdc: null } when endpoint fails', async () => {
-    global.fetch = buildFetch({ endpointOk: false });
-
-  });
-});
-
-describe('runTask — payment_failed on fetch throw', () => {
-  it('logs payment_failed with err field when httpClient throws', async () => {
+  it('returns { success: false, priceUsdc: null } when endpoint fails after payment', async () => {
+    let endpointCalls = 0;
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
       }
-      // Throw on the endpoint fetch to simulate network error
+      if (url.includes('/can-spend') || url.includes('/payment') || url.includes('/reputation')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      endpointCalls++;
+      return endpointCalls === 1
+        ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+        : Promise.resolve(makeResponse({ ok: false, status: 500 }));
+    });
+
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+    expect(result).toMatchObject({ success: false, priceUsdc: null });
+  });
+});
+
+describe('runTask — inactive endpoint (probe throws before 402)', () => {
+  it('logs endpoint_inactive as a warn (no payment was signed) when probe throws', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      // Throw on the endpoint probe to simulate network error before any 402
       return Promise.reject(new Error('Network error'));
     });
 
     await runTask('weather', (ep) => ep, false, mockHttpClient);
 
-    const call = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_FAILED);
-    expect(call).toBeDefined();
-    expect(call[0]).toMatchObject({ event: 'payment_failed', category: 'weather' });
-    expect(call[0].err).toBeInstanceOf(Error);
+    const warnCall = logWarn.mock.calls.find(([f]) => f?.event === EVENT.ENDPOINT_INACTIVE);
+    expect(warnCall).toBeDefined();
+    expect(warnCall[0]).toMatchObject({ event: 'endpoint_inactive', category: 'weather' });
+    expect(warnCall[0].err).toBeInstanceOf(Error);
+  });
+
+  it('logs endpoint_inactive when probe returns a non-402 status', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      return Promise.resolve(makeResponse({ ok: false, status: 503 }));
+    });
+
+    await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    const warnCall = logWarn.mock.calls.find(([f]) => f?.event === EVENT.ENDPOINT_INACTIVE);
+    expect(warnCall).toBeDefined();
+    expect(warnCall[0]).toMatchObject({ event: 'endpoint_inactive', httpStatus: 503 });
+  });
+
+  it('does not log payment_failed when the probe threw before 402', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      return Promise.reject(new Error('Network error'));
+    });
+
+    await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    const paymentFailedCall = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_FAILED);
+    expect(paymentFailedCall).toBeUndefined();
   });
 
   it('uses a timeout signal for fetches and recovers from a stalled endpoint', async () => {
@@ -326,14 +403,154 @@ describe('runTask — payment_failed on fetch throw', () => {
 
     expect(result).toMatchObject({ success: false, priceUsdc: null });
     expect(fetchSpy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    const paymentFailedCall = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_FAILED);
-    expect(paymentFailedCall).toBeDefined();
+    const inactiveCall = logWarn.mock.calls.find(([f]) => f?.event === EVENT.ENDPOINT_INACTIVE);
+    expect(inactiveCall).toBeDefined();
+  });
+});
+
+describe('runTask — payment_unknown (payment signed but no response)', () => {
+  it('logs payment_unknown when the signed fetch throws', async () => {
+    let callCount = 0;
+    global.fetch = vi.fn().mockImplementation((url, init = {}) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/payment') || url.includes('/can-spend') || url.includes('/reputation')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      callCount++;
+      // First call = probe → return 402.  Second call = signed fetch → throw.
+      if (callCount === 1) {
+        return Promise.resolve(makeResponse({ ok: false, status: 402 }));
+      }
+      return Promise.reject(new Error('connection reset'));
+    });
+
+    await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    const unknownCall = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_UNKNOWN);
+    expect(unknownCall).toBeDefined();
+    expect(unknownCall[0]).toMatchObject({
+      event: 'payment_unknown',
+      category: 'weather',
+      serviceId: MOCK_SERVICE.id,
+    });
+    expect(typeof unknownCall[0].idempotencyKey).toBe('string');
+    expect(unknownCall[0].idempotencyKey.length).toBeGreaterThan(0);
+  });
+
+  it('returns failureReason: payment_state_unknown with _unresolved service ids', async () => {
+    let callCount = 0;
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/payment') || url.includes('/can-spend') || url.includes('/reputation')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      callCount++;
+      if (callCount === 1) return Promise.resolve(makeResponse({ ok: false, status: 402 }));
+      return Promise.reject(new Error('connection reset'));
+    });
+
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    expect(result).toMatchObject({
+      success: false,
+      failureReason: 'payment_state_unknown',
+    });
+    expect(result._unresolved.serviceIds).toContain(MOCK_SERVICE.id);
+  });
+
+  it('does not retry a service that is in the unknown state', async () => {
+    const svcA = { id: 1, name: 'SvcA', price_usdc: '0.001', endpoint: 'https://a.example.com/ep', reputation: 100 };
+    const svcB = { id: 2, name: 'SvcB', price_usdc: '0.001', endpoint: 'https://b.example.com/ep', reputation: 90 };
+
+    let svcAEndpointCalls = 0;
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) }));
+      }
+      if (url.includes('/payment') || url.includes('/can-spend') || url.includes('/reputation')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      }
+      if (url === svcA.endpoint) {
+        svcAEndpointCalls++;
+        // First call = probe → 402, second call → throw (unknown state)
+        if (svcAEndpointCalls === 1) return Promise.resolve(makeResponse({ ok: false, status: 402 }));
+        return Promise.reject(new Error('connection reset'));
+      }
+      // svcB returns a non-402 so it's also not usable in this test
+      return Promise.resolve(makeResponse({ ok: false, status: 503 }));
+    });
+
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    // svcA should only have been contacted twice (probe + signed), never a third time
+    expect(svcAEndpointCalls).toBe(2);
+    expect(result.failureReason).toBe('payment_state_unknown');
+  });
+});
+
+describe('runTask — idempotency key', () => {
+  it('sends X-Idempotency-Key on the payment record call', async () => {
+    global.fetch = buildFetch();
+    // override endpoint to return 402 then success
+    let endpointCalls = 0;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url, init) => {
+      if (url === MOCK_SERVICE.endpoint || url === 'https://api.example.com/weather') {
+        endpointCalls++;
+        if (endpointCalls === 1) return Promise.resolve(makeResponse({ ok: false, status: 402 }));
+        return Promise.resolve(makeResponse());
+      }
+      return originalFetch(url, init);
+    });
+
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
+
+    const paymentCalls = global.fetch.mock.calls.filter(([url]) => url.includes('/payment'));
+    expect(paymentCalls.length).toBeGreaterThan(0);
+    const headers = paymentCalls[0][1]?.headers ?? {};
+    expect(headers['X-Idempotency-Key']).toBeDefined();
+    expect(typeof headers['X-Idempotency-Key']).toBe('string');
+    expect(headers['X-Idempotency-Key'].length).toBeGreaterThan(0);
+  });
+
+  it('buildPaymentIdempotencyKey returns a stable key for the same inputs', () => {
+    const key1 = buildPaymentIdempotencyKey(42, 1700000000000);
+    const key2 = buildPaymentIdempotencyKey(42, 1700000000000);
+    expect(key1).toBe(key2);
+  });
+
+  it('buildPaymentIdempotencyKey returns different keys for different services', () => {
+    const keyA = buildPaymentIdempotencyKey(1, 1700000000000);
+    const keyB = buildPaymentIdempotencyKey(2, 1700000000000);
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it('buildPaymentIdempotencyKey returns different keys for different run starts', () => {
+    const keyA = buildPaymentIdempotencyKey(1, 1700000000000);
+    const keyB = buildPaymentIdempotencyKey(1, 1700000000001);
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it('a retry of recordOutcome uses the same key — no second payment', async () => {
+    // This test verifies the invariant: calling recordOutcome twice with the
+    // same serviceId and taskStart produces the same X-Idempotency-Key both
+    // times, so the backend's idempotency store deduplicates the second call.
+    const taskStart = 1700000000000;
+    const serviceId = 7;
+    const key1 = buildPaymentIdempotencyKey(serviceId, taskStart);
+    const key2 = buildPaymentIdempotencyKey(serviceId, taskStart);
+    expect(key1).toBe(key2);
   });
 });
 
 describe('main — agent_complete summary', () => {
   it('logs agent_complete with all required summary fields', async () => {
     // ensureRegistered → already registered, score 100
+    const endpointCalls = new Map();
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/agents/') && !url.includes('/can-spend') && !url.includes('/payment')) {
         return Promise.resolve(makeResponse({
@@ -349,7 +566,12 @@ describe('main — agent_complete summary', () => {
       if (url.includes('/payment')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 105 }) }));
       }
-      return Promise.resolve(makeResponse());
+      // endpoint: probe → 402, signed → 200
+      const count = (endpointCalls.get(url) ?? 0) + 1;
+      endpointCalls.set(url, count);
+      return count === 1
+        ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+        : Promise.resolve(makeResponse());
     });
 
     await main();
@@ -432,16 +654,27 @@ describe('runTask — weighted fallback retry', () => {
     randomSpy.mockRestore();
   });
 
-  it('falls back to second service when first service returns non-2xx', async () => {
+  it('falls back to second service when first service endpoint returns 402 then non-2xx', async () => {
+    const endpointCalls = new Map();
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) }));
       }
       if (url.includes('/reputation')) return Promise.resolve(makeResponse());
+      if (url.includes('/payment')) return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      // Probe/signed alternation per URL
+      const count = (endpointCalls.get(url) ?? 0) + 1;
+      endpointCalls.set(url, count);
       if (url === svcA.endpoint) {
-        return Promise.resolve(makeResponse({ ok: false, status: 503 }));
+        // probe → 402, signed → 503 (payment settled but bad response)
+        return count === 1
+          ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+          : Promise.resolve(makeResponse({ ok: false, status: 503 }));
       }
-      return Promise.resolve(makeResponse()); // svcB endpoint succeeds
+      // svcB: probe → 402, signed → 200
+      return count === 1
+        ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+        : Promise.resolve(makeResponse());
     });
 
     const result = await runTask('weather', (ep) => ep, false);
@@ -449,15 +682,23 @@ describe('runTask — weighted fallback retry', () => {
   });
 
   it('logs payment_failed for each failing service and service_selected for each attempt', async () => {
+    const endpointCalls = new Map();
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) }));
       }
       if (url.includes('/reputation')) return Promise.resolve(makeResponse());
+      if (url.includes('/payment')) return Promise.resolve(makeResponse({ json: () => Promise.resolve({ newScore: 110 }) }));
+      const count = (endpointCalls.get(url) ?? 0) + 1;
+      endpointCalls.set(url, count);
       if (url === svcA.endpoint) {
-        return Promise.resolve(makeResponse({ ok: false, status: 503 }));
+        return count === 1
+          ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+          : Promise.resolve(makeResponse({ ok: false, status: 503 }));
       }
-      return Promise.resolve(makeResponse());
+      return count === 1
+        ? Promise.resolve(makeResponse({ ok: false, status: 402 }))
+        : Promise.resolve(makeResponse());
     });
 
     await runTask('weather', (ep) => ep, false);
@@ -489,7 +730,7 @@ describe('runTask — weighted fallback retry', () => {
     expect(body).toMatchObject({ positive: false });
   });
 
-  it('does not submit negative reputation vote when x402 payment itself throws', async () => {
+  it('does not submit negative reputation vote when endpoint probe throws (no payment signed)', async () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       if (url.includes('/api/services')) {
         return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
