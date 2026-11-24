@@ -89,6 +89,13 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 | Transfer admin | `("agents", "admin_transferred", new_admin)` | `(caller, new_admin)` |
 | Initialize | `("agents", "initialized", registry_contract)` | `(registry_contract)` |
 
+`update_policy` requires authentication from the agent owner. `record_payment`
+requires an authenticated caller that matches the service provider returned by
+the configured registry; a mismatch reverts before payment counters, score, or
+daily spend are changed. Successful payments on the first ledger after the
+daily window reset start at zero, and additional successful payments in that
+ledger accumulate against the new window.
+
 Indexers, activity feeds, and dashboards can reconstruct the complete score history of any agent
 purely from chain events by filtering for topics matching `("agents", *, agent_address)`.
 

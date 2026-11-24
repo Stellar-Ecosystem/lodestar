@@ -1300,9 +1300,11 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
 
         let policy_after = client.get_policy(&agent_addr);
-        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+        assert!(
+            policy_after.is_some(),
+            "policy entry must remain readable after TTL boundary"
+        );
     }
-
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
@@ -1384,8 +1386,11 @@ mod test {
         let impostor = Address::generate(&env);
 
         assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            client
+                .try_transfer_admin(&new_admin, &impostor)
+                .unwrap_err()
+                .unwrap(),
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -2220,6 +2225,140 @@ mod test {
                 .persistent()
                 .extend_ttl(&policy_key, TEST_MAX_TTL, TEST_MAX_TTL);
         });
+    }
+
+    #[test]
+    fn test_policy_cannot_be_changed_by_non_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        let before = client.get_policy(&agent_addr).unwrap();
+
+        assert!(client
+            .try_update_policy(&agent_addr, &1i128, &2i128, &vec![&env], &999, &impostor,)
+            .is_err());
+
+        let after = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(after.max_per_tx_stroops, before.max_per_tx_stroops);
+        assert_eq!(after.max_per_day_stroops, before.max_per_day_stroops);
+        assert_eq!(after.min_score_to_earn, before.min_score_to_earn);
+        assert_eq!(client.get_agent(&agent_addr).unwrap().score, INITIAL_SCORE);
+    }
+
+    #[test]
+    fn test_provider_payment_rollover_accumulates_same_ledger_payments() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let start_ledger = 100u32;
+        env.ledger().with_mut(|li| {
+            li.sequence_number = start_ledger;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        client.update_policy(&agent_addr, &1_000i128, &1_000i128, &vec![&env], &0, &owner);
+
+        let service_id = 42u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+        seed_daily_spent(&env, &contract_id, &agent_addr, &owner, 900, 1_000);
+
+        let new_day_ledger = start_ledger + DAY_LEDGERS as u32;
+        env.ledger().with_mut(|li| {
+            li.sequence_number = new_day_ledger;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        client.record_payment(&agent_addr, &service_id, &100i128, &true, &provider);
+        client.record_payment(&agent_addr, &service_id, &200i128, &true, &provider);
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.daily_spent_stroops, 300);
+        assert_eq!(policy.last_reset_ledger, new_day_ledger as u64);
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.total_payments, 2);
+        assert_eq!(agent.successful_payments, 2);
+        assert_eq!(agent.score, INITIAL_SCORE + 2 * SCORE_SUCCESS);
+    }
+
+    #[test]
+    fn test_unregistered_provider_cannot_change_score_or_rollover_spend() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let start_ledger = 100u32;
+        env.ledger().with_mut(|li| {
+            li.sequence_number = start_ledger;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 42u64;
+        let provider = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+        seed_daily_spent(&env, &contract_id, &agent_addr, &owner, 900, 1_000);
+
+        let new_day_ledger = start_ledger + DAY_LEDGERS as u32;
+        env.ledger().with_mut(|li| {
+            li.sequence_number = new_day_ledger;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &service_id, &100i128, &true, &impostor),
+            Err(Ok(AgentError::Unauthorized))
+        );
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE);
+        assert_eq!(agent.total_payments, 0);
+        let policy_key = DataKey::Policy(agent_addr);
+        let policy: SpendingPolicy = env.as_contract(&contract_id, || {
+            env.storage().persistent().get(&policy_key).unwrap()
+        });
+        assert_eq!(policy.daily_spent_stroops, 900);
+        assert_eq!(policy.last_reset_ledger, start_ledger as u64);
+    }
+
+    #[test]
+    fn test_record_payment_requires_caller_authentication() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        let service_id = 42u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        env.set_auths(&[]);
+        assert!(client
+            .try_record_payment(&agent_addr, &service_id, &100i128, &true, &provider)
+            .is_err());
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE);
+        assert_eq!(agent.total_payments, 0);
     }
 
     #[test]
