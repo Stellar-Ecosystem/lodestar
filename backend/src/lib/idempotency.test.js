@@ -130,3 +130,44 @@ describe('_reset', () => {
     expect(idempotency.getEntry('key-1')).toBeNull();
   });
 });
+
+// ── #1259 / LDS-2026-172 ─────────────────────────────────────────────────────
+// markFailed must keep the key replayable even when the entry was purged while
+// the payment was in-flight, so a retry cannot spend extra allowance or corrupt
+// the agent score by re-executing the chain call.
+
+describe('markFailed — replay safety on entry expiry', () => {
+  it('upserts a failed entry when the key was purged mid-flight', () => {
+    const result = { httpStatus: 500, error: 'chain error', code: 'RECORD_ERROR' };
+
+    // Key never marked pending — simulates purge between markPending and markFailed
+    idempotency.markFailed('purged-key', result);
+
+    const entry = idempotency.getEntry('purged-key');
+    expect(entry).not.toBeNull();
+    expect(entry.status).toBe('failed');
+    expect(entry.result).toEqual(result);
+  });
+
+  it('a retry after failure replays the error, not a fresh chain call', () => {
+    const result = { httpStatus: 400, error: 'Insufficient allowance', code: 'INSUFFICIENT_ALLOWANCE' };
+
+    idempotency.markPending('pay-key');
+    idempotency.markFailed('pay-key', result);
+
+    // Simulate a retry: getEntry should return the failed record
+    const entry = idempotency.getEntry('pay-key');
+    expect(entry).not.toBeNull();
+    expect(entry.status).toBe('failed');
+    expect(entry.result.httpStatus).toBe(400);
+    expect(entry.result.code).toBe('INSUFFICIENT_ALLOWANCE');
+  });
+
+  it('upserted failure entry expires normally after TTL', () => {
+    const result = { httpStatus: 500, error: 'err', code: 'ERR' };
+    idempotency.markFailed('expire-fail-key', result, 5000);
+
+    vi.advanceTimersByTime(5001);
+    expect(idempotency.getEntry('expire-fail-key')).toBeNull();
+  });
+});

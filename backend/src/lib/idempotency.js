@@ -124,14 +124,28 @@ export function markComplete(key, result) {
 /**
  * Resolve a pending key with a failure result so retries get the same error.
  *
+ * If the entry has already been purged (e.g. TTL expired mid-flight), this
+ * upserts a fresh 'failed' entry so a concurrent or subsequent retry still
+ * replays the error instead of re-hitting the chain and spending extra
+ * allowance (closes #1259 / LDS-2026-172).
+ *
  * @param {string} key
  * @param {{ httpStatus: number, error: string, code: string }} result
+ * @param {number} [ttlMs] Lifetime of the failure record. Defaults to 24 h.
  */
-export function markFailed(key, result) {
+export function markFailed(key, result, ttlMs = TTL_MS) {
   const entry = store.get(key);
   if (entry) {
     entry.status = 'failed';
     entry.result = result;
+  } else {
+    // Entry was purged while the request was in-flight; create it so the
+    // next retry can replay the same error without re-executing the payment.
+    store.set(key, {
+      status: 'failed',
+      result,
+      expiresAt: Date.now() + ttlMs,
+    });
   }
 }
 
