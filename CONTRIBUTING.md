@@ -12,7 +12,7 @@ Docker Desktop (or Docker Engine with the Compose plugin) is the only prerequisi
 for the web application stack. From the repository root, run:
 
 ```bash
-docker compose up --build
+docker compose up --build  kk
 ```
 
 The frontend is available at http://localhost:3000 and the backend at
