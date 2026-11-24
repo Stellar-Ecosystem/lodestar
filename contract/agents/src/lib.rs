@@ -564,7 +564,25 @@ impl LodestarAgents {
         caller.require_auth();
 
         if amount_stroops <= 0 {
+pub fn record_payment(
+        env: Env,
+        agent_address: Address,
+        service_id: u64,
+        amount_stroops: i128,
+        success: bool,
+        caller: Address,
+        payment_id: BytesN<32>,
+    ) -> Result<(), AgentError> {
+        caller.require_auth();
+
+        if amount_stroops <= 0 {
             return Err(AgentError::InvalidAmount);
+        }
+
+        // Replay boundary: one score/volume/counter update per payment_id.
+        let payment_key = DataKey::Payment(payment_id.clone());
+        if env.storage().persistent().has(&payment_key) {
+            return Err(AgentError::PaymentAlreadyRecorded);
         }
 
         // Cross-contract check: caller must be the service's registered provider
@@ -643,6 +661,11 @@ impl LodestarAgents {
             .persistent()
             .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
 
+        env.storage().persistent().set(&payment_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&payment_key, MAX_TTL, MAX_TTL);
+
         env.events().publish(
             (
                 Symbol::new(&env, "agents"),
@@ -659,7 +682,7 @@ impl LodestarAgents {
             ),
         );
         Ok(())
-    }
+            }
 
     // Flag an agent (admin-only)
     //
