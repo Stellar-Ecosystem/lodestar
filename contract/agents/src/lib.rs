@@ -1300,9 +1300,11 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
 
         let policy_after = client.get_policy(&agent_addr);
-        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+        assert!(
+            policy_after.is_some(),
+            "policy entry must remain readable after TTL boundary"
+        );
     }
-
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
@@ -1384,8 +1386,11 @@ mod test {
         let impostor = Address::generate(&env);
 
         assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            client
+                .try_transfer_admin(&new_admin, &impostor)
+                .unwrap_err()
+                .unwrap(),
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -2850,6 +2855,68 @@ mod test {
                 INITIAL_SCORE + SCORE_FAILURE,
                 provider
             )
+        );
+    }
+
+    #[test]
+    fn test_only_registered_provider_can_record_payment_outcome() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        let service_id = 42u64;
+        let provider = Address::generate(&env);
+        let unrelated_caller = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        client.record_payment(&agent_addr, &service_id, &100i128, &true, &provider);
+        let authorized_events = env.events().all();
+        assert_eq!(authorized_events.len(), 1);
+        assert_eq!(
+            authorized_events.get(0).unwrap().1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "payment"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+
+        let authorized_agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(authorized_agent.score, INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(authorized_agent.total_payments, 1);
+        assert_eq!(authorized_agent.successful_payments, 1);
+        assert_eq!(authorized_agent.failed_payments, 0);
+        assert_eq!(authorized_agent.total_volume_stroops, 100);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            100
+        );
+
+        assert_eq!(
+            client.try_record_payment(
+                &agent_addr,
+                &service_id,
+                &200i128,
+                &false,
+                &unrelated_caller,
+            ),
+            Err(Ok(AgentError::Unauthorized))
+        );
+        assert_eq!(env.events().all().len(), 0);
+
+        let after_rejection = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(after_rejection.score, authorized_agent.score);
+        assert_eq!(after_rejection.total_payments, 1);
+        assert_eq!(after_rejection.successful_payments, 1);
+        assert_eq!(after_rejection.failed_payments, 0);
+        assert_eq!(after_rejection.total_volume_stroops, 100);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            100
         );
     }
 
