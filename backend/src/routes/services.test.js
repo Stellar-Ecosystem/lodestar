@@ -34,6 +34,14 @@ vi.mock('../config.js', () => ({
     nodeEnv: 'test',
     port: 3001,
     logLevel: 'silent',
+    rateLimit: {
+      windowMs: 60_000,
+      max: 20,
+      payment: { windowMs: 60_000, max: 10 },
+      // Generous here — the ceiling itself is asserted in
+      // services.rateLimit.test.js.
+      weather: { windowMs: 60_000, max: 100 },
+    },
   },
 }));
 
