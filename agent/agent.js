@@ -104,16 +104,17 @@ async function fetchWithTimeout(resource, init = {}) {
 // ── Canonical event names ─────────────────────────────────────────────────────
 
 export const EVENT = {
-  AGENT_START:         'agent_start',
-  AGENT_REGISTERED:    'agent_registered',
-  TASK_START:          'task_start',
-  SERVICE_SELECTED:    'service_selected',
-  SPEND_CHECK_PASSED:  'spend_check_passed',
-  SPEND_CHECK_BLOCKED: 'spend_check_blocked',
-  PAYMENT_SUCCESS:     'payment_success',
-  PAYMENT_FAILED:      'payment_failed',
-  SCORE_UPDATED:       'score_updated',
-  AGENT_COMPLETE:      'agent_complete',
+  AGENT_START:          'agent_start',
+  AGENT_REGISTERED:     'agent_registered',
+  TASK_START:           'task_start',
+  SERVICE_SELECTED:     'service_selected',
+  SPEND_CHECK_PASSED:   'spend_check_passed',
+  SPEND_CHECK_BLOCKED:  'spend_check_blocked',
+  PAYMENT_SUCCESS:      'payment_success',
+  PAYMENT_FAILED:       'payment_failed',
+  PAYMENT_SETTLEMENT:   'payment_settlement',
+  SCORE_UPDATED:        'score_updated',
+  AGENT_COMPLETE:       'agent_complete',
 };
 
 // ── Credit scoring helpers ────────────────────────────────────────────────────
@@ -220,6 +221,34 @@ async function recordOutcome(amountUsdc, success, serviceId) {
       logger.info(
         { event: EVENT.SCORE_UPDATED, agentAddress: AGENT_ADDRESS, scoreBefore, scoreAfter: currentScore },
         'Score updated'
+      );
+      // Trace the settlement so one run can be followed from discovery to result
+      // (closes #1276 / LDS-2026-189). serviceId is the only payment reference
+      // logged — no raw tx hashes or amounts that could identify live funds.
+      logger.info(
+        {
+          event: EVENT.PAYMENT_SETTLEMENT,
+          agentAddress: AGENT_ADDRESS,
+          serviceId,
+          outcome: success ? 'success' : 'failure',
+          httpStatus: res.status,
+          settled: true,
+        },
+        'Payment settlement recorded'
+      );
+    } else {
+      // Settlement POST reached the backend but was rejected — log the loss so
+      // operators can correlate the missing score update with this attempt.
+      logger.warn(
+        {
+          event: EVENT.PAYMENT_SETTLEMENT,
+          agentAddress: AGENT_ADDRESS,
+          serviceId,
+          outcome: success ? 'success' : 'failure',
+          httpStatus: res.status,
+          settled: false,
+        },
+        'Payment settlement response lost — backend rejected outcome'
       );
     }
   } catch {

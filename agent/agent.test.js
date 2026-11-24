@@ -586,3 +586,63 @@ describe('graceful shutdown', () => {
     expect(initCall[0]).toHaveProperty('signal', 'SIGTERM');
   });
 });
+
+// ── #1276 / LDS-2026-189 ─────────────────────────────────────────────────────
+// recordOutcome must log a payment_settlement event with a redacted service
+// reference and httpStatus after each settlement attempt so one run can be
+// traced from discovery to verified result.
+
+describe('runTask — payment_settlement traceability', () => {
+  it('logs payment_settlement with settled=true on a successful outcome record', async () => {
+    global.fetch = buildFetch({ endpointOk: true });
+
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
+
+    const settlementCall = logInfo.mock.calls.find(
+      ([f]) => f?.event === EVENT.PAYMENT_SETTLEMENT
+    );
+    expect(settlementCall).toBeDefined();
+    expect(settlementCall[0]).toMatchObject({
+      event: EVENT.PAYMENT_SETTLEMENT,
+      serviceId: MOCK_SERVICE.id,
+      outcome: 'success',
+      httpStatus: 200,
+      settled: true,
+    });
+    // agentAddress must be present but only the identifier — no raw tx or amount
+    expect(settlementCall[0]).toHaveProperty('agentAddress');
+    expect(settlementCall[0]).not.toHaveProperty('amountUsdc');
+  });
+
+  it('logs payment_settlement with settled=false when the backend rejects the outcome', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [MOCK_SERVICE] }) }));
+      }
+      if (url.includes('/can-spend')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ allowed: true, reason: 'OK' }) }));
+      }
+      if (url.includes('/payment')) {
+        // Backend rejects the settlement
+        return Promise.resolve(makeResponse({ ok: false, status: 422 }));
+      }
+      if (url.includes('/reputation')) {
+        return Promise.resolve(makeResponse());
+      }
+      return Promise.resolve(makeResponse());
+    });
+
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
+
+    const settlementCall = logWarn.mock.calls.find(
+      ([f]) => f?.event === EVENT.PAYMENT_SETTLEMENT
+    );
+    expect(settlementCall).toBeDefined();
+    expect(settlementCall[0]).toMatchObject({
+      event: EVENT.PAYMENT_SETTLEMENT,
+      serviceId: MOCK_SERVICE.id,
+      httpStatus: 422,
+      settled: false,
+    });
+  });
+});
