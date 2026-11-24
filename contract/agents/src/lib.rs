@@ -1,10 +1,9 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, Env,
-    IntoVal, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, BytesN,
+    Env, IntoVal, String, Symbol, Vec,
 };
-
 // #570: production TTL — deliberate value, not the test-inflated one.
 const MAX_TTL: u32 = 100_000_000;
 #[cfg(not(test))]
@@ -33,6 +32,7 @@ pub enum AgentError {
     PolicyNotFound = 8,
     NotInitialized = 9,
     AlreadyInitialized = 10,
+    PaymentAlreadyRecorded = 11,
 }
 
 #[contracttype]
@@ -44,6 +44,7 @@ pub enum DataKey {
     Policy(Address),
     RegistryContract,
     Admin,
+    PaymentAlreadyRecorded = 11,
 }
 
 #[contracttype]
