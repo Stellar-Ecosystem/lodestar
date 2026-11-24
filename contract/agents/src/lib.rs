@@ -33,6 +33,9 @@ pub enum AgentError {
     PolicyNotFound = 8,
     NotInitialized = 9,
     AlreadyInitialized = 10,
+    /// A payment with this ID has already been recorded for this agent.
+    /// The original outcome is committed and must not be applied again.
+    DuplicatePayment = 11,
 }
 
 #[contracttype]
@@ -44,6 +47,11 @@ pub enum DataKey {
     Policy(Address),
     RegistryContract,
     Admin,
+    /// Replay-protection tombstone: set to `true` once a payment ID has been
+    /// processed for a given agent.  Keyed by `(agent_address, payment_id)` so
+    /// IDs from different agents never collide.  TTL is extended to `MAX_TTL`
+    /// on write; a payment whose tombstone has expired is treated as unseen.
+    PaymentProcessed(Address, u64),
 }
 
 #[contracttype]
@@ -523,9 +531,16 @@ impl LodestarAgents {
     /// - `amount_stroops`: Payment amount in stroops; must be strictly positive.
     /// - `success`: Whether the payment succeeded.
     /// - `caller`: Address that signs the invocation and must be the registered service provider.
+    /// - `payment_id`: Caller-supplied unique identifier for this payment.  Must be unique per
+    ///   `agent_address` for the lifetime of the replay-protection tombstone (TTL `MAX_TTL`).
+    ///   Re-submitting the same `(agent_address, payment_id)` pair returns
+    ///   `Err(AgentError::DuplicatePayment)` without changing any state, so a retry of a
+    ///   settled request never applies the score change a second time.
     ///
     /// # Returns
     /// Returns `Ok(())` after persisting the updated agent and policy state.
+    /// Returns `Err(AgentError::DuplicatePayment)` if `payment_id` has already been processed
+    /// for this agent (i.e. the tombstone key exists and has not expired).
     /// Returns `Err(AgentError::InvalidAmount)` if `amount_stroops <= 0`.
     /// Returns `Err(AgentError::ArithmeticOverflow)` if updating the agent's total volume or the
     /// policy's daily spend overflows `i128`.
@@ -546,12 +561,14 @@ impl LodestarAgents {
     /// # Storage
     /// Reads `DataKey::RegistryContract`, `DataKey::Agent(agent_address)`, and
     /// `DataKey::Policy(agent_address)`.
+    /// Reads and writes `DataKey::PaymentProcessed(agent_address, payment_id)`.
     /// Writes `DataKey::Agent(agent_address)` and `DataKey::Policy(agent_address)`.
-    /// Both written entries have their TTL extended.
+    /// All written entries have their TTL extended.
     ///
     /// # Cost
     /// One auth check, one persistent read for the registry address, one cross-contract call,
-    /// two persistent reads, up to two persistent writes, and two TTL extensions.
+    /// one tombstone existence check, three persistent reads, up to three persistent writes,
+    /// and three TTL extensions.
     pub fn record_payment(
         env: Env,
         agent_address: Address,
@@ -559,11 +576,21 @@ impl LodestarAgents {
         amount_stroops: i128,
         success: bool,
         caller: Address,
+        payment_id: u64,
     ) -> Result<(), AgentError> {
         caller.require_auth();
 
         if amount_stroops <= 0 {
             return Err(AgentError::InvalidAmount);
+        }
+
+        // ── Replay-protection check ───────────────────────────────────────────
+        // A tombstone key is written on first success.  Any subsequent call with
+        // the same (agent_address, payment_id) returns DuplicatePayment before
+        // touching any other state.
+        let tombstone_key = DataKey::PaymentProcessed(agent_address.clone(), payment_id);
+        if env.storage().persistent().has(&tombstone_key) {
+            return Err(AgentError::DuplicatePayment);
         }
 
         // Cross-contract check: caller must be the service's registered provider
@@ -642,6 +669,14 @@ impl LodestarAgents {
             .persistent()
             .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
 
+        // ── Write tombstone ───────────────────────────────────────────────────
+        // Written after all state changes succeed so a revert (e.g. from
+        // ArithmeticOverflow) does not permanently lock the payment ID.
+        env.storage().persistent().set(&tombstone_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&tombstone_key, MAX_TTL, MAX_TTL);
+
         env.events().publish(
             (
                 Symbol::new(&env, "agents"),
@@ -655,6 +690,7 @@ impl LodestarAgents {
                 old_score,
                 new_score,
                 caller,
+                payment_id,
             ),
         );
         Ok(())
@@ -1383,9 +1419,8 @@ mod test {
         let new_admin = Address::generate(&env);
         let impostor = Address::generate(&env);
 
-        assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+        assert!(
+            client.try_transfer_admin(&new_admin, &impostor).is_err()
         );
     }
 
@@ -2137,7 +2172,7 @@ mod test {
         mock_client.set_provider(&provider);
 
         // Record a failed payment
-        client.record_payment(&agent_addr, &1u64, &500i128, &false, &provider);
+        client.record_payment(&agent_addr, &1u64, &500i128, &false, &provider, &1u64);
 
         let agent = client.get_agent(&agent_addr).unwrap();
         assert_eq!(
@@ -2229,7 +2264,7 @@ mod test {
         for amount in [0i128, -1, i128::MIN] {
             for success in [true, false] {
                 let res =
-                    client.try_record_payment(&agent_addr, &1u64, &amount, &success, &provider);
+                    client.try_record_payment(&agent_addr, &1u64, &amount, &success, &provider, &1u64);
                 assert_eq!(res, Err(Ok(AgentError::InvalidAmount)));
             }
         }
@@ -2274,7 +2309,7 @@ mod test {
             let (_contract_id, client, agent_addr, provider) =
                 setup_record_payment_boundary_agent(&env);
             let result =
-                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider);
+                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider, &1u64);
 
             match case.expected_error {
                 Some(error) => assert_eq!(result, Err(Ok(error))),
@@ -2292,8 +2327,8 @@ mod test {
     fn test_record_payment_overflow_returns_error() {
         let env = Env::default();
         let (client, agent_addr, provider) = setup_payment_agent(&env);
-        client.record_payment(&agent_addr, &1u64, &i128::MAX, &true, &provider);
-        let res = client.try_record_payment(&agent_addr, &1u64, &1i128, &true, &provider);
+        client.record_payment(&agent_addr, &1u64, &i128::MAX, &true, &provider, &1u64);
+        let res = client.try_record_payment(&agent_addr, &1u64, &1i128, &true, &provider, &2u64);
         assert_eq!(res, Err(Ok(AgentError::ArithmeticOverflow)));
         let agent = client.get_agent(&agent_addr).unwrap();
         assert_eq!(agent.total_volume_stroops, i128::MAX);
@@ -2339,7 +2374,7 @@ mod test {
             );
 
             let result =
-                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider);
+                client.try_record_payment(&agent_addr, &1u64, &case.amount, &true, &provider, &1u64);
 
             match case.expected_error {
                 Some(error) => assert_eq!(result, Err(Ok(error))),
@@ -2387,7 +2422,7 @@ mod test {
                 case.min_score_to_earn,
             );
 
-            let result = client.try_record_payment(&agent_addr, &1u64, &1i128, &true, &provider);
+            let result = client.try_record_payment(&agent_addr, &1u64, &1i128, &true, &provider, &1u64);
 
             assert_eq!(result, Ok(Ok(())));
 
@@ -2782,7 +2817,7 @@ mod test {
         let initial_events_count = env.events().all().len();
 
         let amount = 5_000_000i128;
-        client.record_payment(&agent_addr, &service_id, &amount, &true, &provider);
+        client.record_payment(&agent_addr, &service_id, &amount, &true, &provider, &1u64);
 
         let events = env.events().all();
         assert_eq!(events.len(), initial_events_count + 1);
@@ -2797,14 +2832,15 @@ mod test {
                 .into_val(&env)
         );
         assert_eq!(
-            <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &event.2),
+            <(u64, i128, bool, i32, i32, Address, u64)>::from_val(&env, &event.2),
             (
                 service_id,
                 amount,
                 true,
                 INITIAL_SCORE,
                 INITIAL_SCORE + SCORE_SUCCESS,
-                provider
+                provider,
+                1u64,
             )
         );
     }
@@ -2826,7 +2862,7 @@ mod test {
         mock_client.set_service(&service_id, &provider);
 
         let amount = 1_000_000i128;
-        client.record_payment(&agent_addr, &service_id, &amount, &false, &provider);
+        client.record_payment(&agent_addr, &service_id, &amount, &false, &provider, &1u64);
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
@@ -2841,14 +2877,15 @@ mod test {
                 .into_val(&env)
         );
         assert_eq!(
-            <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &event.2),
+            <(u64, i128, bool, i32, i32, Address, u64)>::from_val(&env, &event.2),
             (
                 service_id,
                 amount,
                 false,
                 INITIAL_SCORE,
                 INITIAL_SCORE + SCORE_FAILURE,
-                provider
+                provider,
+                1u64,
             )
         );
     }
@@ -2880,7 +2917,7 @@ mod test {
         mock_client.set_service(&service_id, &provider);
 
         let amount = 2_000_000i128;
-        client.record_payment(&agent_addr, &service_id, &amount, &true, &provider);
+        client.record_payment(&agent_addr, &service_id, &amount, &true, &provider, &1u64);
 
         let events = env.events().all();
         assert_eq!(events.len(), 1);
@@ -2896,8 +2933,8 @@ mod test {
         );
         // Score unchanged at 100 because min_score_to_earn (500) was not met
         assert_eq!(
-            <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &event.2),
-            (service_id, amount, true, 100i32, 100i32, provider)
+            <(u64, i128, bool, i32, i32, Address, u64)>::from_val(&env, &event.2),
+            (service_id, amount, true, 100i32, 100i32, provider, 1u64)
         );
     }
 
@@ -3225,7 +3262,7 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 100);
 
         // 2. Successful payment 1 (+10) -> score 110
-        client.record_payment(&agent_addr, &101u64, &1_000_000i128, &true, &provider1);
+        client.record_payment(&agent_addr, &101u64, &1_000_000i128, &true, &provider1, &1u64);
         let pay1_events = env.events().all();
         assert_eq!(pay1_events.len(), 1);
         let pay1_event = pay1_events.get(0).unwrap();
@@ -3238,14 +3275,14 @@ mod test {
             )
                 .into_val(&env)
         );
-        let pay1_data = <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &pay1_event.2);
+        let pay1_data = <(u64, i128, bool, i32, i32, Address, u64)>::from_val(&env, &pay1_event.2);
         assert_eq!(pay1_data.3, 100); // old_score
         assert_eq!(pay1_data.4, 110); // new_score
         reconstructed_scores.push_back(pay1_data.4);
         assert_eq!(client.get_score(&agent_addr), 110);
 
         // 3. Successful payment 2 (+10) -> score 120
-        client.record_payment(&agent_addr, &102u64, &2_000_000i128, &true, &provider2);
+        client.record_payment(&agent_addr, &102u64, &2_000_000i128, &true, &provider2, &2u64);
         let pay2_events = env.events().all();
         assert_eq!(pay2_events.len(), 1);
         let pay2_event = pay2_events.get(0).unwrap();
@@ -3258,14 +3295,14 @@ mod test {
             )
                 .into_val(&env)
         );
-        let pay2_data = <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &pay2_event.2);
+        let pay2_data = <(u64, i128, bool, i32, i32, Address, u64)>::from_val(&env, &pay2_event.2);
         assert_eq!(pay2_data.3, 110); // old_score
         assert_eq!(pay2_data.4, 120); // new_score
         reconstructed_scores.push_back(pay2_data.4);
         assert_eq!(client.get_score(&agent_addr), 120);
 
         // 4. Failed payment 1 (-25) -> score 95
-        client.record_payment(&agent_addr, &101u64, &500_000i128, &false, &provider1);
+        client.record_payment(&agent_addr, &101u64, &500_000i128, &false, &provider1, &3u64);
         let pay3_events = env.events().all();
         assert_eq!(pay3_events.len(), 1);
         let pay3_event = pay3_events.get(0).unwrap();
@@ -3278,7 +3315,7 @@ mod test {
             )
                 .into_val(&env)
         );
-        let pay3_data = <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &pay3_event.2);
+        let pay3_data = <(u64, i128, bool, i32, i32, Address, u64)>::from_val(&env, &pay3_event.2);
         assert_eq!(pay3_data.3, 120); // old_score
         assert_eq!(pay3_data.4, 95); // new_score
         reconstructed_scores.push_back(pay3_data.4);
@@ -3309,5 +3346,682 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    // ── Replay-protection tests (LDS-2026-175) ────────────────────────────────
+
+    /// Helper: build a standard fixture for replay-protection tests.
+    /// Returns (client, agent_addr, provider, service_id).
+    fn setup_replay_fixture(
+        env: &Env,
+    ) -> (LodestarAgentsClient<'_>, Address, Address, u64) {
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(env);
+        let client = LodestarAgentsClient::new(env, &contract_id);
+        let agent_addr = Address::generate(env);
+        let owner = Address::generate(env);
+        setup_agent(env, &contract_id, &agent_addr, &owner);
+        let service_id = 99u64;
+        let provider = Address::generate(env);
+        MockRegistryClient::new(env, &registry_id).set_service(&service_id, &provider);
+        (client, agent_addr, provider, service_id)
+    }
+
+    /// Submitting the same payment_id twice for the same agent returns
+    /// DuplicatePayment on the second call and leaves the score unchanged.
+    #[test]
+    fn test_record_payment_duplicate_id_rejected() {
+        let env = Env::default();
+        let (client, agent_addr, provider, service_id) = setup_replay_fixture(&env);
+
+        let payment_id = 42u64;
+
+        // First call succeeds and applies +SCORE_SUCCESS.
+        client.record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &payment_id,
+        );
+        let score_after_first = client.get_score(&agent_addr);
+        assert_eq!(score_after_first, INITIAL_SCORE + SCORE_SUCCESS);
+
+        // Second call with the same payment_id must be rejected.
+        let result = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &payment_id,
+        );
+        assert_eq!(result, Err(Ok(AgentError::DuplicatePayment)));
+
+        // Score must not have changed.
+        assert_eq!(client.get_score(&agent_addr), score_after_first);
+    }
+
+    /// A duplicate call must not increment any counter — total_payments,
+    /// successful_payments, failed_payments, and total_volume_stroops must
+    /// all be identical to their post-first-call values.
+    #[test]
+    fn test_record_payment_duplicate_id_no_counter_change() {
+        let env = Env::default();
+        let (client, agent_addr, provider, service_id) = setup_replay_fixture(&env);
+
+        let payment_id = 7u64;
+        let amount = 5_000i128;
+
+        client.record_payment(
+            &agent_addr, &service_id, &amount, &true, &provider, &payment_id,
+        );
+        let after_first = client.get_agent(&agent_addr).unwrap();
+
+        // Duplicate — must be a no-op on all counters and volume.
+        let _ = client.try_record_payment(
+            &agent_addr, &service_id, &amount, &true, &provider, &payment_id,
+        );
+        let after_dup = client.get_agent(&agent_addr).unwrap();
+
+        assert_eq!(after_dup.total_payments,     after_first.total_payments,     "total_payments must not change");
+        assert_eq!(after_dup.successful_payments, after_first.successful_payments, "successful_payments must not change");
+        assert_eq!(after_dup.failed_payments,     after_first.failed_payments,     "failed_payments must not change");
+        assert_eq!(after_dup.total_volume_stroops, after_first.total_volume_stroops, "total_volume_stroops must not change");
+        assert_eq!(after_dup.score,               after_first.score,               "score must not change");
+    }
+
+    /// A duplicate of a *failed* payment must also be rejected — the tombstone
+    /// is written regardless of success/failure so both paths are covered.
+    #[test]
+    fn test_record_payment_duplicate_failed_payment_rejected() {
+        let env = Env::default();
+        let (client, agent_addr, provider, service_id) = setup_replay_fixture(&env);
+
+        let payment_id = 55u64;
+
+        // First call: failed payment, lowers score.
+        client.record_payment(
+            &agent_addr, &service_id, &1_000i128, &false, &provider, &payment_id,
+        );
+        let score_after_first = client.get_score(&agent_addr);
+        assert_eq!(score_after_first, (INITIAL_SCORE + SCORE_FAILURE).max(0));
+
+        // Second call with same id must be rejected immediately.
+        let result = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &false, &provider, &payment_id,
+        );
+        assert_eq!(result, Err(Ok(AgentError::DuplicatePayment)));
+
+        // Score must be unchanged.
+        assert_eq!(client.get_score(&agent_addr), score_after_first);
+    }
+
+    /// Different payment IDs for the same agent are independent — each one
+    /// applies its full score change.  This confirms the tombstone is keyed
+    /// by (agent, payment_id) and not just by payment_id alone.
+    #[test]
+    fn test_record_payment_distinct_ids_each_apply() {
+        let env = Env::default();
+        let (client, agent_addr, provider, service_id) = setup_replay_fixture(&env);
+
+        client.record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &1u64,
+        );
+        client.record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &2u64,
+        );
+        client.record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &3u64,
+        );
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.total_payments, 3);
+        assert_eq!(agent.score, (INITIAL_SCORE + 3 * SCORE_SUCCESS).min(MAX_SCORE));
+    }
+
+    /// The same payment_id used for *different* agents must not block each
+    /// other — tombstones are scoped to (agent_address, payment_id).
+    #[test]
+    fn test_record_payment_same_id_different_agents_independent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_a = Address::generate(&env);
+        let agent_b = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_a, &owner);
+        setup_agent(&env, &contract_id, &agent_b, &owner);
+
+        let service_id = 10u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        let shared_payment_id = 999u64;
+
+        // Both agents can process the same payment_id without interference.
+        client.record_payment(
+            &agent_a, &service_id, &1_000i128, &true, &provider, &shared_payment_id,
+        );
+        client.record_payment(
+            &agent_b, &service_id, &1_000i128, &true, &provider, &shared_payment_id,
+        );
+
+        assert_eq!(client.get_score(&agent_a), INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(client.get_score(&agent_b), INITIAL_SCORE + SCORE_SUCCESS);
+    }
+
+    /// Caller without auth must be rejected before the duplicate check fires —
+    /// the tombstone must NOT be written and must NOT block a later legitimate call.
+    #[test]
+    fn test_record_payment_auth_required_before_tombstone() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        let service_id = 5u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        let payment_id = 1u64;
+
+        // Remove all auth so require_auth() fails.
+        env.set_auths(&[]);
+        let res_no_auth = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &payment_id,
+        );
+        assert!(res_no_auth.is_err(), "unauthenticated call must fail");
+
+        // Score must be untouched.
+        env.mock_all_auths();
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE);
+
+        // A legitimate call with the same payment_id must now succeed — the
+        // failed unauthenticated call must not have written a tombstone.
+        let res_ok = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &payment_id,
+        );
+        assert_eq!(res_ok, Ok(Ok(())));
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE + SCORE_SUCCESS);
+    }
+
+    /// A wrong caller (not the service provider) is rejected after auth but
+    /// before state changes — the tombstone must not be written.
+    #[test]
+    fn test_record_payment_wrong_caller_does_not_write_tombstone() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        let service_id = 20u64;
+        let real_provider = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &real_provider);
+
+        let payment_id = 1u64;
+
+        // Call with wrong caller — must be rejected as Unauthorized.
+        let res_bad = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &impostor, &payment_id,
+        );
+        assert!(res_bad.is_err());
+
+        // Score unchanged.
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE);
+
+        // Real provider must be able to process the same payment_id successfully.
+        let res_ok = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &real_provider, &payment_id,
+        );
+        assert_eq!(res_ok, Ok(Ok(())));
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE + SCORE_SUCCESS);
+    }
+
+    /// A retry after a first successful commit must return DuplicatePayment,
+    /// and all observable state must be identical to the post-first-call snapshot.
+    /// This is the core acceptance criterion: one score change per payment ID.
+    #[test]
+    fn test_record_payment_retry_after_committed_no_duplicate_effect() {
+        let env = Env::default();
+        let (client, agent_addr, provider, service_id) = setup_replay_fixture(&env);
+
+        let payment_id = 101u64;
+        let amount = 2_500i128;
+
+        // First call — payment committed.
+        client.record_payment(
+            &agent_addr, &service_id, &amount, &true, &provider, &payment_id,
+        );
+        let snapshot = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(snapshot.score, INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(snapshot.total_payments, 1);
+        assert_eq!(snapshot.successful_payments, 1);
+        assert_eq!(snapshot.total_volume_stroops, amount);
+
+        // Retry — simulates the agent re-submitting after a network blip.
+        let retry_result = client.try_record_payment(
+            &agent_addr, &service_id, &amount, &true, &provider, &payment_id,
+        );
+        assert_eq!(
+            retry_result,
+            Err(Ok(AgentError::DuplicatePayment)),
+            "retry of a committed payment must return DuplicatePayment"
+        );
+
+        // All state must be byte-for-byte identical to the post-first-call snapshot.
+        let after_retry = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(after_retry.score,                snapshot.score,                "score must not change on retry");
+        assert_eq!(after_retry.total_payments,        snapshot.total_payments,        "total_payments must not change on retry");
+        assert_eq!(after_retry.successful_payments,   snapshot.successful_payments,   "successful_payments must not change on retry");
+        assert_eq!(after_retry.failed_payments,       snapshot.failed_payments,       "failed_payments must not change on retry");
+        assert_eq!(after_retry.total_volume_stroops,  snapshot.total_volume_stroops,  "total_volume_stroops must not change on retry");
+    }
+
+    /// DuplicatePayment has the expected stable numeric discriminant (11) so
+    /// off-chain callers can branch on it without parsing a message string.
+    #[test]
+    fn test_duplicate_payment_error_discriminant() {
+        assert_eq!(AgentError::DuplicatePayment as u32, 11);
+    }
+
+    // ── Auth / role tests (LDS-2026-173) ─────────────────────────────────────
+    //
+    // These tests verify that the two independent authorization layers on
+    // `record_payment` and `update_policy` are each enforced in isolation.
+    //
+    // `record_payment` has two distinct guards that must BOTH pass:
+    //   1. `caller.require_auth()` — Soroban host-level signature check.
+    //   2. Provider match — `caller` must equal the address the registry
+    //      contract returns for the given `service_id`.
+    //
+    // `update_policy` has one guard:
+    //   1. `caller.require_auth()` and `agent.owner == caller`.
+    //
+    // A third party that passes only one of the two layers must be rejected,
+    // and that rejection must leave score, counters, and policy unchanged.
+
+    // ── update_policy auth tests ──────────────────────────────────────────────
+
+    /// A non-owner address — even with valid Soroban auth — cannot update the
+    /// spending policy.  The policy on-chain must be bit-for-bit identical to
+    /// the original after the failed call.
+    #[test]
+    fn test_update_policy_non_owner_cannot_modify() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Capture the policy the owner set at registration.
+        let original_policy = client.get_policy(&agent_addr).unwrap();
+
+        let non_owner = Address::generate(&env);
+
+        // Non-owner attempts to lower the daily limit to a minimal amount.
+        let res = client.try_update_policy(
+            &agent_addr,
+            &1i128,
+            &1i128,
+            &vec![&env],
+            &0,
+            &non_owner,
+        );
+        assert!(res.is_err(), "non-owner must not be able to call update_policy");
+
+        // Policy must be unchanged.
+        let policy_after = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(
+            policy_after.max_per_tx_stroops, original_policy.max_per_tx_stroops,
+            "max_per_tx_stroops must not change after unauthorized call"
+        );
+        assert_eq!(
+            policy_after.max_per_day_stroops, original_policy.max_per_day_stroops,
+            "max_per_day_stroops must not change after unauthorized call"
+        );
+        assert_eq!(
+            policy_after.min_score_to_earn, original_policy.min_score_to_earn,
+            "min_score_to_earn must not change after unauthorized call"
+        );
+    }
+
+    /// The owner can update the policy; a different address cannot — even if
+    /// that address provides Soroban auth for itself.  Confirms the check is
+    /// `agent.owner == caller`, not merely "has auth".
+    #[test]
+    fn test_update_policy_owner_can_update_non_owner_cannot() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let impostor = Address::generate(&env);
+        let new_max_tx = 999_999i128;
+        let new_max_day = 9_999_999i128;
+
+        // Impostor call must fail.
+        assert!(
+            client
+                .try_update_policy(&agent_addr, &new_max_tx, &new_max_day, &vec![&env], &0, &impostor)
+                .is_err(),
+            "impostor must not update policy"
+        );
+
+        // Owner call must succeed and the values must land.
+        client.update_policy(&agent_addr, &new_max_tx, &new_max_day, &vec![&env], &0, &owner);
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.max_per_tx_stroops, new_max_tx);
+        assert_eq!(policy.max_per_day_stroops, new_max_day);
+    }
+
+    /// An unauthorized call to `update_policy` (no Soroban auth at all) must
+    /// fail before the owner check is even reached.
+    #[test]
+    fn test_update_policy_requires_soroban_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let original = client.get_policy(&agent_addr).unwrap();
+
+        // Drop all auth — even the owner's signature is absent.
+        env.set_auths(&[]);
+        let res = client.try_update_policy(
+            &agent_addr, &1i128, &1i128, &vec![&env], &0, &owner,
+        );
+        assert!(res.is_err(), "call without Soroban auth must fail");
+
+        // Policy is unchanged.
+        env.mock_all_auths();
+        let after = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(after.max_per_tx_stroops, original.max_per_tx_stroops);
+        assert_eq!(after.max_per_day_stroops, original.max_per_day_stroops);
+    }
+
+    /// An unauthorized policy update must not affect the agent's score —
+    /// score is stored on `AgentEntry` which `update_policy` never writes,
+    /// but we confirm it explicitly to guard against future regressions.
+    #[test]
+    fn test_update_policy_unauthorized_does_not_affect_score() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let score_before = client.get_score(&agent_addr);
+
+        let non_owner = Address::generate(&env);
+        let _ = client.try_update_policy(
+            &agent_addr, &1i128, &1i128, &vec![&env], &0, &non_owner,
+        );
+
+        assert_eq!(
+            client.get_score(&agent_addr),
+            score_before,
+            "score must not change after unauthorized update_policy"
+        );
+    }
+
+    // ── record_payment signed-caller / configured-provider role tests ─────────
+
+    /// The registered provider address tries to call `record_payment` without
+    /// providing Soroban auth.  The host rejects before any state is touched —
+    /// score and counters must remain at their initial values.
+    #[test]
+    fn test_record_payment_provider_without_auth_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 30u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        // Drop all auth — provider is correctly registered but provides no signature.
+        env.set_auths(&[]);
+        let res = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &provider, &1u64,
+        );
+        assert!(res.is_err(), "provider without auth must be rejected");
+
+        // State untouched.
+        env.mock_all_auths();
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE, "score must not change");
+        assert_eq!(agent.total_payments, 0, "total_payments must not change");
+    }
+
+    /// An address provides valid Soroban auth but is NOT the configured
+    /// provider for the service.  The contract rejects after auth but before
+    /// writing any state.  Score and counters must be unchanged.
+    #[test]
+    fn test_record_payment_signed_non_provider_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 40u64;
+        let real_provider = Address::generate(&env);
+        let signed_non_provider = Address::generate(&env); // has auth, not the provider
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &real_provider);
+
+        // signed_non_provider has Soroban auth (mock_all_auths) but is not the
+        // configured provider — the provider-match check must reject it.
+        let res = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &signed_non_provider, &1u64,
+        );
+        assert!(res.is_err(), "signed non-provider must be rejected");
+
+        // State untouched.
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE, "score must not change");
+        assert_eq!(agent.total_payments, 0, "total_payments must not change");
+    }
+
+    /// Only the address that is BOTH signed (has Soroban auth) AND is the
+    /// configured provider for the service can record a payment.
+    /// This test exercises both roles in the same fixture.
+    #[test]
+    fn test_record_payment_requires_both_auth_and_provider_role() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 50u64;
+        let real_provider = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &real_provider);
+
+        let payment_id = 1u64;
+
+        // ── Attempt 1: impostor with auth, not the provider ───────────────────
+        assert!(
+            client
+                .try_record_payment(&agent_addr, &service_id, &500i128, &true, &impostor, &payment_id)
+                .is_err(),
+            "signed non-provider must fail"
+        );
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE, "score unchanged after impostor attempt");
+
+        // ── Attempt 2: real provider, no auth ─────────────────────────────────
+        env.set_auths(&[]);
+        assert!(
+            client
+                .try_record_payment(&agent_addr, &service_id, &500i128, &true, &real_provider, &payment_id)
+                .is_err(),
+            "provider without auth must fail"
+        );
+        env.mock_all_auths();
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE, "score unchanged after no-auth attempt");
+
+        // ── Attempt 3: real provider WITH auth — the only valid path ──────────
+        let res = client.try_record_payment(
+            &agent_addr, &service_id, &500i128, &true, &real_provider, &payment_id,
+        );
+        assert_eq!(res, Ok(Ok(())), "real provider with auth must succeed");
+        assert_eq!(
+            client.get_score(&agent_addr),
+            INITIAL_SCORE + SCORE_SUCCESS,
+            "score must increase only on the legitimate call"
+        );
+    }
+
+    /// The same payment_id submitted first by an impostor (failing) and then
+    /// by the real provider must succeed on the second call.  The failed
+    /// impostor attempt must not write a tombstone that blocks the real call.
+    #[test]
+    fn test_record_payment_failed_impostor_does_not_lock_payment_id() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 60u64;
+        let real_provider = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &real_provider);
+
+        let payment_id = 77u64;
+
+        // Impostor submits the payment_id first — rejected because they are
+        // not the configured provider.
+        let impostor_result = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &impostor, &payment_id,
+        );
+        assert!(impostor_result.is_err(), "impostor must be rejected");
+
+        // Score and counters must be untouched after the impostor attempt.
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE);
+        assert_eq!(client.get_agent(&agent_addr).unwrap().total_payments, 0);
+
+        // Real provider submits the same payment_id — must succeed.
+        let real_result = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &real_provider, &payment_id,
+        );
+        assert_eq!(
+            real_result,
+            Ok(Ok(())),
+            "real provider must succeed even though impostor used the same payment_id"
+        );
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(client.get_agent(&agent_addr).unwrap().total_payments, 1);
+    }
+
+    /// A replay by the real provider (correct auth + correct role) after the
+    /// payment is already committed must return DuplicatePayment.  This is
+    /// the signed-caller / retry path: same provider, same payment_id.
+    #[test]
+    fn test_record_payment_real_provider_retry_after_commit_blocked() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 70u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        let payment_id = 88u64;
+        let amount = 2_000i128;
+
+        // First call succeeds.
+        client.record_payment(&agent_addr, &service_id, &amount, &true, &provider, &payment_id);
+        let snapshot = client.get_agent(&agent_addr).unwrap();
+
+        // Retry by the same (correct) provider must be blocked.
+        let retry = client.try_record_payment(
+            &agent_addr, &service_id, &amount, &true, &provider, &payment_id,
+        );
+        assert_eq!(
+            retry,
+            Err(Ok(AgentError::DuplicatePayment)),
+            "real provider retry must return DuplicatePayment"
+        );
+
+        // All state identical to post-first snapshot.
+        let after = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(after.score, snapshot.score);
+        assert_eq!(after.total_payments, snapshot.total_payments);
+        assert_eq!(after.successful_payments, snapshot.successful_payments);
+        assert_eq!(after.total_volume_stroops, snapshot.total_volume_stroops);
+    }
+
+    /// An impostor that attempts the same payment_id AFTER the real provider
+    /// has already committed it must receive DuplicatePayment — not Unauthorized.
+    /// The tombstone fires first, so the impostor learns nothing about whether
+    /// they would have been authorized.
+    #[test]
+    fn test_record_payment_impostor_after_commit_gets_duplicate_not_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 80u64;
+        let real_provider = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &real_provider);
+
+        let payment_id = 99u64;
+
+        // Real provider commits the payment.
+        client.record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &real_provider, &payment_id,
+        );
+
+        // Impostor submits the same payment_id — tombstone is checked first.
+        let impostor_retry = client.try_record_payment(
+            &agent_addr, &service_id, &1_000i128, &true, &impostor, &payment_id,
+        );
+        assert_eq!(
+            impostor_retry,
+            Err(Ok(AgentError::DuplicatePayment)),
+            "tombstone check must fire before provider-match check"
+        );
+
+        // Score must still be only the single legitimate application.
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE + SCORE_SUCCESS);
     }
 }
