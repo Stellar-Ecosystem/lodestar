@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-**Do not open a public issue for a security vulnerability.** Lodestar handles on-chain
+**Do not open a public issue for a security vulnerability.** Lodestar handles on-chain 
 value; a public report discloses the weakness to everyone, including anyone able to
 exploit it, before a fix exists.
 
