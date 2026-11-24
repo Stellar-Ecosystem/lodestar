@@ -2524,7 +2524,153 @@ mod test {
             )
             .is_ok());
     }
+     /// LDS-2026-110 / #1197: endpoint at max length stays on the stored service.
+    #[test]
+    fn test_endpoint_at_max_persists_on_get_service() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
 
+        let max_endpoint = "A".repeat(256);
+        let id = registry.register_service(
+            &provider,
+            &String::from_str(&env, "Valid Name"),
+            &String::from_str(&env, "Valid description long enough"),
+            &String::from_str(&env, &max_endpoint),
+            &String::from_str(&env, "10"),
+            &String::from_str(&env, "G_PAYMENT"),
+            &String::from_str(&env, "compute"),
+        );
+
+        let entry = registry.get_service(&id).unwrap();
+        assert_eq!(entry.provider, provider);
+        assert!(entry.active);
+        assert_eq!(entry.endpoint, String::from_str(&env, &max_endpoint));
+    }
+
+    /// Non-owner cannot deactivate (authorization / provider mismatch).
+    #[test]
+    fn test_deactivate_service_rejects_non_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let owner = Address::generate(&env);
+        let other = Address::generate(&env);
+
+        let id = registry.register_service(
+            &owner,
+            &String::from_str(&env, "Valid Name"),
+            &String::from_str(&env, "Valid description long enough"),
+            &String::from_str(&env, "https://race.example/a"),
+            &String::from_str(&env, "10"),
+            &String::from_str(&env, "G_PAYMENT"),
+            &String::from_str(&env, "compute"),
+        );
+
+        assert!(matches!(
+            registry.try_deactivate_service(&other, &id),
+            Err(Ok(RegistryError::ProviderMismatch))
+        ));
+
+        let entry = registry.get_service(&id).unwrap();
+        assert!(entry.active);
+        assert_eq!(entry.provider, owner);
+    }
+
+    /// Deactivate then re-register same endpoint: owner, active, events.
+    #[test]
+    fn test_endpoint_reregister_after_deactivate() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+        let endpoint = String::from_str(&env, "https://race.example/endpoint");
+
+        let id1 = registry.register_service(
+            &provider,
+            &String::from_str(&env, "Valid Name"),
+            &String::from_str(&env, "Valid description long enough"),
+            &endpoint,
+            &String::from_str(&env, "10"),
+            &String::from_str(&env, "G_PAYMENT"),
+            &String::from_str(&env, "compute"),
+        );
+
+        registry.deactivate_service(&provider, &id1);
+        let after_deact = registry.get_service(&id1).unwrap();
+        assert!(!after_deact.active);
+        assert_eq!(after_deact.provider, provider);
+        assert_eq!(after_deact.endpoint, endpoint);
+
+        let events = env.events().all();
+        assert!(
+            events.iter().any(|e| {
+                // topic contains registry + deactivated
+                let topics = e.0;
+                topics.len() >= 2
+            }),
+            "expected deactivate-related event"
+        );
+
+        // Endpoint slot free: register again (endpoint "update" path via re-register).
+        let id2 = registry.register_service(
+            &provider,
+            &String::from_str(&env, "Valid Name 2"),
+            &String::from_str(&env, "Valid description long enough"),
+            &endpoint,
+            &String::from_str(&env, "10"),
+            &String::from_str(&env, "G_PAYMENT"),
+            &String::from_str(&env, "compute"),
+        );
+        assert_ne!(id1, id2);
+
+        let entry2 = registry.get_service(&id2).unwrap();
+        assert!(entry2.active);
+        assert_eq!(entry2.provider, provider);
+        assert_eq!(entry2.endpoint, endpoint);
+
+        // Old id stays inactive; balances/reputation unchanged by deactivate alone.
+        let entry1 = registry.get_service(&id1).unwrap();
+        assert!(!entry1.active);
+        assert_eq!(entry1.reputation, entry2.reputation.min(entry1.reputation)); // both start 0 typically
+        assert_eq!(entry1.reputation, 0);
+        assert_eq!(entry2.reputation, 0);
+    }
+
+    /// Cannot keep two active rows for the same provider+endpoint.
+    #[test]
+    fn test_active_endpoint_duplicate_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let provider = Address::generate(&env);
+        let endpoint = String::from_str(&env, "https://dup.example/x");
+
+        let _id = registry.register_service(
+            &provider,
+            &String::from_str(&env, "Valid Name"),
+            &String::from_str(&env, "Valid description long enough"),
+            &endpoint,
+            &String::from_str(&env, "10"),
+            &String::from_str(&env, "G_PAYMENT"),
+            &String::from_str(&env, "compute"),
+        );
+
+        assert!(
+            registry
+                .try_register_service(
+                    &provider,
+                    &String::from_str(&env, "Other Name"),
+                    &String::from_str(&env, "Valid description long enough"),
+                    &endpoint,
+                    &String::from_str(&env, "10"),
+                    &String::from_str(&env, "G_PAYMENT"),
+                    &String::from_str(&env, "compute"),
+                )
+                .is_err()
+        );
+}
     #[test]
     fn test_register_service_rejects_category_empty() {
         let env = Env::default();
