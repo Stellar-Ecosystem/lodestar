@@ -1,5 +1,5 @@
 # Contributing to Lodestar
-
+ 
 ## Prerequisites
 
 - Node.js ≥ 22
