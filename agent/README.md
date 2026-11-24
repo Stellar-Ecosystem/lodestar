@@ -43,8 +43,17 @@ No services found for category {"event":"task_start","category":"weather","servi
 No services meet minimum reputation threshold {"event":"task_start","category":"weather","servicesFound":0,"minReputation":50}
 Payment failed — network error {"event":"payment_failed","category":"weather","serviceId":1,"serviceName":"WeatherService","priceUsdc":"0.001","err":{}}
 Payment failed — endpoint error {"event":"payment_failed","category":"weather","serviceId":1,"serviceName":"WeatherService","priceUsdc":"0.001","httpStatus":500}
+Payment outcome unknown — stopping retries to prevent double payment {"event":"payment_unknown","category":"weather","serviceId":1,"serviceName":"WeatherService","priceUsdc":"0.001","paymentState":"unknown","code":"PAYMENT_STATE_UNKNOWN"}
 All candidate services exhausted {"event":"payment_failed","category":"weather","servicesAttempted":2}
 ```
+
+## 402 Payment Retry Boundary
+
+Once the agent signs and submits an x402 payment payload after a `402 Payment Required` response, it crosses an explicit retry boundary:
+
+- **Pre-payment probe failures** (before signing) remain retryable.
+- **Response loss after payment submission** (e.g., timeout or connection drop) transitions the request to an explicit `unknown` payment state, logs `payment_unknown`, records the payment in `unresolvedPayments`, and stops retries with `failureReason: "payment_state_unknown"`.
+- **Already settled or unknown requests** are blocked from retrying so the agent never signs a second payment for the same request.
 
 ## Environment Variables
 

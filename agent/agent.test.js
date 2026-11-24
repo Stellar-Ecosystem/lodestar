@@ -43,6 +43,7 @@ const mockHttpClient = {
 };
 
 const { runTask, main, EVENT } = await import('./agent.js');
+const { PaymentStateUnknownError } = await import('./paymentRetry.js');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -584,5 +585,65 @@ describe('graceful shutdown', () => {
 
     // completeShutdown calls process.exit(1) which would throw in test, so we just verify initiate
     expect(initCall[0]).toHaveProperty('signal', 'SIGTERM');
+  });
+});
+
+describe('runTask — unknown payment state retry boundary', () => {
+  const svcA = { id: 1, name: 'SvcA', price_usdc: '0.001', endpoint: 'https://a.example.com/ep', reputation: 100 };
+  const svcB = { id: 2, name: 'SvcB', price_usdc: '0.002', endpoint: 'https://b.example.com/ep', reputation: 80 };
+
+  let randomSpy;
+  beforeEach(() => {
+    randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+  });
+  afterEach(() => {
+    randomSpy.mockRestore();
+  });
+
+  it('stops retrying and never signs a second payment when response is lost after payment submission', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) }));
+      }
+      if (url === svcA.endpoint) {
+        return Promise.reject(
+          new PaymentStateUnknownError(svcA.endpoint, `GET ${svcA.endpoint}`, new Error('socket hang up'))
+        );
+      }
+      return Promise.resolve(makeResponse());
+    });
+
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    expect(result).toMatchObject({
+      success: false,
+      paymentState: 'unknown',
+      priceUsdc: svcA.price_usdc,
+      attempts: 1,
+      failureReason: 'payment_state_unknown',
+      _unresolved: {
+        serviceId: svcA.id,
+        serviceName: svcA.name,
+        endpointUrl: svcA.endpoint,
+      },
+    });
+
+    // Must not fall back to svcB or sign a second payment
+    expect(mockHttpClient.encodePaymentSignatureHeader).toHaveBeenCalledTimes(1);
+    const svcBCalls = global.fetch.mock.calls.filter(([url]) => url === svcB.endpoint);
+    expect(svcBCalls.length).toBe(0);
+
+    // Must log payment_unknown and not submit a negative reputation vote
+    const unknownCall = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_UNKNOWN);
+    expect(unknownCall).toBeDefined();
+    expect(unknownCall[0]).toMatchObject({
+      event: 'payment_unknown',
+      serviceId: svcA.id,
+      paymentState: 'unknown',
+      code: 'PAYMENT_STATE_UNKNOWN',
+    });
+
+    const repCalls = global.fetch.mock.calls.filter(([url]) => url.includes('/reputation'));
+    expect(repCalls.length).toBe(0);
   });
 });
