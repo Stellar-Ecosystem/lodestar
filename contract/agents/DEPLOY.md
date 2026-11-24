@@ -84,6 +84,7 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 | Read score | `("agents", "score_read", agent_address)` | `(score, exists)` |
 | Record payment | `("agents", "payment", agent_address)` | `(service_id, amount_stroops, success, old_score, new_score, caller)` |
 | Flag agent | `("agents", "flagged", agent_address)` | `(caller, reason, old_score, new_score)` |
+| Score tier result | `("agents", "score_tier_result", agent_address)` | `(source, caller, old_score, new_score, old_tier, new_tier)` |
 | Deactivate agent | `("agents", "deactivated", agent_address)` | `(caller, owner, score, name)` |
 | Update policy | `("agents", "policy_updated", agent_address)` | `(caller, max_per_tx_stroops, max_per_day_stroops, allowed_categories, min_score_to_earn)` |
 | Transfer admin | `("agents", "admin_transferred", new_admin)` | `(caller, new_admin)` |
@@ -95,6 +96,14 @@ purely from chain events by filtering for topics matching `("agents", *, agent_a
 `get_score` emits `score_read` only on success. Reading the score of an agent that
 was never registered fails with `AgentError::AgentNotFound` (see below), so no
 event is emitted and the caller must not treat the failure as a zero score.
+
+Scores are clamped to `0..=1000` when changed. A committed payment emits
+`payment` followed by `score_tier_result`; flagging emits `flagged` followed by
+`score_tier_result`; a policy update emits `policy_updated` followed by
+`score_tier_result`. Each tier result is in the same transaction as its cause,
+and reports both scores and tiers (`new` < 300, `building` 300–599,
+`established` 600–899, `trusted` 900–999, `elite` 1000). Failed invocations
+revert both events.
 
 ## Error Codes
 
