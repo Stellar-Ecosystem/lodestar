@@ -43,7 +43,7 @@ const mockHttpClient = {
 };
 
 const { runTask, main, EVENT } = await import('./agent.js');
-const { PaymentStateUnknownError } = await import('./paymentRetry.js');
+const { PaymentStateUnknownError, InvalidPaymentConfigError } = await import('./paymentRetry.js');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -645,5 +645,47 @@ describe('runTask — unknown payment state retry boundary', () => {
 
     const repCalls = global.fetch.mock.calls.filter(([url]) => url.includes('/reputation'));
     expect(repCalls.length).toBe(0);
+  });
+
+  it('stops retrying on invalid USDC token or facilitator URL boundary error', async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (url.includes('/api/services')) {
+        return Promise.resolve(makeResponse({ json: () => Promise.resolve({ services: [svcA, svcB] }) }));
+      }
+      if (url === svcA.endpoint) {
+        return Promise.reject(
+          new InvalidPaymentConfigError({
+            code: 'INVALID_FACILITATOR_URL',
+            field: 'facilitatorUrl',
+            message: 'Invalid facilitator URL in agent payment configuration; entering unknown state',
+            url: svcA.endpoint,
+            requestKey: `GET ${svcA.endpoint}`,
+          })
+        );
+      }
+      return Promise.resolve(makeResponse());
+    });
+
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+    expect(result).toMatchObject({
+      success: false,
+      paymentState: 'unknown',
+      priceUsdc: svcA.price_usdc,
+      attempts: 1,
+      failureReason: 'payment_state_unknown',
+    });
+
+    const svcBCalls = global.fetch.mock.calls.filter(([url]) => url === svcB.endpoint);
+    expect(svcBCalls.length).toBe(0);
+
+    const unknownCall = logError.mock.calls.find(([f]) => f?.event === EVENT.PAYMENT_UNKNOWN);
+    expect(unknownCall).toBeDefined();
+    expect(unknownCall[0]).toMatchObject({
+      event: 'payment_unknown',
+      serviceId: svcA.id,
+      paymentState: 'unknown',
+      code: 'INVALID_FACILITATOR_URL',
+    });
   });
 });

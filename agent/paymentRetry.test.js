@@ -4,6 +4,10 @@ import {
   PAYMENT_STATE,
   PaymentStateUnknownError,
   PaymentRetryBlockedError,
+  InvalidPaymentConfigError,
+  isPaymentBoundaryError,
+  isValidUsdcToken,
+  isValidFacilitatorUrl,
 } from './paymentRetry.js';
 
 function makeResponse({ ok = true, status = 200, headers = {}, body = {} } = {}) {
@@ -184,5 +188,117 @@ describe('createPaymentFetch — 402 payment retry boundary', () => {
       PaymentRetryBlockedError
     );
     expect(httpClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+  });
+
+  it('transitions to unknown state and blocks retries when configured USDC token is invalid', async () => {
+    const httpClient = makeMockHttpClient();
+    const fetchImpl = vi.fn();
+    const paymentFetch = createPaymentFetch(httpClient, fetchImpl, {
+      usdcToken: 'invalid-usdc-token',
+    });
+
+    await expect(paymentFetch('https://api.example.com/weather')).rejects.toMatchObject({
+      name: 'InvalidPaymentConfigError',
+      code: 'INVALID_USDC_TOKEN',
+      field: 'usdcToken',
+      paymentState: PAYMENT_STATE.UNKNOWN,
+      retryable: false,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(httpClient.createPaymentPayload).not.toHaveBeenCalled();
+    expect(paymentFetch.getPaymentState('GET https://api.example.com/weather').state).toBe(
+      PAYMENT_STATE.UNKNOWN
+    );
+
+    await expect(paymentFetch('https://api.example.com/weather')).rejects.toThrow(
+      PaymentRetryBlockedError
+    );
+    expect(httpClient.createPaymentPayload).not.toHaveBeenCalled();
+  });
+
+  it('transitions to unknown state and blocks retries when configured facilitator URL is invalid', async () => {
+    const httpClient = makeMockHttpClient();
+    const fetchImpl = vi.fn();
+    const paymentFetch = createPaymentFetch(httpClient, fetchImpl, {
+      facilitatorUrl: 'ftp://invalid-facilitator',
+    });
+
+    let caught;
+    try {
+      await paymentFetch('https://api.example.com/weather');
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(InvalidPaymentConfigError);
+    expect(isPaymentBoundaryError(caught)).toBe(true);
+    expect(caught).toMatchObject({
+      code: 'INVALID_FACILITATOR_URL',
+      field: 'facilitatorUrl',
+      paymentState: PAYMENT_STATE.UNKNOWN,
+      retryable: false,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(httpClient.createPaymentPayload).not.toHaveBeenCalled();
+
+    await expect(paymentFetch('https://api.example.com/weather')).rejects.toThrow(
+      PaymentRetryBlockedError
+    );
+  });
+
+  it('transitions to unknown state before signing when 402 requirements contain an invalid USDC token or facilitator URL', async () => {
+    const validToken = 'C' + 'A'.repeat(55);
+    expect(isValidUsdcToken(validToken)).toBe(true);
+    expect(isValidUsdcToken('not-a-contract')).toBe(false);
+    expect(isValidFacilitatorUrl('https://facilitator.example.com')).toBe(true);
+    expect(isValidFacilitatorUrl('not-a-url')).toBe(false);
+
+    const httpClientBadToken = makeMockHttpClient();
+    const fetchBadToken = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeResponse({ ok: false, status: 402, body: { asset: 'bad-asset', amount: '100' } })
+      );
+    const paymentFetchBadToken = createPaymentFetch(httpClientBadToken, fetchBadToken, {
+      usdcToken: validToken,
+      facilitatorUrl: 'https://facilitator.example.com',
+    });
+
+    await expect(paymentFetchBadToken('https://api.example.com/weather')).rejects.toMatchObject({
+      code: 'INVALID_USDC_TOKEN',
+      paymentState: PAYMENT_STATE.UNKNOWN,
+      retryable: false,
+    });
+    expect(httpClientBadToken.createPaymentPayload).not.toHaveBeenCalled();
+    await expect(paymentFetchBadToken('https://api.example.com/weather')).rejects.toThrow(
+      PaymentRetryBlockedError
+    );
+
+    const httpClientBadFac = makeMockHttpClient();
+    const fetchBadFac = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeResponse({
+          ok: false,
+          status: 402,
+          body: { asset: validToken, facilitatorUrl: 'javascript:alert(1)', amount: '100' },
+        })
+      );
+    const paymentFetchBadFac = createPaymentFetch(httpClientBadFac, fetchBadFac, {
+      usdcToken: validToken,
+      facilitatorUrl: 'https://facilitator.example.com',
+    });
+
+    await expect(paymentFetchBadFac('https://api.example.com/weather')).rejects.toMatchObject({
+      code: 'INVALID_FACILITATOR_URL',
+      paymentState: PAYMENT_STATE.UNKNOWN,
+      retryable: false,
+    });
+    expect(httpClientBadFac.createPaymentPayload).not.toHaveBeenCalled();
+    await expect(paymentFetchBadFac('https://api.example.com/weather')).rejects.toThrow(
+      PaymentRetryBlockedError
+    );
   });
 });

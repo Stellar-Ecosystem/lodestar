@@ -52,6 +52,7 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 Once the agent signs and submits an x402 payment payload after a `402 Payment Required` response, it crosses an explicit retry boundary:
 
 - **Pre-payment probe failures** (before signing) remain retryable.
+- **Invalid USDC token or facilitator URL** (in optional agent configuration `USDC_CONTRACT_ID` / `FACILITATOR_URL` or in `402` payment requirements) transitions the request to an explicit `unknown` payment state (`INVALID_USDC_TOKEN` / `INVALID_FACILITATOR_URL`), logs `payment_unknown`, and stops retries before signing.
 - **Response loss after payment submission** (e.g., timeout or connection drop) transitions the request to an explicit `unknown` payment state, logs `payment_unknown`, records the payment in `unresolvedPayments`, and stops retries with `failureReason: "payment_state_unknown"`.
 - **Already settled or unknown requests** are blocked from retrying so the agent never signs a second payment for the same request.
 
@@ -63,6 +64,8 @@ Once the agent signs and submits an x402 payment payload after a `402 Payment Re
 | `STELLAR_RPC_URL` | Yes | — | Horizon RPC URL |
 | `LODESTAR_API_URL` | Yes | — | Base URL of the Lodestar backend |
 | `LODESTAR_HMAC_SECRET` | No | `""` | HMAC secret for signing payment-record requests |
+| `USDC_CONTRACT_ID` | No | — | Expected Stellar Soroban USDC contract ID (`C...`); invalid values enter the explicit `unknown` retry boundary |
+| `FACILITATOR_URL` | No | — | Expected HTTP(S) x402 facilitator URL; invalid values enter the explicit `unknown` retry boundary |
 | `AGENT_NAME` | No | `LodestarAgent` | Display name |
 | `AGENT_DESC` | No | `""` | Agent description |
 | `AGENT_MAX_PER_TX` | No | `0.001` | Max USDC per transaction |

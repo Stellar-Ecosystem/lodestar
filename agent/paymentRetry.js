@@ -46,19 +46,145 @@ export class PaymentRetryBlockedError extends Error {
   }
 }
 
+const STELLAR_CONTRACT_ID_RE = /^C[A-Z2-7]{55}$/;
+
+export function isValidUsdcToken(token) {
+  return typeof token === 'string' && STELLAR_CONTRACT_ID_RE.test(token.trim());
+}
+
+export function isValidFacilitatorUrl(url) {
+  if (typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export class InvalidPaymentConfigError extends Error {
+  constructor({ code, field, message, url = null, requestKey = null }) {
+    super(message);
+    this.name = 'InvalidPaymentConfigError';
+    this.code = code;
+    this.field = field;
+    this.paymentState = PAYMENT_STATE.UNKNOWN;
+    this.url = url;
+    this.requestKey = requestKey;
+    this.retryable = false;
+  }
+}
+
 export function isPaymentBoundaryError(err) {
   return (
     err instanceof PaymentStateUnknownError ||
     err instanceof PaymentRetryBlockedError ||
+    err instanceof InvalidPaymentConfigError ||
     err?.code === 'PAYMENT_STATE_UNKNOWN' ||
-    err?.code === 'PAYMENT_RETRY_BLOCKED'
+    err?.code === 'PAYMENT_RETRY_BLOCKED' ||
+    err?.code === 'INVALID_USDC_TOKEN' ||
+    err?.code === 'INVALID_FACILITATOR_URL'
   );
+}
+
+export function validatePaymentConfig(config = {}, context = {}) {
+  const { usdcToken, facilitatorUrl } = config;
+  const { url = null, requestKey = null } = context;
+
+  if (usdcToken !== undefined && !isValidUsdcToken(usdcToken)) {
+    throw new InvalidPaymentConfigError({
+      code: 'INVALID_USDC_TOKEN',
+      field: 'usdcToken',
+      message: 'Invalid USDC token contract ID in agent payment configuration; entering unknown state',
+      url,
+      requestKey,
+    });
+  }
+
+  if (facilitatorUrl !== undefined && !isValidFacilitatorUrl(facilitatorUrl)) {
+    throw new InvalidPaymentConfigError({
+      code: 'INVALID_FACILITATOR_URL',
+      field: 'facilitatorUrl',
+      message: 'Invalid facilitator URL in agent payment configuration; entering unknown state',
+      url,
+      requestKey,
+    });
+  }
+}
+
+function normalizeUrl(url) {
+  return new URL(url.trim()).href.replace(/\/+$/, '');
+}
+
+export function validatePaymentRequirements(paymentRequired, config = {}, context = {}) {
+  if (!paymentRequired || typeof paymentRequired !== 'object') return;
+  const { url = null, requestKey = null } = context;
+
+  const entries = Array.isArray(paymentRequired.accepts)
+    ? paymentRequired.accepts
+    : [paymentRequired.requirements ?? paymentRequired];
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+
+    if (entry.asset !== undefined) {
+      if (!isValidUsdcToken(entry.asset)) {
+        throw new InvalidPaymentConfigError({
+          code: 'INVALID_USDC_TOKEN',
+          field: 'usdcToken',
+          message: `Invalid USDC token asset '${entry.asset}' in 402 payment requirements; entering unknown state`,
+          url,
+          requestKey,
+        });
+      }
+      if (config.usdcToken && entry.asset.trim() !== config.usdcToken.trim()) {
+        throw new InvalidPaymentConfigError({
+          code: 'INVALID_USDC_TOKEN',
+          field: 'usdcToken',
+          message: `Unexpected USDC token asset '${entry.asset}' in 402 payment requirements; entering unknown state`,
+          url,
+          requestKey,
+        });
+      }
+    }
+
+    const reqFacilitator =
+      entry.facilitatorUrl !== undefined ? entry.facilitatorUrl : entry.extra?.facilitatorUrl;
+    if (reqFacilitator !== undefined) {
+      if (!isValidFacilitatorUrl(reqFacilitator)) {
+        throw new InvalidPaymentConfigError({
+          code: 'INVALID_FACILITATOR_URL',
+          field: 'facilitatorUrl',
+          message: `Invalid facilitator URL '${reqFacilitator}' in 402 payment requirements; entering unknown state`,
+          url,
+          requestKey,
+        });
+      }
+      if (
+        config.facilitatorUrl &&
+        normalizeUrl(reqFacilitator) !== normalizeUrl(config.facilitatorUrl)
+      ) {
+        throw new InvalidPaymentConfigError({
+          code: 'INVALID_FACILITATOR_URL',
+          field: 'facilitatorUrl',
+          message: `Unexpected facilitator URL '${reqFacilitator}' in 402 payment requirements; entering unknown state`,
+          url,
+          requestKey,
+        });
+      }
+    }
+  }
 }
 
 /**
  * Wrap an x402HTTPClient's 402-payment flow with an explicit retry boundary.
  *
  * - Pre-payment probe failures leave the request unpaid and safe to retry.
+ * - Invalid USDC token or facilitator URL (in agent config or 402 requirements)
+ *   transitions the request to `unknown` and throws `InvalidPaymentConfigError`
+ *   before signing a payment, blocking retries.
  * - Once a payment is signed and submitted, response loss transitions the
  *   request to `unknown` and throws `PaymentStateUnknownError`.
  * - Any subsequent retry for a request in `in_flight`, `settled`, or `unknown`
@@ -66,8 +192,9 @@ export function isPaymentBoundaryError(err) {
  *
  * @param {object} httpClient - x402HTTPClient instance
  * @param {Function} fetchImpl - underlying fetch implementation (e.g. fetchWithTimeout)
+ * @param {object} [options] - optional payment config ({ usdcToken, facilitatorUrl })
  */
-export function createPaymentFetch(httpClient, fetchImpl) {
+export function createPaymentFetch(httpClient, fetchImpl, options = {}) {
   const states = new Map();
 
   async function paymentFetch(url, init = {}) {
@@ -85,15 +212,40 @@ export function createPaymentFetch(httpClient, fetchImpl) {
       throw new PaymentRetryBlockedError(url, requestKey, existing.state, existing.txHash);
     }
 
+    // 0. Validate configured USDC token and facilitator URL before probing/signing.
+    try {
+      validatePaymentConfig(options, { url, requestKey });
+    } catch (err) {
+      states.set(requestKey, {
+        state: PAYMENT_STATE.UNKNOWN,
+        url,
+        txHash: null,
+        error: err,
+      });
+      throw err;
+    }
+
     // 1. Unpaid probe — safe to retry if this throws before a 402 is signed.
     const probe = await fetchImpl(url, fetchInit);
     if (probe.status !== 402) return probe;
 
-    // 2. Parse 402 payment requirements and sign the payment payload.
+    // 2. Parse 402 payment requirements, validate token/facilitator, and sign.
     const paymentRequired = httpClient.getPaymentRequiredResponse(
       (name) => probe.headers.get(name),
       await probe.json().catch(() => undefined)
     );
+    try {
+      validatePaymentRequirements(paymentRequired, options, { url, requestKey });
+    } catch (err) {
+      states.set(requestKey, {
+        state: PAYMENT_STATE.UNKNOWN,
+        url,
+        txHash: null,
+        error: err,
+      });
+      throw err;
+    }
+
     const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
     const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
 

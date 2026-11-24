@@ -66,6 +66,8 @@ for (const key of required) {
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
+const USDC_CONTRACT_ID     = process.env.USDC_CONTRACT_ID ?? process.env.USDC_TOKEN;
+const FACILITATOR_URL      = process.env.FACILITATOR_URL;
 
 const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
 const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
@@ -255,9 +257,13 @@ function buildHttpClient() {
   const httpClient = new x402HTTPClient(x402);
 
   // Implement fetch manually — x402HTTPClient.fetch() was removed in this version.
-  // Wrap with createPaymentFetch so response loss after signing transitions to an
-  // explicit unknown state and retries never sign a second payment.
-  httpClient.fetch = createPaymentFetch(httpClient, fetchWithTimeout);
+  // Wrap with createPaymentFetch so invalid USDC token/facilitator config or
+  // response loss after signing transitions to an explicit unknown state and
+  // retries never sign a second payment.
+  httpClient.fetch = createPaymentFetch(httpClient, fetchWithTimeout, {
+    usdcToken: USDC_CONTRACT_ID,
+    facilitatorUrl: FACILITATOR_URL,
+  });
 
   return httpClient;
 }
