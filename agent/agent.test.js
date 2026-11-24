@@ -28,7 +28,13 @@ vi.mock('@x402/core/client', () => ({
   x402HTTPClient: class { encodePaymentSignatureHeader() { return {}; } },
 }));
 
-vi.mock('@x402/stellar', () => ({ createEd25519Signer: () => ({}) }));
+vi.mock('@x402/stellar', () => ({
+  createEd25519Signer: () => ({}),
+  getUsdcAddress: (network) => network === 'stellar:pubnet'
+    ? 'CUSDC_MAINNET'
+    : 'CUSDC_TESTNET',
+  validateStellarDestinationAddress: (address) => /^G[A-Z2-7]{55}$/.test(address),
+}));
 vi.mock('@x402/stellar/exact/client', () => ({ ExactStellarScheme: class { } }));
 
 // ── Env vars must be set before the agent module initialises ──────────────────
@@ -39,10 +45,10 @@ process.env.LODESTAR_API_URL     = 'http://localhost:9999';
 
 const mockHttpClient = {
   encodePaymentSignatureHeader: vi.fn(() => ({})),
-  fetch: (...args) => global.fetch(...args),
+  fetch: vi.fn((...args) => global.fetch(...args)),
 };
 
-const { runTask, main, EVENT } = await import('./agent.js');
+const { runTask, main, EVENT, validateAgentConfig, validateX402Challenge } = await import('./agent.js');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -145,11 +151,12 @@ describe('runTask — happy path', () => {
     expect(call[0].taskDurationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it('calls encodePaymentSignatureHeader with expected payload', async () => {
+  it('uses the payment-aware HTTP client for the endpoint request', async () => {
     await runTask('weather', (ep) => ep, true, mockHttpClient);
 
-    expect(mockHttpClient.encodePaymentSignatureHeader).toHaveBeenCalledWith(
-      { url: 'https://api.example.com/weather', method: 'GET' }
+    expect(mockHttpClient.fetch).toHaveBeenCalledWith(
+      'https://api.example.com/weather',
+      { keepalive: true }
     );
   });
 
@@ -279,7 +286,8 @@ describe('runTask — service error after payment', () => {
 
   it('returns { success: false, priceUsdc: null } when endpoint fails', async () => {
     global.fetch = buildFetch({ endpointOk: false });
-
+    const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+    expect(result).toMatchObject({ success: false, priceUsdc: null });
   });
 });
 
@@ -584,5 +592,96 @@ describe('graceful shutdown', () => {
 
     // completeShutdown calls process.exit(1) which would throw in test, so we just verify initiate
     expect(initCall[0]).toHaveProperty('signal', 'SIGTERM');
+  });
+});
+
+describe('agent 402 configuration validation', () => {
+  const validEnv = {
+    STELLAR_RPC_URL: 'https://rpc.example.com',
+    LODESTAR_API_URL: 'https://lodestar.example.com',
+    STELLAR_NETWORK: 'testnet',
+    STELLAR_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  };
+
+  it('accepts valid network and service settings', () => {
+    expect(validateAgentConfig(validEnv)).toBe(true);
+  });
+
+  it('rejects an invalid network', () => {
+    expect(() => validateAgentConfig({ ...validEnv, STELLAR_NETWORK: 'invalid' }))
+      .toThrow('Invalid STELLAR_NETWORK');
+  });
+
+  it('rejects a mismatched network passphrase', () => {
+    expect(() => validateAgentConfig({
+      ...validEnv,
+      STELLAR_NETWORK_PASSPHRASE: 'Public Global Stellar Network ; September 2015',
+    })).toThrow('Invalid STELLAR_NETWORK_PASSPHRASE');
+  });
+
+  it('rejects invalid RPC and Lodestar URLs', () => {
+    expect(() => validateAgentConfig({
+      ...validEnv,
+      STELLAR_RPC_URL: 'javascript:alert(1)',
+      LODESTAR_API_URL: 'file:///tmp/lodestar',
+    })).toThrow('Invalid STELLAR_RPC_URL');
+  });
+
+  it('rejects invalid payment and retry limits', () => {
+    expect(() => validateAgentConfig({
+      ...validEnv,
+      AGENT_MAX_PER_TX: '-0.001',
+      AGENT_MAX_SERVICE_RETRIES: '11',
+    })).toThrow('Invalid AGENT_MAX_PER_TX');
+  });
+});
+
+describe('x402 payment challenge validation', () => {
+  const network = 'stellar:testnet';
+  const validAddress = `G${'A'.repeat(55)}`;
+
+  function challenge(overrides = {}) {
+    return {
+      accepts: [{
+        scheme: 'exact',
+        network,
+        asset: 'CUSDC_TESTNET',
+        payTo: validAddress,
+        amount: '10000',
+        ...overrides,
+      }],
+    };
+  }
+
+  it('accepts a legitimate testnet USDC challenge', () => {
+    expect(validateX402Challenge(challenge(), network, '0.001')).toMatchObject({
+      scheme: 'exact',
+      network,
+      asset: 'CUSDC_TESTNET',
+    });
+  });
+
+  it('rejects a challenge with missing requirements', () => {
+    expect(() => validateX402Challenge({}, network, '0.001'))
+      .toThrow('missing payment requirements');
+  });
+
+  it('rejects a different network or USDC asset', () => {
+    expect(() => validateX402Challenge(challenge({ network: 'stellar:pubnet' }), network, '0.001'))
+      .toThrow('no supported Stellar USDC payment requirement');
+    expect(() => validateX402Challenge(challenge({ asset: 'COTHER' }), network, '0.001'))
+      .toThrow('no supported Stellar USDC payment requirement');
+  });
+
+  it('rejects an invalid destination address', () => {
+    expect(() => validateX402Challenge(challenge({ payTo: 'INVALID' }), network, '0.001'))
+      .toThrow('no supported Stellar USDC payment requirement');
+  });
+
+  it('rejects nonpositive and excessive payment amounts', () => {
+    expect(() => validateX402Challenge(challenge({ amount: '0' }), network, '0.001'))
+      .toThrow('not positive atomic USDC');
+    expect(() => validateX402Challenge(challenge({ amount: '10001' }), network, '0.001'))
+      .toThrow('exceeds AGENT_MAX_PER_TX');
   });
 });

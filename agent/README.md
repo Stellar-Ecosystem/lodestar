@@ -51,6 +51,9 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `AGENT_STELLAR_SECRET` | Yes | — | Stellar secret key for the agent |
+| `AGENT_STELLAR_SECRET_FILE` | Alternative | — | Path to a secret key file; do not set together with `AGENT_STELLAR_SECRET`; the file must not be group/world-readable on Unix |
+| `STELLAR_NETWORK` | No | `testnet` | Stellar network: `testnet` or `mainnet` |
+| `STELLAR_NETWORK_PASSPHRASE` | No | Testnet passphrase | Must match the selected network |
 | `STELLAR_RPC_URL` | Yes | — | Horizon RPC URL |
 | `LODESTAR_API_URL` | Yes | — | Base URL of the Lodestar backend |
 | `LODESTAR_HMAC_SECRET` | No | `""` | HMAC secret for signing payment-record requests |
