@@ -909,3 +909,67 @@ describe('submitQueue management', () => {
     await promise;
   });
 });
+
+// ── #1256 / LDS-2026-169 ─────────────────────────────────────────────────────
+// recordPaymentOnChain must emit a structured `payment_outcome_authorized` event
+// after the transaction is committed so consumers can trace the authorization decision.
+
+describe('recordPaymentOnChain — payment_outcome_authorized event', () => {
+  let loggerInfoSpy;
+
+  beforeEach(async () => {
+    contractLib.__resetPendingTransactions();
+    resetMockServer();
+    const loggerModule = await import('./logger.js');
+    loggerInfoSpy = vi.spyOn(loggerModule.default, 'info');
+
+    // Minimal simulation / submission stubs
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    mockSimulateTransaction.mockResolvedValue({
+      result: { retval: sdkPkg.xdr.ScVal.scvVoid() },
+      minResourceFee: '100',
+      transactionData: new sdkPkg.SorobanDataBuilder().build(),
+    });
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'test-hash' });
+    mockGetTransaction.mockResolvedValue({
+      status: 'SUCCESS',
+      returnValue: sdkPkg.xdr.ScVal.scvVoid(),
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('emits payment_outcome_authorized with correct fields after a successful commit', async () => {
+    const agentAddress = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const serviceId = 7;
+    const amountStroops = 10_000_000n;
+
+    await contractLib.recordPaymentOnChain(agentAddress, serviceId, amountStroops, true);
+
+    const eventCall = loggerInfoSpy.mock.calls.find(
+      ([fields]) => fields?.event === 'payment_outcome_authorized'
+    );
+    expect(eventCall).toBeDefined();
+    const [fields] = eventCall;
+    expect(fields.agentAddress).toBe(agentAddress);
+    expect(fields.serviceId).toBe(serviceId);
+    expect(fields.amountStroops).toBe('10000000');
+    expect(fields.authorized).toBe(true);
+  });
+
+  it('does not emit payment_outcome_authorized when the transaction fails', async () => {
+    mockGetTransaction.mockResolvedValue({ status: 'FAILED', resultXdr: 'raw-failure' });
+
+    const agentAddress = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    await expect(
+      contractLib.recordPaymentOnChain(agentAddress, 7, 10_000_000n, true)
+    ).rejects.toThrow();
+
+    const eventCall = loggerInfoSpy.mock.calls.find(
+      ([fields]) => fields?.event === 'payment_outcome_authorized'
+    );
+    expect(eventCall).toBeUndefined();
+  });
+});

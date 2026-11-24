@@ -1020,6 +1020,20 @@ export async function recordPaymentOnChain(agentAddress, serviceId, amountStroop
     );
 
     await simulateAndSubmit(op);
+
+    // Emit a structured event so consumers can trace the committed authorization
+    // decision for this payment outcome (closes #1256 / LDS-2026-169).
+    logger.info(
+      {
+        event: 'payment_outcome_authorized',
+        agentAddress,
+        serviceId,
+        amountStroops: amountStroops.toString(),
+        authorized: success,
+      },
+      'Payment outcome authorization committed on-chain'
+    );
+
     return true;
   } catch (err) {
     logger.error({ err, agentAddress }, 'recordPaymentOnChain failed');
