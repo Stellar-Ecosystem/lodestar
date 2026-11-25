@@ -4,6 +4,8 @@ import express from "express";
 import demoRouter from "../src/routes/demo.js";
 import * as contract from "../src/lib/contract.js";
 
+
+
 vi.mock("../src/lib/contract.js", () => ({
   getService: vi.fn(),
 }));
