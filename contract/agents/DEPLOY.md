@@ -83,6 +83,7 @@ symbol, and the third topic is the affected address (e.g., `agent_address`, `new
 | Register agent | `("agents", "registered", agent_address)` | `(owner, name, description, initial_score)` |
 | Read score | `("agents", "score_read", agent_address)` | `(score, exists)` |
 | Record payment | `("agents", "payment", agent_address)` | `(service_id, amount_stroops, success, old_score, new_score, caller)` |
+| Record payment (replay-protected) | `("agents", "payment_recorded", agent_address)` | `(payment_id, service_id, amount_stroops, success, old_score, new_score, caller)` |
 | Flag agent | `("agents", "flagged", agent_address)` | `(caller, reason, old_score, new_score)` |
 | Deactivate agent | `("agents", "deactivated", agent_address)` | `(caller, owner, score, name)` |
 | Update policy | `("agents", "policy_updated", agent_address)` | `(caller, max_per_tx_stroops, max_per_day_stroops, allowed_categories, min_score_to_earn)` |
@@ -96,6 +97,20 @@ purely from chain events by filtering for topics matching `("agents", *, agent_a
 was never registered fails with `AgentError::AgentNotFound` (see below), so no
 event is emitted and the caller must not treat the failure as a zero score.
 
+### Payment Replay Protection Event Order
+
+`record_payment_with_id` enforces at most one score and spending-policy change per
+`payment_id`. On a committed (non-duplicate) payment, it emits two events in strict
+order within the same transaction:
+
+1. `("agents", "payment", agent_address)` with `(service_id, amount_stroops, success, old_score, new_score, caller)`
+2. `("agents", "payment_recorded", agent_address)` with `(payment_id, service_id, amount_stroops, success, old_score, new_score, caller)`
+
+If the same `payment_id` is replayed, the contract returns `AgentError::DuplicatePayment`
+without mutating agent score, payment counters, volume, or spending policy, and emits
+no events. Consumers can therefore trace each `payment_id` to at most one committed
+score and policy transition.
+
 ## Error Codes
 
 Failures are reported as typed `AgentError` values, not as in-band sentinel
@@ -108,7 +123,23 @@ values. The discriminants are part of the contract ABI and must stay stable.
 | 3 | `AgentAlreadyRegistered` | `register_agent` called for an existing agent |
 | 4 | `AgentListOverflow` | Agent list exceeded the maximum supported length |
 | 5 | `AgentCountOverflow` | Agent count exceeded the maximum supported value |
-| 6 | `AgentNotFound` | `get_score` called for an agent that is not registered |
+| 6 | `AgentNotFound` | Agent is not registered |
+| 7 | `Unauthorized` | Caller lacks required role (`owner`, configured `provider`, or `admin`) |
+| 8 | `PolicyNotFound` | Spending policy record is missing for the agent |
+| 9 | `NotInitialized` | Required contract configuration (`RegistryContract` or `Admin`) is not set |
+| 10 | `AlreadyInitialized` | `init` was already called |
+
+## Authority Model
+
+State-mutating operations on spending policies and agent scores enforce both Soroban signature authorization (`caller.require_auth()`) and role checks:
+
+- `update_policy`: requires signed `caller == agent.owner`.
+- `record_payment`: requires signed `caller == service.provider` as returned by the configured registry contract's `get_service(service_id)`.
+- `flag_agent`: requires signed `caller == admin`.
+
+Unauthorized callers fail with `AgentError::Unauthorized` (code `7`) without modifying policy or score state.
+| 11 | `DuplicatePayment` | `record_payment_with_id` called with an already-committed `payment_id` |
+| 12 | `InvalidPaymentId` | `record_payment_with_id` called with an empty `payment_id` |
 
 `RegistryError` (the service registry contract) is a separate `#[repr(u32)]`
 enum whose discriminants overlap these values. A numeric code must always be
