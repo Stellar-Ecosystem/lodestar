@@ -42,8 +42,7 @@ const router = Router();
 const PAGE_SIZE = 12;
 const CONTRACT_PAGE_SIZE_CAP = 20;
 
-// In-memory cache: avoids fetching all agents from Soroban on every paginated request.
-// TTL matches the frontend's 30s auto-refresh interval.
+
 let agentsCache = null;
 let agentsCacheTime = 0;
 const AGENTS_CACHE_TTL = 30_000;

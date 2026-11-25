@@ -258,7 +258,11 @@ export const ROUTE_ERROR_CODES = Object.freeze({
 
 export class UpstreamTimeoutError extends ContractError {
   constructor(message, timeoutMs, cause) {
-    super(message || 'Upstream call timed out', 'UPSTREAM_TIMEOUT');
+    super(
+      message || 'Upstream call timed out',
+      'UPSTREAM_TIMEOUT',
+      ROUTE_ERROR_CODES.UPSTREAM_TIMEOUT.status,
+    );
     this.name = 'UpstreamTimeoutError';
     this.timeoutMs = timeoutMs;
     if (cause) this.cause = cause;

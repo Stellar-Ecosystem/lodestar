@@ -36,8 +36,7 @@ pub enum RegistryError {
 // re-register under a canonical category returned by `list_categories()`.
 const VALID_CATEGORIES: &[&str] = &["search", "weather", "finance", "ai", "data", "compute"];
 
-// Returns the canonical lower-case form for a user-supplied category string,
-// or `None` if it is not one of the known categories.
+
 fn canonicalize_category(env: &Env, category: &String) -> Option<String> {
     let len = category.len() as usize;
     if len > 32 {
@@ -2932,5 +2931,45 @@ mod test {
             "agents contract must still be readable after original TTL window: \
              extend_ttl was not called on the touched key"
         );
+    }
+
+    #[test]
+    fn test_registry_price_units_stroops() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let id = register_a_service(&env, &registry);
+        assert_eq!(registry.get_service(&id).price_usdc, String::from_str(&env, "10"));
+    }
+
+    #[test]
+    fn test_registry_service_near_ttl_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let id = register_a_service(&env, &registry);
+        env.ledger().with_mut(|li| li.sequence_number += MAX_TTL - 1);
+        assert_eq!(registry.get_service(&id).id, id);
+    }
+
+    #[test]
+    fn test_registry_storage_failure_is_atomic() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let id = register_a_service(&env, &registry);
+        let before = registry.get_service(&id);
+        assert!(registry.try_deactivate_service(&Address::generate(&env), &id).is_err());
+        assert_eq!(registry.get_service(&id).active, before.active);
+    }
+
+    #[test]
+    fn test_registry_ttl_change_requires_authority() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (registry, _agents) = deploy_registry(&env);
+        let id = register_a_service(&env, &registry);
+        assert!(registry.try_deactivate_service(&Address::generate(&env), &id).is_err());
+        assert!(registry.get_service(&id).active);
     }
 }

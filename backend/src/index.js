@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { pathToFileURL } from "node:url";
 import config, { validateConfig } from "./config.js";
 import logger from "./lib/logger.js";
 import {
@@ -40,6 +41,8 @@ if (process.argv.includes("--print-config")) {
         jsonBodyLimit: config.jsonBodyLimit,
         trustProxy: config.trustProxy,
         rateLimit: config.rateLimit,
+        upstreamTimeout: config.upstreamTimeout,
+        health: config.health,
         demoRun: config.demoRun,
       },
       null,
@@ -53,7 +56,10 @@ validateConfig(logger);
 
 logger.info({ corsOrigin: config.corsOrigin }, "Resolved CORS origin allowlist");
 
-const app = express();
+// Exported so the integration tests can drive the routes exactly as they are
+// mounted here — middleware order included — instead of re-assembling a bare
+// router in the test.
+export const app = express();
 
 // Trust the configured number of proxy hops so req.ip reflects the real client
 // (via X-Forwarded-For) behind a reverse proxy — required for correct IP-based
@@ -136,6 +142,30 @@ app.use((err, req, res, _next) => {
 let server;
 let shuttingDown = false;
 
+/**
+ * Boot the HTTP server.
+ *
+ * Pending transactions from a previous run are resumed first so a vote that
+ * was submitted but not confirmed is not lost.
+ */
+async function start() {
+  try {
+    await resumePendingTransactions();
+  } catch (err) {
+    logger.error({ err }, "Failed to resume pending transactions — continuing startup");
+  }
+
+  server = app.listen(config.port, () => {
+    logger.info(
+      {
+        port: config.port,
+        network: config.stellar.network,
+        contractId: config.contract.id,
+      },
+      "Lodestar backend running",
+    );
+  });
+}
 
 
 async function shutdown() {
@@ -204,4 +234,11 @@ async function doDrainAndDump() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-start();
+// Listen only when this file is executed directly (`npm start`). Importing it
+// — as the integration tests do — must not bind a port.
+const isDirectRun =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  start();
+}
