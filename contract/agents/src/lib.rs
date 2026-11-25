@@ -33,6 +33,8 @@ pub enum AgentError {
     PolicyNotFound = 8,
     NotInitialized = 9,
     AlreadyInitialized = 10,
+    DuplicatePayment = 11,
+    InvalidPaymentId = 12,
 }
 
 #[contracttype]
@@ -44,6 +46,7 @@ pub enum DataKey {
     Policy(Address),
     RegistryContract,
     Admin,
+    ProcessedPayment(String),
 }
 
 #[contracttype]
@@ -129,6 +132,95 @@ impl LodestarAgents {
             .ok_or(AgentError::ArithmeticOverflow)?;
         policy.last_reset_ledger = last_reset;
         Ok(policy)
+    }
+
+    /// Apply a verified payment outcome to the agent and spending policy in persistent storage.
+    /// Returns `(old_score, new_score)` after persisting both entries and extending their TTLs.
+    fn apply_payment(
+        env: &Env,
+        agent_address: &Address,
+        service_id: u64,
+        amount_stroops: i128,
+        success: bool,
+        caller: &Address,
+    ) -> Result<(i32, i32), AgentError> {
+        // Cross-contract check: caller must be the service's registered provider
+        let registry_contract: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RegistryContract)
+            .unwrap_or_else(|| panic_with_error!(env, AgentError::NotInitialized));
+        let service: ServiceEntry = env.invoke_contract(
+            &registry_contract,
+            &Symbol::new(env, "get_service"),
+            vec![env, service_id.into_val(env)],
+        );
+        if service.provider != *caller {
+            panic_with_error!(env, AgentError::Unauthorized);
+        }
+
+        let agent_key = DataKey::Agent(agent_address.clone());
+        let mut agent: AgentEntry = env
+            .storage()
+            .persistent()
+            .get(&agent_key)
+            .unwrap_or_else(|| panic_with_error!(env, AgentError::AgentNotFound));
+
+        // Load policy for min_score_to_earn enforcement and daily spend update
+        let policy_key = DataKey::Policy(agent_address.clone());
+        let policy: SpendingPolicy = env
+            .storage()
+            .persistent()
+            .get(&policy_key)
+            .unwrap_or_else(|| panic_with_error!(env, AgentError::PolicyNotFound));
+
+        let old_score = agent.score;
+
+        agent.total_payments += 1;
+        agent.last_active = env.ledger().sequence() as u64;
+
+        if success {
+            agent.successful_payments += 1;
+            agent.total_volume_stroops = agent
+                .total_volume_stroops
+                .checked_add(amount_stroops)
+                .ok_or(AgentError::ArithmeticOverflow)?;
+            // Enforce min_score_to_earn: agents below the threshold do not gain
+            // score from successful payments, though payment stats are still recorded.
+            if agent.score >= policy.min_score_to_earn {
+                agent.score = agent.score.saturating_add(SCORE_SUCCESS).min(MAX_SCORE);
+            }
+        } else {
+            agent.failed_payments += 1;
+            agent.score = agent.score.saturating_add(SCORE_FAILURE).max(0);
+        }
+
+        let new_score = agent.score;
+
+        env.storage().persistent().set(&agent_key, &agent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&agent_key, MAX_TTL, MAX_TTL);
+
+        // Update daily spend in policy using helper
+        let updated_policy = if success {
+            Self::update_daily_spend(env, policy, amount_stroops)?
+        } else {
+            // Only update if success, but still apply reset logic if needed
+            let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(env, &policy);
+            SpendingPolicy {
+                daily_spent_stroops: daily_spent,
+                last_reset_ledger: last_reset,
+                ..policy
+            }
+        };
+
+        env.storage().persistent().set(&policy_key, &updated_policy);
+        env.storage()
+            .persistent()
+            .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
+
+        Ok((old_score, new_score))
     }
 }
 
@@ -566,81 +658,14 @@ impl LodestarAgents {
             return Err(AgentError::InvalidAmount);
         }
 
-        // Cross-contract check: caller must be the service's registered provider
-        let registry_contract: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RegistryContract)
-            .unwrap_or_else(|| panic_with_error!(&env, AgentError::NotInitialized));
-        let service: ServiceEntry = env.invoke_contract(
-            &registry_contract,
-            &Symbol::new(&env, "get_service"),
-            vec![&env, service_id.into_val(&env)],
-        );
-        if service.provider != caller {
-            panic_with_error!(&env, AgentError::Unauthorized);
-        }
-
-        let agent_key = DataKey::Agent(agent_address.clone());
-        let mut agent: AgentEntry = env
-            .storage()
-            .persistent()
-            .get(&agent_key)
-            .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
-
-        // Load policy for min_score_to_earn enforcement and daily spend update
-        let policy_key = DataKey::Policy(agent_address.clone());
-        let policy: SpendingPolicy = env
-            .storage()
-            .persistent()
-            .get(&policy_key)
-            .unwrap_or_else(|| panic_with_error!(&env, AgentError::PolicyNotFound));
-
-        let old_score = agent.score;
-
-        agent.total_payments += 1;
-        agent.last_active = env.ledger().sequence() as u64;
-
-        if success {
-            agent.successful_payments += 1;
-            agent.total_volume_stroops = agent
-                .total_volume_stroops
-                .checked_add(amount_stroops)
-                .ok_or(AgentError::ArithmeticOverflow)?;
-            // Enforce min_score_to_earn: agents below the threshold do not gain
-            // score from successful payments, though payment stats are still recorded.
-            if agent.score >= policy.min_score_to_earn {
-                agent.score = agent.score.saturating_add(SCORE_SUCCESS).min(MAX_SCORE);
-            }
-        } else {
-            agent.failed_payments += 1;
-            agent.score = agent.score.saturating_add(SCORE_FAILURE).max(0);
-        }
-
-        let new_score = agent.score;
-
-        env.storage().persistent().set(&agent_key, &agent);
-        env.storage()
-            .persistent()
-            .extend_ttl(&agent_key, MAX_TTL, MAX_TTL);
-
-        // Update daily spend in policy using helper
-        let updated_policy = if success {
-            Self::update_daily_spend(&env, policy, amount_stroops)?
-        } else {
-            // Only update if success, but still apply reset logic if needed
-            let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(&env, &policy);
-            SpendingPolicy {
-                daily_spent_stroops: daily_spent,
-                last_reset_ledger: last_reset,
-                ..policy
-            }
-        };
-
-        env.storage().persistent().set(&policy_key, &updated_policy);
-        env.storage()
-            .persistent()
-            .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
+        let (old_score, new_score) = Self::apply_payment(
+            &env,
+            &agent_address,
+            service_id,
+            amount_stroops,
+            success,
+            &caller,
+        )?;
 
         env.events().publish(
             (
@@ -658,6 +683,101 @@ impl LodestarAgents {
             ),
         );
         Ok(())
+    }
+
+    /// Record a payment outcome with replay protection keyed by `payment_id`.
+    ///
+    /// Guarantees at most one score and spending-policy change per unique `payment_id`.
+    /// Replays with an already-committed `payment_id` return `Err(AgentError::DuplicatePayment)`
+    /// without mutating state or emitting events.
+    ///
+    /// # Events
+    /// On success only, emits two events in deterministic order:
+    /// 1. `("agents", "payment", agent_address)` with payload
+    ///    `(service_id, amount_stroops, success, old_score, new_score, caller)`.
+    /// 2. `("agents", "payment_recorded", agent_address)` with payload
+    ///    `(payment_id, service_id, amount_stroops, success, old_score, new_score, caller)`.
+    ///
+    /// Consumers can correlate `payment_id` directly to the single committed score and
+    /// policy change. Rejected calls (empty `payment_id`, non-positive amount, unauthorized
+    /// caller, or duplicate `payment_id`) emit no events.
+    pub fn record_payment_with_id(
+        env: Env,
+        agent_address: Address,
+        service_id: u64,
+        amount_stroops: i128,
+        success: bool,
+        payment_id: String,
+        caller: Address,
+    ) -> Result<(), AgentError> {
+        caller.require_auth();
+
+        if payment_id.is_empty() {
+            return Err(AgentError::InvalidPaymentId);
+        }
+
+        if amount_stroops <= 0 {
+            return Err(AgentError::InvalidAmount);
+        }
+
+        let payment_key = DataKey::ProcessedPayment(payment_id.clone());
+        if env.storage().persistent().has(&payment_key) {
+            return Err(AgentError::DuplicatePayment);
+        }
+
+        let (old_score, new_score) = Self::apply_payment(
+            &env,
+            &agent_address,
+            service_id,
+            amount_stroops,
+            success,
+            &caller,
+        )?;
+
+        env.storage().persistent().set(&payment_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&payment_key, MAX_TTL, MAX_TTL);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "payment"),
+                agent_address.clone(),
+            ),
+            (
+                service_id,
+                amount_stroops,
+                success,
+                old_score,
+                new_score,
+                caller.clone(),
+            ),
+        );
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "payment_recorded"),
+                agent_address,
+            ),
+            (
+                payment_id,
+                service_id,
+                amount_stroops,
+                success,
+                old_score,
+                new_score,
+                caller,
+            ),
+        );
+        Ok(())
+    }
+
+    /// Return `true` if `payment_id` has already been committed via `record_payment_with_id`.
+    pub fn is_payment_processed(env: Env, payment_id: String) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::ProcessedPayment(payment_id))
     }
 
     // Flag an agent (admin-only)
@@ -1300,9 +1420,11 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
 
         let policy_after = client.get_policy(&agent_addr);
-        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+        assert!(
+            policy_after.is_some(),
+            "policy entry must remain readable after TTL boundary"
+        );
     }
-
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
@@ -1384,7 +1506,10 @@ mod test {
         let impostor = Address::generate(&env);
 
         assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
+            client
+                .try_transfer_admin(&new_admin, &impostor)
+                .unwrap_err()
+                .unwrap(),
             AgentError::Unauthorized
         );
     }
@@ -3309,5 +3434,459 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    fn set_agent_score(env: &Env, contract_id: &Address, agent_addr: &Address, score: i32) {
+        env.as_contract(contract_id, || {
+            let key = DataKey::Agent(agent_addr.clone());
+            let mut agent: AgentEntry = env.storage().persistent().get(&key).unwrap();
+            agent.score = score;
+            env.storage().persistent().set(&key, &agent);
+        });
+    }
+
+    #[test]
+    fn test_update_policy_requires_auth_and_owner_role() {
+        let env = Env::default();
+        let (contract_id, admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&1u64, &provider);
+
+        let initial_policy = client.get_policy(&agent_addr).unwrap();
+
+        // Unsigned call must fail even when caller is the owner.
+        env.set_auths(&[]);
+        assert!(client
+            .try_update_policy(
+                &agent_addr,
+                &500i128,
+                &1_000i128,
+                &vec![&env],
+                &300i32,
+                &owner,
+            )
+            .is_err());
+
+        // Signed calls from non-owners (attacker, admin, provider) must fail with Unauthorized.
+        env.mock_all_auths();
+        for unauthorized in [&attacker, &admin, &provider] {
+            let res = client.try_update_policy(
+                &agent_addr,
+                &500i128,
+                &1_000i128,
+                &vec![&env],
+                &300i32,
+                unauthorized,
+            );
+            assert_eq!(res, Err(Ok(AgentError::Unauthorized)));
+        }
+
+        // Policy remains unchanged after all unauthorized attempts.
+        let unchanged_policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(
+            unchanged_policy.max_per_tx_stroops,
+            initial_policy.max_per_tx_stroops
+        );
+        assert_eq!(
+            unchanged_policy.max_per_day_stroops,
+            initial_policy.max_per_day_stroops
+        );
+        assert_eq!(
+            unchanged_policy.min_score_to_earn,
+            initial_policy.min_score_to_earn
+        );
+
+        // Signed owner call succeeds.
+        client.update_policy(
+            &agent_addr,
+            &500i128,
+            &1_000i128,
+            &vec![&env],
+            &300i32,
+            &owner,
+        );
+        let updated_policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(updated_policy.max_per_tx_stroops, 500i128);
+        assert_eq!(updated_policy.max_per_day_stroops, 1_000i128);
+        assert_eq!(updated_policy.min_score_to_earn, 300i32);
+    }
+
+    #[test]
+    fn test_record_payment_requires_signed_configured_provider() {
+        let env = Env::default();
+        let (contract_id, admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let other_provider = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&10u64, &provider);
+        registry_client.set_service(&20u64, &other_provider);
+
+        // Unsigned call must fail even for the configured provider.
+        env.set_auths(&[]);
+        assert!(client
+            .try_record_payment(&agent_addr, &10u64, &100i128, &true, &provider)
+            .is_err());
+
+        // Signed calls from non-provider roles must fail with Unauthorized.
+        env.mock_all_auths();
+        for unauthorized in [&owner, &admin, &agent_addr, &other_provider] {
+            let res = client.try_record_payment(&agent_addr, &10u64, &100i128, &true, unauthorized);
+            assert_eq!(res, Err(Ok(AgentError::Unauthorized)));
+        }
+
+        // Score remains unchanged at INITIAL_SCORE (100).
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE);
+
+        // Configured provider succeeds and updates score.
+        client.record_payment(&agent_addr, &10u64, &100i128, &true, &provider);
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE + SCORE_SUCCESS);
+    }
+
+    #[test]
+    fn test_score_tier_boundaries_299_300_and_899_900() {
+        let env = Env::default();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&1u64, &provider);
+
+        // 299 / 300 boundary (New -> Building)
+        set_agent_score(&env, &contract_id, &agent_addr, 299);
+        assert!(client.is_eligible(&agent_addr, &299));
+        assert!(!client.is_eligible(&agent_addr, &300));
+
+        // Unauthorized caller cannot push score across 299 -> 300 boundary.
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &100i128, &true, &attacker),
+            Err(Ok(AgentError::Unauthorized))
+        );
+        assert_eq!(client.get_score(&agent_addr), 299);
+
+        // Configured provider pushes score across 299 -> 309 (Building tier).
+        client.record_payment(&agent_addr, &1u64, &100i128, &true, &provider);
+        assert_eq!(client.get_score(&agent_addr), 309);
+        assert!(client.is_eligible(&agent_addr, &300));
+
+        // Exact 300 boundary is eligible for Building tier (min_score = 300).
+        set_agent_score(&env, &contract_id, &agent_addr, 300);
+        assert!(client.is_eligible(&agent_addr, &300));
+
+        // 899 / 900 boundary (Established -> Trusted)
+        set_agent_score(&env, &contract_id, &agent_addr, 899);
+        assert!(client.is_eligible(&agent_addr, &899));
+        assert!(!client.is_eligible(&agent_addr, &900));
+
+        // Unauthorized caller cannot push score across 899 -> 900 boundary.
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &100i128, &true, &attacker),
+            Err(Ok(AgentError::Unauthorized))
+        );
+        assert_eq!(client.get_score(&agent_addr), 899);
+
+        // Configured provider pushes score across 899 -> 909 (Trusted tier).
+        client.record_payment(&agent_addr, &1u64, &100i128, &true, &provider);
+        assert_eq!(client.get_score(&agent_addr), 909);
+        assert!(client.is_eligible(&agent_addr, &900));
+
+        // Exact 900 boundary is eligible for Trusted tier (min_score = 900).
+        set_agent_score(&env, &contract_id, &agent_addr, 900);
+        assert!(client.is_eligible(&agent_addr, &900));
+    }
+
+    #[test]
+    fn test_negative_outcome_crosses_tier_boundary() {
+        let env = Env::default();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&1u64, &provider);
+
+        // Cross Building (300) -> New (<300) via failed payment (-25).
+        set_agent_score(&env, &contract_id, &agent_addr, 300);
+        assert!(client.is_eligible(&agent_addr, &300));
+
+        // Unauthorized caller cannot inflict negative outcome.
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &100i128, &false, &attacker),
+            Err(Ok(AgentError::Unauthorized))
+        );
+        assert_eq!(client.get_score(&agent_addr), 300);
+
+        // Configured provider records failed payment: 300 - 25 = 275.
+        client.record_payment(&agent_addr, &1u64, &100i128, &false, &provider);
+        assert_eq!(client.get_score(&agent_addr), 275);
+        assert!(!client.is_eligible(&agent_addr, &300));
+        assert!(client.is_eligible(&agent_addr, &275));
+
+        // Cross Trusted (900) -> Established (<900) via failed payment (-25).
+        set_agent_score(&env, &contract_id, &agent_addr, 900);
+        assert!(client.is_eligible(&agent_addr, &900));
+
+        client.record_payment(&agent_addr, &1u64, &100i128, &false, &provider);
+        assert_eq!(client.get_score(&agent_addr), 875);
+        assert!(!client.is_eligible(&agent_addr, &900));
+        assert!(client.is_eligible(&agent_addr, &600));
+    }
+
+    #[test]
+    fn test_record_payment_with_id_commits_once_and_emits_ordered_events() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 42u64;
+        let provider = Address::generate(&env);
+        let mock_client = MockRegistryClient::new(&env, &registry_id);
+        mock_client.set_service(&service_id, &provider);
+
+        let payment_id = String::from_str(&env, "x402-pay-001");
+        assert!(!client.is_payment_processed(&payment_id));
+
+        let amount = 5_000_000i128;
+        client.record_payment_with_id(
+            &agent_addr,
+            &service_id,
+            &amount,
+            &true,
+            &payment_id,
+            &provider,
+        );
+
+        assert!(client.is_payment_processed(&payment_id));
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(agent.total_payments, 1);
+        assert_eq!(agent.successful_payments, 1);
+        assert_eq!(agent.total_volume_stroops, amount);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 2);
+
+        // 1. Standard score-change payment event is emitted first
+        let payment_event = events.get(0).unwrap();
+        assert_eq!(
+            payment_event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "payment"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(u64, i128, bool, i32, i32, Address)>::from_val(&env, &payment_event.2),
+            (
+                service_id,
+                amount,
+                true,
+                INITIAL_SCORE,
+                INITIAL_SCORE + SCORE_SUCCESS,
+                provider.clone(),
+            )
+        );
+
+        // 2. Replay-protected payment_recorded event is emitted second with payment_id
+        let recorded_event = events.get(1).unwrap();
+        assert_eq!(
+            recorded_event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "payment_recorded"),
+                agent_addr.clone(),
+            )
+                .into_val(&env)
+        );
+        assert_eq!(
+            <(String, u64, i128, bool, i32, i32, Address)>::from_val(&env, &recorded_event.2),
+            (
+                payment_id,
+                service_id,
+                amount,
+                true,
+                INITIAL_SCORE,
+                INITIAL_SCORE + SCORE_SUCCESS,
+                provider,
+            )
+        );
+    }
+
+    #[test]
+    fn test_record_payment_with_id_rejects_replay_without_score_change_or_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 7u64;
+        let provider = Address::generate(&env);
+        let mock_client = MockRegistryClient::new(&env, &registry_id);
+        mock_client.set_service(&service_id, &provider);
+
+        let payment_id = String::from_str(&env, "x402-pay-replay-001");
+        let amount = 1_000_000i128;
+
+        client.record_payment_with_id(
+            &agent_addr,
+            &service_id,
+            &amount,
+            &true,
+            &payment_id,
+            &provider,
+        );
+        let _ = env.events().all();
+
+        let agent_after_first = client.get_agent(&agent_addr).unwrap();
+        let policy_after_first = client.get_policy(&agent_addr).unwrap();
+
+        // Replaying the same payment_id must fail with DuplicatePayment and emit no events
+        let replay = client.try_record_payment_with_id(
+            &agent_addr,
+            &service_id,
+            &amount,
+            &true,
+            &payment_id,
+            &provider,
+        );
+        assert_eq!(replay, Err(Ok(AgentError::DuplicatePayment)));
+        assert_eq!(env.events().all().len(), 0);
+
+        let agent_after_replay = client.get_agent(&agent_addr).unwrap();
+        let policy_after_replay = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(agent_after_replay.score, agent_after_first.score);
+        assert_eq!(
+            agent_after_replay.total_payments,
+            agent_after_first.total_payments
+        );
+        assert_eq!(
+            agent_after_replay.successful_payments,
+            agent_after_first.successful_payments
+        );
+        assert_eq!(
+            agent_after_replay.total_volume_stroops,
+            agent_after_first.total_volume_stroops
+        );
+        assert_eq!(
+            policy_after_replay.daily_spent_stroops,
+            policy_after_first.daily_spent_stroops
+        );
+    }
+
+    #[test]
+    fn test_record_payment_with_id_rejects_empty_payment_id_without_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 7u64;
+        let provider = Address::generate(&env);
+        let mock_client = MockRegistryClient::new(&env, &registry_id);
+        mock_client.set_service(&service_id, &provider);
+
+        let empty_id = String::from_str(&env, "");
+        let _ = env.events().all();
+
+        let res = client.try_record_payment_with_id(
+            &agent_addr,
+            &service_id,
+            &1_000_000i128,
+            &true,
+            &empty_id,
+            &provider,
+        );
+        assert_eq!(res, Err(Ok(AgentError::InvalidPaymentId)));
+        assert_eq!(env.events().all().len(), 0);
+        assert_eq!(client.get_agent(&agent_addr).unwrap().score, INITIAL_SCORE);
+    }
+
+    #[test]
+    fn test_record_payment_with_id_distinct_ids_each_commit_once() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 9u64;
+        let provider = Address::generate(&env);
+        let mock_client = MockRegistryClient::new(&env, &registry_id);
+        mock_client.set_service(&service_id, &provider);
+
+        let id1 = String::from_str(&env, "x402-pay-a");
+        let id2 = String::from_str(&env, "x402-pay-b");
+
+        client.record_payment_with_id(
+            &agent_addr,
+            &service_id,
+            &500_000i128,
+            &true,
+            &id1,
+            &provider,
+        );
+        assert_eq!(env.events().all().len(), 2);
+
+        client.record_payment_with_id(
+            &agent_addr,
+            &service_id,
+            &500_000i128,
+            &true,
+            &id2,
+            &provider,
+        );
+        assert_eq!(env.events().all().len(), 2);
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE + 2 * SCORE_SUCCESS);
+        assert_eq!(agent.total_payments, 2);
+        assert!(client.is_payment_processed(&id1));
+        assert!(client.is_payment_processed(&id2));
     }
 }
