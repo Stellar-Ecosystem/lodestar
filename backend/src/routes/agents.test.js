@@ -5,6 +5,7 @@ import request from 'supertest';
 
 const mockFlagAgentOnChain = vi.fn();
 const mockAdminDeactivateAgentOnChain = vi.fn();
+
 const mockGetAgent = vi.fn();
 const mockGetAgentPolicy = vi.fn();
 const mockGetAgentScore = vi.fn();
