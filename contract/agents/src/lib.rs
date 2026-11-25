@@ -530,6 +530,13 @@ impl LodestarAgents {
     /// Returns `Err(AgentError::ArithmeticOverflow)` if updating the agent's total volume or the
     /// policy's daily spend overflows `i128`.
     ///
+    /// # Failure & Score Tier Safety
+    /// When `success` is `false`, `agent.score` is decremented by `SCORE_FAILURE` (-25) using
+    /// saturating arithmetic clamped at `0` (safely crossing score tier boundaries without
+    /// underflow or corruption). Failed payments never increment `daily_spent_stroops` or
+    /// `total_volume_stroops`, so a failure cannot spend extra allowance. Policy updates are
+    /// computed and validated before persisting either entry.
+    ///
     /// # Authorisation
     /// `caller` must satisfy `require_auth()` and must equal the provider returned by the
     /// registry contract's `get_service(service_id)` call.
@@ -619,12 +626,8 @@ impl LodestarAgents {
 
         let new_score = agent.score;
 
-        env.storage().persistent().set(&agent_key, &agent);
-        env.storage()
-            .persistent()
-            .extend_ttl(&agent_key, MAX_TTL, MAX_TTL);
-
-        // Update daily spend in policy using helper
+        // Compute and validate daily spend before persisting any state so an
+        // arithmetic overflow cannot leave partial mutations behind.
         let updated_policy = if success {
             Self::update_daily_spend(&env, policy, amount_stroops)?
         } else {
@@ -636,6 +639,11 @@ impl LodestarAgents {
                 ..policy
             }
         };
+
+        env.storage().persistent().set(&agent_key, &agent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&agent_key, MAX_TTL, MAX_TTL);
 
         env.storage().persistent().set(&policy_key, &updated_policy);
         env.storage()
@@ -691,7 +699,7 @@ impl LodestarAgents {
 
         agent.flagged = true;
         agent.flag_reason = reason.clone();
-        agent.score = (agent.score + FLAG_PENALTY).max(0);
+        agent.score = agent.score.saturating_add(FLAG_PENALTY).max(0);
 
         let new_score = agent.score;
 
@@ -925,7 +933,17 @@ impl LodestarAgents {
         );
     }
 
-    // List agents (paginated by limit)
+    /// List agents in stable registration order, capped at `limit`.
+    ///
+    /// # Pagination Boundaries
+    /// - **`limit == 0`** or empty registry: returns an empty `Vec<AgentEntry>`.
+    /// - **`limit >= total`**: returns all registered agents without error.
+    ///
+    /// # Ordering & Uniqueness
+    /// Reads `DataKey::AgentIds` in append-only registration order. Because
+    /// `register_agent` rejects duplicate addresses with
+    /// `AgentError::AgentAlreadyRegistered`, every returned entry has a unique
+    /// `Address` and deterministic ordering across calls.
     pub fn list_agents(env: Env, limit: u32) -> Vec<AgentEntry> {
         let ids_key = DataKey::AgentIds;
         let ids: Vec<Address> = env
@@ -949,7 +967,28 @@ impl LodestarAgents {
         result
     }
 
-    // List a single page of agents in registration order (avoids O(n) reads for large sets)
+    /// List a single page of agents in stable registration order (avoids O(n)
+    /// reads for large sets).
+    ///
+    /// # Pagination Boundaries
+    /// - **Zero `page_size`**: returns an empty `Vec<AgentEntry>` for any `page`.
+    /// - **Empty registry (`total == 0`)**: returns an empty `Vec<AgentEntry>` for
+    ///   any `(page, page_size)`.
+    /// - **Out-of-range `page`**: when `start = page.saturating_mul(page_size) >= total`
+    ///   (including `u32` multiplication overflow), returns an empty `Vec<AgentEntry>`.
+    /// - **Final partial page**: when `start < total < start.saturating_add(page_size)`,
+    ///   returns the remaining `total - start` entries without padding or error.
+    /// - **Large `page_size` (e.g. `u32::MAX`)**: `end = start.saturating_add(page_size).min(total)`
+    ///   clamps safely without arithmetic overflow.
+    ///
+    /// # Ordering & Uniqueness
+    /// Reads slice `start..end` of append-only `DataKey::AgentIds`, where
+    /// `start = page.saturating_mul(page_size)` and
+    /// `end = start.saturating_add(page_size).min(total)`.
+    /// Because `register_agent` rejects duplicate addresses, addresses are unique
+    /// within each page and disjoint across consecutive non-overlapping pages,
+    /// preserving stable registration order and exact ledger (`registered_at`,
+    /// `last_active`) and stroop (`total_volume_stroops`) fields.
     pub fn list_agents_page(env: Env, page: u32, page_size: u32) -> Vec<AgentEntry> {
         let ids_key = DataKey::AgentIds;
         let ids: Vec<Address> = env
@@ -964,7 +1003,7 @@ impl LodestarAgents {
         if start >= total {
             return result;
         }
-        let end = (start + page_size as usize).min(total);
+        let end = start.saturating_add(page_size as usize).min(total);
         for i in start..end {
             let addr = ids.get(i as u32).unwrap();
             if let Some(agent) = env
@@ -1300,9 +1339,11 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
 
         let policy_after = client.get_policy(&agent_addr);
-        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+        assert!(
+            policy_after.is_some(),
+            "policy entry must remain readable after TTL boundary"
+        );
     }
-
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
@@ -1384,7 +1425,10 @@ mod test {
         let impostor = Address::generate(&env);
 
         assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
+            client
+                .try_transfer_admin(&new_admin, &impostor)
+                .unwrap_err()
+                .unwrap(),
             AgentError::Unauthorized
         );
     }
@@ -3309,5 +3353,240 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    #[test]
+    fn test_list_agents_page_boundaries_empty_and_final_partial_page_with_ledger_and_stroops() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // Empty registry boundary: every (page, page_size) yields an empty page.
+        for (page, page_size) in [(0u32, 0u32), (0, 2), (1, 2), (u32::MAX, u32::MAX)] {
+            let empty_page = client.list_agents_page(&page, &page_size);
+            assert_eq!(empty_page.len(), 0);
+        }
+
+        // Register 5 agents at exact ledger sequences and record exact stroop amounts.
+        let owner = Address::generate(&env);
+        let specs: [(u32, u32, i128); 5] = [
+            (100, 101, 1_000_000), // 0.1 USDC in stroops
+            (110, 112, 2_500_000), // 0.25 USDC in stroops
+            (120, 123, 3_750_000), // 0.375 USDC in stroops
+            (130, 134, 5_000_000), // 0.5 USDC in stroops
+            (140, 145, 7_250_000), // 0.725 USDC in stroops
+        ];
+
+        let mut expected_addrs = vec![&env];
+        for (reg_ledger, pay_ledger, amount_stroops) in specs {
+            env.ledger().with_mut(|l| {
+                l.sequence_number = reg_ledger;
+            });
+            let addr = Address::generate(&env);
+            setup_agent(&env, &contract_id, &addr, &owner);
+
+            env.ledger().with_mut(|l| {
+                l.sequence_number = pay_ledger;
+            });
+            client.record_payment(&addr, &1u64, &amount_stroops, &true, &owner);
+            expected_addrs.push_back(addr);
+        }
+
+        // Zero page_size and overflow boundaries on non-empty registry.
+        assert_eq!(client.list_agents_page(&0, &0).len(), 0);
+        assert_eq!(client.list_agents_page(&1, &0).len(), 0);
+        assert_eq!(client.list_agents_page(&1, &u32::MAX).len(), 0);
+        assert_eq!(client.list_agents_page(&u32::MAX, &u32::MAX).len(), 0);
+        assert_eq!(client.list_agents_page(&0, &u32::MAX).len(), 5);
+
+        // Walk pages of size 2: full page 0 (2), full page 1 (2), final partial page 2 (1),
+        // and out-of-range empty page 3 (0).
+        let page0 = client.list_agents_page(&0, &2);
+        let page1 = client.list_agents_page(&1, &2);
+        let page2 = client.list_agents_page(&2, &2);
+        let page3 = client.list_agents_page(&3, &2);
+
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page3.len(), 0);
+
+        // Concatenate all paginated entries and verify stable order, unique addresses,
+        // and exact ledger and stroop units.
+        let mut collected = vec![&env];
+        for page in [&page0, &page1, &page2] {
+            for entry in page.iter() {
+                collected.push_back(entry);
+            }
+        }
+        assert_eq!(collected.len(), 5);
+
+        let mut seen = vec![&env];
+        for (idx, (reg_ledger, pay_ledger, amount_stroops)) in specs.iter().enumerate() {
+            let entry = collected.get(idx as u32).unwrap();
+            let expected_addr = expected_addrs.get(idx as u32).unwrap();
+            assert_eq!(entry.address, expected_addr);
+            assert!(!seen.contains(&entry.address));
+            seen.push_back(entry.address.clone());
+
+            assert_eq!(entry.registered_at, *reg_ledger as u64);
+            assert_eq!(entry.last_active, *pay_ledger as u64);
+            assert_eq!(entry.total_volume_stroops, *amount_stroops);
+        }
+    }
+
+    /// Inject a negative payment outcome that crosses a score tier boundary both
+    /// before and after state changes (spending policy updates and successful
+    /// payments). Verifies that a failure cannot spend extra daily allowance or
+    /// corrupt agent score.
+    #[test]
+    fn test_score_tier_boundary_failure_preserves_allowance_and_score() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let provider = Address::generate(&env);
+        let registry_id = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::RegistryContract)
+                .expect("registry contract not set")
+        });
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        // Set a tight daily policy (max_per_tx = 500, max_per_day = 1_000) and
+        // place the agent right on the Building tier boundary (score = 300).
+        client.update_policy(
+            &agent_addr,
+            &500i128,
+            &1_000i128,
+            &vec![&env],
+            &0i32,
+            &owner,
+        );
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Agent(agent_addr.clone());
+            let mut agent: AgentEntry = env.storage().persistent().get(&key).unwrap();
+            agent.score = 300;
+            env.storage().persistent().set(&key, &agent);
+        });
+
+        assert!(client.is_eligible(&agent_addr, &300));
+        assert!(client.check_spending_allowed(&agent_addr, &500i128));
+
+        // 1. Negative outcome BEFORE state changes: crosses Building (300) -> New (275).
+        client.record_payment(&agent_addr, &1u64, &500i128, &false, &provider);
+
+        let agent_after_pre = client.get_agent(&agent_addr).unwrap();
+        let policy_after_pre = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(agent_after_pre.score, 275);
+        assert_eq!(agent_after_pre.failed_payments, 1);
+        assert_eq!(agent_after_pre.total_volume_stroops, 0);
+        assert_eq!(
+            policy_after_pre.daily_spent_stroops, 0,
+            "failed payment before state changes must not spend daily allowance"
+        );
+        assert!(!client.is_eligible(&agent_addr, &300));
+        assert!(client.is_eligible(&agent_addr, &275));
+
+        // 2. State changes: three successful payments of 200 stroops each (+30 score -> 305,
+        //    daily_spent = 600, remaining daily allowance = 400).
+        for _ in 0..3 {
+            client.record_payment(&agent_addr, &1u64, &200i128, &true, &provider);
+        }
+        assert_eq!(client.get_agent(&agent_addr).unwrap().score, 305);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            600
+        );
+        assert!(client.is_eligible(&agent_addr, &300));
+        assert!(client.check_spending_allowed(&agent_addr, &400i128));
+        assert!(!client.check_spending_allowed(&agent_addr, &401i128));
+
+        // 3. Negative outcome AFTER state changes: crosses Building (305) -> New (280).
+        client.record_payment(&agent_addr, &1u64, &400i128, &false, &provider);
+
+        let agent_after_post = client.get_agent(&agent_addr).unwrap();
+        let policy_after_post = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(agent_after_post.score, 280);
+        assert_eq!(agent_after_post.failed_payments, 2);
+        assert_eq!(agent_after_post.total_volume_stroops, 600);
+        assert_eq!(
+            policy_after_post.daily_spent_stroops, 600,
+            "failed payment after state changes must not spend extra daily allowance"
+        );
+        assert!(!client.is_eligible(&agent_addr, &300));
+        assert!(
+            client.check_spending_allowed(&agent_addr, &400i128),
+            "remaining daily allowance must remain intact after failure"
+        );
+
+        // 4. Floor safety: repeated failures near zero clamp cleanly at 0 without underflow.
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Agent(agent_addr.clone());
+            let mut agent: AgentEntry = env.storage().persistent().get(&key).unwrap();
+            agent.score = 10;
+            env.storage().persistent().set(&key, &agent);
+        });
+        client.record_payment(&agent_addr, &1u64, &400i128, &false, &provider);
+        assert_eq!(client.get_agent(&agent_addr).unwrap().score, 0);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            600
+        );
+    }
+
+    /// Flagging an agent across a score tier boundary (and below FLAG_PENALTY)
+    /// must clamp score safely at 0 and must not alter daily_spent_stroops.
+    #[test]
+    fn test_flag_agent_tier_drop_preserves_allowance_and_clamps_score() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup_with_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Place agent at score 350 (Building tier) and flag it (-200 -> 150, New tier).
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Agent(agent_addr.clone());
+            let mut agent: AgentEntry = env.storage().persistent().get(&key).unwrap();
+            agent.score = 350;
+            env.storage().persistent().set(&key, &agent);
+        });
+
+        client.flag_agent(
+            &agent_addr,
+            &String::from_str(&env, "tier boundary flag"),
+            &admin,
+        );
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, 150);
+        assert!(agent.flagged);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            0
+        );
+
+        // Flagging again from 150 must clamp cleanly at 0 (no underflow or corruption).
+        client.flag_agent(
+            &agent_addr,
+            &String::from_str(&env, "second flag clamps at zero"),
+            &admin,
+        );
+        assert_eq!(client.get_agent(&agent_addr).unwrap().score, 0);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            0
+        );
     }
 }
