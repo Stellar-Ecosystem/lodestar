@@ -203,14 +203,34 @@ export async function boost({
   }
 
   const agents = await listAgents(limit);
-  const sorted = [...agents].sort((a, b) => a.registered_at - b.registered_at);
+  const sorted = [...agents].sort(
+    (a, b) =>
+      a.registered_at - b.registered_at ||
+      String(a.address ?? '').localeCompare(String(b.address ?? '')),
+  );
+
+  const results = [];
+  let boostedCount = 0;
+  let skippedCount = 0;
+  let totalPayments = 0;
 
   for (let i = 0; i < Math.min(sorted.length, targets.length); i++) {
     const agent = sorted[i];
     const targetScore = targets[i];
     const needed = Math.max(0, Math.ceil((targetScore - agent.score) / 10));
+    const expectedScore = Math.min(1000, agent.score + needed * 10);
 
     if (needed === 0) {
+      skippedCount += 1;
+      results.push({
+        address: agent.address,
+        name: agent.name,
+        previousScore: agent.score,
+        targetScore,
+        expectedScore: agent.score,
+        payments: 0,
+        status: 'skipped',
+      });
       logger.info({ name: agent.name, score: agent.score }, 'Score already at target — skipping');
       continue;
     }
@@ -221,10 +241,44 @@ export async function boost({
       if (!dryRun) await recordPaymentOnChain(agent.address, amount, true);
     }
 
+    boostedCount += 1;
+    totalPayments += needed;
+    results.push({
+      address: agent.address,
+      name: agent.name,
+      previousScore: agent.score,
+      targetScore,
+      expectedScore,
+      payments: needed,
+      status: dryRun ? 'planned' : 'boosted',
+    });
+
     logger.info({ name: agent.name, targetScore }, 'Done');
   }
 
-  logger.info({ dryRun }, 'Score boost complete');
+  const summary = {
+    dryRun,
+    network: 'testnet',
+    totalAgents: sorted.length,
+    processedCount: results.length,
+    boostedCount,
+    skippedCount,
+    totalPayments,
+    results,
+  };
+
+  logger.info(
+    {
+      dryRun,
+      processedCount: summary.processedCount,
+      boostedCount: summary.boostedCount,
+      skippedCount: summary.skippedCount,
+      totalPayments: summary.totalPayments,
+    },
+    'Score boost complete',
+  );
+
+  return summary;
 }
 
 const isCli =

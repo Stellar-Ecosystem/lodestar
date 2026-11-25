@@ -242,4 +242,91 @@ describe('boost() live mode', () => {
       'Done',
     );
   });
+
+  it('deterministically seeds 100 agents on testnet and is idempotent on re-run', async () => {
+    const agents = Array.from({ length: MAX_SEED_AGENTS }, (_, idx) => {
+      const suffix = String(idx).padStart(3, '0');
+      return makeAgent({
+        name: `agent-${suffix}`,
+        address: `G${'A'.repeat(52)}${suffix}`,
+        score: 100,
+        registered_at: 1_700_000_000 + Math.floor(idx / 2),
+      });
+    });
+    const targets = Array.from({ length: MAX_SEED_AGENTS }, () => 120);
+
+    // First run: each of the 100 agents needs (120 - 100) / 10 = 2 payments
+    listAgents.mockResolvedValueOnce([...agents].reverse());
+    const firstRun = await boost({
+      dryRun: false,
+      targets,
+      amount: 10_000n,
+      env: makeValidEnv(),
+      knownContractIds: [],
+    });
+
+    expect(listAgents).toHaveBeenCalledWith(MAX_SEED_AGENTS);
+    expect(recordPaymentOnChain).toHaveBeenCalledTimes(200);
+    expect(firstRun).toMatchObject({
+      dryRun: false,
+      network: 'testnet',
+      totalAgents: MAX_SEED_AGENTS,
+      processedCount: MAX_SEED_AGENTS,
+      boostedCount: MAX_SEED_AGENTS,
+      skippedCount: 0,
+      totalPayments: 200,
+    });
+    expect(firstRun.results).toHaveLength(MAX_SEED_AGENTS);
+    expect(firstRun.results[0]).toMatchObject({
+      name: 'agent-000',
+      previousScore: 100,
+      targetScore: 120,
+      expectedScore: 120,
+      payments: 2,
+      status: 'boosted',
+    });
+
+    // Second run (idempotent): all 100 agents already at target score 120
+    vi.clearAllMocks();
+    listAgents.mockResolvedValueOnce(
+      agents.map((a) => ({ ...a, score: 120 })),
+    );
+    const secondRun = await boost({
+      dryRun: false,
+      targets,
+      amount: 10_000n,
+      env: makeValidEnv(),
+      knownContractIds: [],
+    });
+
+    expect(recordPaymentOnChain).not.toHaveBeenCalled();
+    expect(secondRun).toMatchObject({
+      dryRun: false,
+      network: 'testnet',
+      totalAgents: MAX_SEED_AGENTS,
+      processedCount: MAX_SEED_AGENTS,
+      boostedCount: 0,
+      skippedCount: MAX_SEED_AGENTS,
+      totalPayments: 0,
+    });
+    expect(secondRun.results.every((r) => r.status === 'skipped' && r.payments === 0)).toBe(true);
+  });
+
+  it('deterministically rejects mainnet configuration before reading or signing', async () => {
+    await expect(
+      boost({
+        dryRun: false,
+        targets: [110],
+        env: makeValidEnv({
+          STELLAR_NETWORK: 'mainnet',
+          STELLAR_NETWORK_PASSPHRASE: MAINNET_PASSPHRASE,
+          STELLAR_RPC_URL: 'https://horizon.stellar.org',
+        }),
+        knownContractIds: [],
+      }),
+    ).rejects.toThrow('Invalid boost-scores configuration');
+
+    expect(listAgents).not.toHaveBeenCalled();
+    expect(recordPaymentOnChain).not.toHaveBeenCalled();
+  });
 });
