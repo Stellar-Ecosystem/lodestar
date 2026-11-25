@@ -1385,7 +1385,7 @@ mod test {
 
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -3181,6 +3181,598 @@ mod test {
             <(Address, i128, i128, Vec<String>, i32)>::from_val(&env, &event.2),
             (owner, max_tx, max_day, categories, min_score)
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // LDS-2026-165: Agent score tier regression tests
+    //
+    // Canonical score tiers used throughout Lodestar's discovery, x402 payment,
+    // and trust flows (see README.md and frontend/lib/types.ts):
+    //
+    //   New          0   ..= 299   (basic services only)
+    //   Building     300 ..= 599   (standard services)
+    //   Established  600 ..= 899   (premium services)
+    //   Trusted      900 ..= 999   (all services)
+    //   Elite        1000          (elite tier)
+    //
+    // `is_eligible(agent, min_score)` enforces the tier gate for discovery and
+    // service access, and `SpendingPolicy::min_score_to_earn` gates whether a
+    // successful payment increases the agent's score.
+    //
+    // All tests use isolated contract fixtures (no shared state, no live funds).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Seed an agent's score directly into contract storage.
+    ///
+    /// Needed because `register_agent` always starts at `INITIAL_SCORE` (100)
+    /// and `record_payment` moves the score in fixed steps. Direct seeding lets
+    /// tests place an agent at an exact tier boundary cleanly.
+    fn seed_agent_score(env: &Env, contract_id: &Address, agent_addr: &Address, score: i32) {
+        let key = DataKey::Agent(agent_addr.clone());
+        env.as_contract(contract_id, || {
+            let mut agent: AgentEntry = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .expect("agent must exist before seeding score");
+            agent.score = score;
+            env.storage().persistent().set(&key, &agent);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TEST_MAX_TTL, TEST_MAX_TTL);
+        });
+    }
+
+    // ── Tier boundary helpers ────────────────────────────────────────────────
+
+    /// New -> Building boundary (300).
+    const TIER_BUILDING_MIN: i32 = 300;
+    /// Building -> Established boundary (600).
+    const TIER_ESTABLISHED_MIN: i32 = 600;
+    /// Established -> Trusted boundary (900).
+    const TIER_TRUSTED_MIN: i32 = 900;
+    /// Trusted -> Elite boundary (1000).
+    const TIER_ELITE_MIN: i32 = MAX_SCORE;
+
+    /// Map a score in `0..=1000` to its canonical Lodestar tier label.
+    fn canonical_score_tier(score: i32) -> &'static str {
+        assert!(
+            (0..=MAX_SCORE).contains(&score),
+            "score {score} out of valid range 0..={MAX_SCORE}"
+        );
+        if score >= TIER_ELITE_MIN {
+            "Elite"
+        } else if score >= TIER_TRUSTED_MIN {
+            "Trusted"
+        } else if score >= TIER_ESTABLISHED_MIN {
+            "Established"
+        } else if score >= TIER_BUILDING_MIN {
+            "Building"
+        } else {
+            "New"
+        }
+    }
+
+    // ── Test: score 299 (New) -> 309 (Building) on success ──────────────────
+    //
+    // Acceptance criteria exercised:
+    //   • score stays within 0..=1000
+    //   • tier matches score (New at 299, Building at 309)
+    //   • auth: payment succeeds only with the registered provider
+    //   • no duplicate effects: counters, volume, daily spend, and event count
+    #[test]
+    fn test_score_tier_boundary_299_to_building_on_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Place agent at the New tier ceiling (one below Building).
+        seed_agent_score(&env, &contract_id, &agent_addr, 299);
+
+        let score_before = client.get_score(&agent_addr);
+        assert_eq!(score_before, 299);
+        assert!((0..=MAX_SCORE).contains(&score_before));
+        assert_eq!(canonical_score_tier(score_before), "New");
+        assert!(
+            !client.is_eligible(&agent_addr, &TIER_BUILDING_MIN),
+            "score=299 must be ineligible at Building threshold (300)"
+        );
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        let _ = env.events().all();
+        let amount = 1_000_000i128;
+        client.record_payment(&agent_addr, &1u64, &amount, &true, &provider);
+        assert_eq!(env.events().all().len(), 1);
+
+        let agent_after = client.get_agent(&agent_addr).unwrap();
+        let score_after = agent_after.score;
+
+        assert_eq!(score_after, 299 + SCORE_SUCCESS);
+        assert!((0..=MAX_SCORE).contains(&score_after));
+        assert_eq!(canonical_score_tier(score_after), "Building");
+        assert!(
+            client.is_eligible(&agent_addr, &TIER_BUILDING_MIN),
+            "score=309 must be eligible at Building threshold (300)"
+        );
+        assert!(!client.is_eligible(&agent_addr, &TIER_ESTABLISHED_MIN));
+
+        // No duplicate effects: counters, volume, daily spend, and 1 payment event.
+        assert_eq!(agent_after.total_payments, 1);
+        assert_eq!(agent_after.successful_payments, 1);
+        assert_eq!(agent_after.failed_payments, 0);
+        assert_eq!(agent_after.total_volume_stroops, amount);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            amount
+        );
+    }
+
+    // ── Test: score 300 (Building) -> 275 (New) on failure ──────────────────
+    //
+    // Negative outcome crossing the 300/299 tier boundary.
+    #[test]
+    fn test_score_tier_boundary_300_drops_to_new_on_failure() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Place agent exactly at the Building tier floor.
+        seed_agent_score(&env, &contract_id, &agent_addr, 300);
+
+        let score_before = client.get_score(&agent_addr);
+        assert_eq!(score_before, 300);
+        assert!((0..=MAX_SCORE).contains(&score_before));
+        assert_eq!(canonical_score_tier(score_before), "Building");
+        assert!(client.is_eligible(&agent_addr, &TIER_BUILDING_MIN));
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        let _ = env.events().all();
+        client.record_payment(&agent_addr, &1u64, &500_000i128, &false, &provider);
+        assert_eq!(env.events().all().len(), 1);
+
+        let agent_after = client.get_agent(&agent_addr).unwrap();
+        let score_after = agent_after.score;
+
+        assert_eq!(score_after, 300 + SCORE_FAILURE);
+        assert!((0..=MAX_SCORE).contains(&score_after));
+        assert_eq!(canonical_score_tier(score_after), "New");
+        assert!(
+            !client.is_eligible(&agent_addr, &TIER_BUILDING_MIN),
+            "score=275 must be ineligible at Building threshold after drop"
+        );
+
+        // No duplicate effects and failed payment must not add volume or daily spend.
+        assert_eq!(agent_after.total_payments, 1);
+        assert_eq!(agent_after.failed_payments, 1);
+        assert_eq!(agent_after.successful_payments, 0);
+        assert_eq!(agent_after.total_volume_stroops, 0);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            0
+        );
+    }
+
+    // ── Test: score 899 (Established) -> 909 (Trusted) on success ───────────
+    #[test]
+    fn test_score_tier_boundary_899_to_trusted_on_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Place agent at the Established ceiling (one below Trusted).
+        seed_agent_score(&env, &contract_id, &agent_addr, 899);
+
+        let score_before = client.get_score(&agent_addr);
+        assert_eq!(score_before, 899);
+        assert!((0..=MAX_SCORE).contains(&score_before));
+        assert_eq!(canonical_score_tier(score_before), "Established");
+        assert!(client.is_eligible(&agent_addr, &TIER_ESTABLISHED_MIN));
+        assert!(
+            !client.is_eligible(&agent_addr, &TIER_TRUSTED_MIN),
+            "score=899 must be ineligible at Trusted threshold (900)"
+        );
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        let _ = env.events().all();
+        let amount = 2_000_000i128;
+        client.record_payment(&agent_addr, &1u64, &amount, &true, &provider);
+        assert_eq!(env.events().all().len(), 1);
+
+        let agent_after = client.get_agent(&agent_addr).unwrap();
+        let score_after = agent_after.score;
+
+        assert_eq!(score_after, 899 + SCORE_SUCCESS);
+        assert!((0..=MAX_SCORE).contains(&score_after));
+        assert_eq!(canonical_score_tier(score_after), "Trusted");
+        assert!(
+            client.is_eligible(&agent_addr, &TIER_TRUSTED_MIN),
+            "score=909 must be eligible at Trusted threshold (900)"
+        );
+        assert!(!client.is_eligible(&agent_addr, &TIER_ELITE_MIN));
+
+        // No duplicate effects.
+        assert_eq!(agent_after.total_payments, 1);
+        assert_eq!(agent_after.successful_payments, 1);
+        assert_eq!(agent_after.failed_payments, 0);
+        assert_eq!(agent_after.total_volume_stroops, amount);
+    }
+
+    // ── Test: score 900 (Trusted) -> 875 (Established) on failure ───────────
+    //
+    // Negative outcome crossing the 900/899 tier boundary.
+    #[test]
+    fn test_score_tier_boundary_900_drops_to_established_on_failure() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Place agent exactly at the Trusted floor.
+        seed_agent_score(&env, &contract_id, &agent_addr, 900);
+
+        let score_before = client.get_score(&agent_addr);
+        assert_eq!(score_before, 900);
+        assert!((0..=MAX_SCORE).contains(&score_before));
+        assert_eq!(canonical_score_tier(score_before), "Trusted");
+        assert!(client.is_eligible(&agent_addr, &TIER_TRUSTED_MIN));
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        let _ = env.events().all();
+        client.record_payment(&agent_addr, &1u64, &500_000i128, &false, &provider);
+        assert_eq!(env.events().all().len(), 1);
+
+        let agent_after = client.get_agent(&agent_addr).unwrap();
+        let score_after = agent_after.score;
+
+        assert_eq!(score_after, 900 + SCORE_FAILURE);
+        assert!((0..=MAX_SCORE).contains(&score_after));
+        assert_eq!(canonical_score_tier(score_after), "Established");
+        assert!(
+            !client.is_eligible(&agent_addr, &TIER_TRUSTED_MIN),
+            "score=875 must be ineligible at Trusted threshold after drop"
+        );
+        assert!(client.is_eligible(&agent_addr, &TIER_ESTABLISHED_MIN));
+
+        // No duplicate effects, no volume on failure.
+        assert_eq!(agent_after.total_payments, 1);
+        assert_eq!(agent_after.failed_payments, 1);
+        assert_eq!(agent_after.successful_payments, 0);
+        assert_eq!(agent_after.total_volume_stroops, 0);
+    }
+
+    // ── Test: score clamped at MAX_SCORE (1000 / Elite) ─────────────────────
+    #[test]
+    fn test_score_tier_clamped_at_max_score() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        seed_agent_score(&env, &contract_id, &agent_addr, MAX_SCORE);
+        assert_eq!(canonical_score_tier(MAX_SCORE), "Elite");
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        client.record_payment(&agent_addr, &1u64, &1_000_000i128, &true, &provider);
+
+        let score_after = client.get_score(&agent_addr);
+        assert_eq!(score_after, MAX_SCORE, "score must stay clamped at MAX_SCORE");
+        assert!((0..=MAX_SCORE).contains(&score_after));
+        assert_eq!(canonical_score_tier(score_after), "Elite");
+        assert!(client.is_eligible(&agent_addr, &TIER_ELITE_MIN));
+    }
+
+    // ── Test: score clamped at 0 (New) ──────────────────────────────────────
+    #[test]
+    fn test_score_tier_clamped_at_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        seed_agent_score(&env, &contract_id, &agent_addr, 0);
+        assert_eq!(canonical_score_tier(0), "New");
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        client.record_payment(&agent_addr, &1u64, &500_000i128, &false, &provider);
+
+        let score_after = client.get_score(&agent_addr);
+        assert_eq!(score_after, 0, "score must stay clamped at 0");
+        assert!((0..=MAX_SCORE).contains(&score_after));
+        assert_eq!(canonical_score_tier(score_after), "New");
+        assert!(!client.is_eligible(&agent_addr, &TIER_BUILDING_MIN));
+        assert!(!client.is_eligible(&agent_addr, &TIER_TRUSTED_MIN));
+    }
+
+    // ── Test: auth — missing signature or non-provider caller rejected ──────
+    #[test]
+    fn test_score_tier_record_payment_enforces_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        seed_agent_score(&env, &contract_id, &agent_addr, 899);
+
+        let real_provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&real_provider);
+
+        // 1. Non-provider caller (even with auths mocked) must be rejected.
+        let impostor = Address::generate(&env);
+        let impostor_res =
+            client.try_record_payment(&agent_addr, &1u64, &1_000_000i128, &true, &impostor);
+        assert!(
+            impostor_res.is_err(),
+            "record_payment with a non-provider caller must fail"
+        );
+
+        // 2. Real provider without signature (`set_auths(&[])`) must be rejected.
+        env.set_auths(&[]);
+        let no_auth_res =
+            client.try_record_payment(&agent_addr, &1u64, &1_000_000i128, &true, &real_provider);
+        assert!(
+            no_auth_res.is_err(),
+            "record_payment without caller auth must fail"
+        );
+
+        // State must be completely unchanged.
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, 899);
+        assert_eq!(canonical_score_tier(agent.score), "Established");
+        assert_eq!(agent.total_payments, 0);
+        assert_eq!(agent.total_volume_stroops, 0);
+    }
+
+    // ── Test: min_score_to_earn gate at Building boundary (299/300) ─────────
+    #[test]
+    fn test_score_tier_min_score_to_earn_at_building_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        struct Case {
+            initial_score: i32,
+            expected_score_after: i32,
+            expected_tier_after: &'static str,
+            label: &'static str,
+        }
+
+        let cases = [
+            Case {
+                initial_score: 299,
+                expected_score_after: 299,
+                expected_tier_after: "New",
+                label: "score=299 (New) must not earn score when min_score_to_earn=300",
+            },
+            Case {
+                initial_score: 300,
+                expected_score_after: 300 + SCORE_SUCCESS,
+                expected_tier_after: "Building",
+                label: "score=300 (Building) must earn score when min_score_to_earn=300",
+            },
+        ];
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        for case in cases {
+            let agent_addr = Address::generate(&env);
+            let owner = Address::generate(&env);
+            setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+            client.update_policy(
+                &agent_addr,
+                &10_000_000_000i128,
+                &100_000_000_000i128,
+                &vec![&env],
+                &TIER_BUILDING_MIN,
+                &owner,
+            );
+
+            seed_agent_score(&env, &contract_id, &agent_addr, case.initial_score);
+            client.record_payment(&agent_addr, &1u64, &1_000_000i128, &true, &provider);
+
+            let agent = client.get_agent(&agent_addr).unwrap();
+            assert_eq!(agent.score, case.expected_score_after, "{}", case.label);
+            assert!((0..=MAX_SCORE).contains(&agent.score), "{}", case.label);
+            assert_eq!(
+                canonical_score_tier(agent.score),
+                case.expected_tier_after,
+                "{}",
+                case.label
+            );
+            assert_eq!(agent.total_payments, 1);
+            assert_eq!(agent.successful_payments, 1);
+        }
+    }
+
+    // ── Test: min_score_to_earn gate at Trusted boundary (899/900) ──────────
+    #[test]
+    fn test_score_tier_min_score_to_earn_at_trusted_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        struct Case {
+            initial_score: i32,
+            expected_score_after: i32,
+            expected_tier_after: &'static str,
+            label: &'static str,
+        }
+
+        let cases = [
+            Case {
+                initial_score: 899,
+                expected_score_after: 899,
+                expected_tier_after: "Established",
+                label: "score=899 (Established) must not earn score when min_score_to_earn=900",
+            },
+            Case {
+                initial_score: 900,
+                expected_score_after: 900 + SCORE_SUCCESS,
+                expected_tier_after: "Trusted",
+                label: "score=900 (Trusted) must earn score when min_score_to_earn=900",
+            },
+        ];
+
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_provider(&provider);
+
+        for case in cases {
+            let agent_addr = Address::generate(&env);
+            let owner = Address::generate(&env);
+            setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+            client.update_policy(
+                &agent_addr,
+                &10_000_000_000i128,
+                &100_000_000_000i128,
+                &vec![&env],
+                &TIER_TRUSTED_MIN,
+                &owner,
+            );
+
+            seed_agent_score(&env, &contract_id, &agent_addr, case.initial_score);
+            client.record_payment(&agent_addr, &1u64, &1_000_000i128, &true, &provider);
+
+            let agent = client.get_agent(&agent_addr).unwrap();
+            assert_eq!(agent.score, case.expected_score_after, "{}", case.label);
+            assert!((0..=MAX_SCORE).contains(&agent.score), "{}", case.label);
+            assert_eq!(
+                canonical_score_tier(agent.score),
+                case.expected_tier_after,
+                "{}",
+                case.label
+            );
+            assert_eq!(agent.total_payments, 1);
+            assert_eq!(agent.successful_payments, 1);
+        }
+    }
+
+    // ── Test: flagging at a tier boundary applies penalty and re-tiers ───────
+    #[test]
+    fn test_score_tier_flag_at_building_boundary_drops_to_new() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin.clone(),));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // Place agent at Building floor (300).
+        seed_agent_score(&env, &contract_id, &agent_addr, 300);
+        assert!(client.is_eligible(&agent_addr, &TIER_BUILDING_MIN));
+        assert_eq!(canonical_score_tier(300), "Building");
+
+        let reason = String::from_str(&env, "tier-boundary-flag-test");
+        client.flag_agent(&agent_addr, &reason, &admin);
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        let expected_score = (300 + FLAG_PENALTY).max(0);
+        assert_eq!(agent.score, expected_score);
+        assert!((0..=MAX_SCORE).contains(&agent.score));
+        assert_eq!(canonical_score_tier(agent.score), "New");
+        assert!(agent.flagged);
+        assert!(
+            !client.is_eligible(&agent_addr, &0),
+            "flagged agent must be ineligible regardless of score"
+        );
+    }
+
+    // ── Test: score_read event emitted accurately at all tier boundaries ────
+    #[test]
+    fn test_score_tier_get_score_event_at_boundaries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let boundaries = [
+            (0i32, "New"),
+            (299, "New"),
+            (300, "Building"),
+            (599, "Building"),
+            (600, "Established"),
+            (899, "Established"),
+            (900, "Trusted"),
+            (999, "Trusted"),
+            (MAX_SCORE, "Elite"),
+        ];
+
+        for &(boundary, expected_tier) in &boundaries {
+            let agent_addr = Address::generate(&env);
+            let owner = Address::generate(&env);
+            setup_agent(&env, &contract_id, &agent_addr, &owner);
+            seed_agent_score(&env, &contract_id, &agent_addr, boundary);
+
+            let _ = env.events().all();
+
+            let score = client.get_score(&agent_addr);
+            assert_eq!(score, boundary, "get_score at boundary={boundary}");
+            assert!((0..=MAX_SCORE).contains(&score));
+            assert_eq!(canonical_score_tier(score), expected_tier);
+
+            let events = env.events().all();
+            assert_eq!(events.len(), 1);
+            let event = events.get(0).unwrap();
+            assert_eq!(
+                event.1,
+                (
+                    Symbol::new(&env, "agents"),
+                    Symbol::new(&env, "score_read"),
+                    agent_addr.clone(),
+                )
+                    .into_val(&env),
+            );
+            assert_eq!(<(i32, bool)>::from_val(&env, &event.2), (boundary, true));
+        }
     }
 
     #[test]
