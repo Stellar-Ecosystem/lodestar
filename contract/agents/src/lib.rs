@@ -925,7 +925,22 @@ impl LodestarAgents {
         );
     }
 
-    // List agents (paginated by limit)
+    /// List agents in stable registration order, truncated to `limit`.
+    ///
+    /// # Ordering & Uniqueness
+    /// Reads `DataKey::AgentIds` in append-only registration order. Because
+    /// `register_agent` rejects duplicate addresses with
+    /// `AgentError::AgentAlreadyRegistered`, every returned entry has a unique
+    /// `Address` and deterministic ordering across calls.
+    ///
+    /// # Events
+    /// Emits a `("agents", "agents_listed")` event with payload
+    /// `(limit, returned_count, total_count, addresses)`:
+    /// - `limit: u32` — requested maximum number of agents
+    /// - `returned_count: u32` — number of agents returned in this call
+    /// - `total_count: u32` — total registered agents in `DataKey::AgentIds`
+    /// - `addresses: Vec<Address>` — unique agent addresses in registration order,
+    ///   matching the exact order of the returned `Vec<AgentEntry>`
     pub fn list_agents(env: Env, limit: u32) -> Vec<AgentEntry> {
         let ids_key = DataKey::AgentIds;
         let ids: Vec<Address> = env
@@ -935,21 +950,51 @@ impl LodestarAgents {
             .unwrap_or_else(|| vec![&env]);
 
         let mut result: Vec<AgentEntry> = vec![&env];
+        let mut addresses: Vec<Address> = vec![&env];
         let max = (limit as usize).min(ids.len() as usize);
         for i in 0..max {
             let addr = ids.get(i as u32).unwrap();
             if let Some(agent) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
+                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr.clone()))
             {
+                addresses.push_back(addr);
                 result.push_back(agent);
             }
         }
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "agents_listed"),
+            ),
+            (limit, result.len(), ids.len(), addresses),
+        );
+
         result
     }
 
-    // List a single page of agents in registration order (avoids O(n) reads for large sets)
+    /// List a single page of agents in stable registration order (avoids O(n)
+    /// reads for large sets).
+    ///
+    /// # Ordering & Uniqueness
+    /// Reads slice `start..end` of append-only `DataKey::AgentIds`, where
+    /// `start = page.saturating_mul(page_size)` and `end = min(start + page_size, total)`.
+    /// Because `register_agent` rejects duplicate addresses, addresses are unique
+    /// within each page and disjoint across consecutive non-overlapping pages,
+    /// preserving stable registration order.
+    ///
+    /// # Events
+    /// Always emits a `("agents", "agents_page_listed")` event (including for
+    /// empty or out-of-range pages) with payload
+    /// `(page, page_size, returned_count, total_count, addresses)`:
+    /// - `page: u32` — zero-based page index requested
+    /// - `page_size: u32` — requested maximum entries per page
+    /// - `returned_count: u32` — number of agents returned on this page
+    /// - `total_count: u32` — total registered agents in `DataKey::AgentIds`
+    /// - `addresses: Vec<Address>` — unique agent addresses in registration order,
+    ///   matching the exact order of the returned `Vec<AgentEntry>`
     pub fn list_agents_page(env: Env, page: u32, page_size: u32) -> Vec<AgentEntry> {
         let ids_key = DataKey::AgentIds;
         let ids: Vec<Address> = env
@@ -959,22 +1004,32 @@ impl LodestarAgents {
             .unwrap_or_else(|| vec![&env]);
 
         let mut result: Vec<AgentEntry> = vec![&env];
+        let mut addresses: Vec<Address> = vec![&env];
         let total = ids.len() as usize;
         let start = (page as usize).saturating_mul(page_size as usize);
-        if start >= total {
-            return result;
-        }
-        let end = (start + page_size as usize).min(total);
-        for i in start..end {
-            let addr = ids.get(i as u32).unwrap();
-            if let Some(agent) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, AgentEntry>(&DataKey::Agent(addr))
-            {
-                result.push_back(agent);
+        if start < total {
+            let end = (start + page_size as usize).min(total);
+            for i in start..end {
+                let addr = ids.get(i as u32).unwrap();
+                if let Some(agent) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, AgentEntry>(&DataKey::Agent(addr.clone()))
+                {
+                    addresses.push_back(addr);
+                    result.push_back(agent);
+                }
             }
         }
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "agents_page_listed"),
+            ),
+            (page, page_size, result.len(), ids.len(), addresses),
+        );
+
         result
     }
 
@@ -3309,5 +3364,109 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    #[test]
+    fn test_list_agents_emits_event_with_stable_unique_order() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let a1 = Address::generate(&env);
+        let a2 = Address::generate(&env);
+        let a3 = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &a1, &owner);
+        setup_agent(&env, &contract_id, &a2, &owner);
+        setup_agent(&env, &contract_id, &a3, &owner);
+
+        // Clear registration events
+        let _ = env.events().all();
+
+        let listed = client.list_agents(&2);
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.get(0).unwrap().address, a1);
+        assert_eq!(listed.get(1).unwrap().address, a2);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        assert_eq!(
+            event.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "agents_listed"),
+            )
+                .into_val(&env)
+        );
+        let (limit, returned_count, total_count, addresses) =
+            <(u32, u32, u32, Vec<Address>)>::from_val(&env, &event.2);
+        assert_eq!(limit, 2);
+        assert_eq!(returned_count, 2);
+        assert_eq!(total_count, 3);
+        assert_eq!(addresses, vec![&env, a1.clone(), a2.clone()]);
+    }
+
+    #[test]
+    fn test_list_agents_page_emits_events_with_stable_unique_order_and_empty_page() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let a1 = Address::generate(&env);
+        let a2 = Address::generate(&env);
+        let a3 = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &a1, &owner);
+        setup_agent(&env, &contract_id, &a2, &owner);
+        setup_agent(&env, &contract_id, &a3, &owner);
+
+        // Clear registration events
+        let _ = env.events().all();
+
+        // Page 0 (size 2) -> [a1, a2]
+        let page0 = client.list_agents_page(&0, &2);
+        assert_eq!(page0.len(), 2);
+        let events0 = env.events().all();
+        assert_eq!(events0.len(), 1);
+        let e0 = events0.get(0).unwrap();
+        assert_eq!(
+            e0.1,
+            (
+                Symbol::new(&env, "agents"),
+                Symbol::new(&env, "agents_page_listed"),
+            )
+                .into_val(&env)
+        );
+        let (p0, ps0, ret0, tot0, addrs0) =
+            <(u32, u32, u32, u32, Vec<Address>)>::from_val(&env, &e0.2);
+        assert_eq!((p0, ps0, ret0, tot0), (0, 2, 2, 3));
+        assert_eq!(addrs0, vec![&env, a1.clone(), a2.clone()]);
+
+        // Page 1 (size 2) -> [a3] (disjoint from page 0, preserves registration order)
+        let page1 = client.list_agents_page(&1, &2);
+        assert_eq!(page1.len(), 1);
+        let events1 = env.events().all();
+        assert_eq!(events1.len(), 1);
+        let e1 = events1.get(0).unwrap();
+        let (p1, ps1, ret1, tot1, addrs1) =
+            <(u32, u32, u32, u32, Vec<Address>)>::from_val(&env, &e1.2);
+        assert_eq!((p1, ps1, ret1, tot1), (1, 2, 1, 3));
+        assert_eq!(addrs1, vec![&env, a3.clone()]);
+
+        // Page 2 (size 2) -> empty out-of-range page still emits event
+        let page2 = client.list_agents_page(&2, &2);
+        assert_eq!(page2.len(), 0);
+        let events2 = env.events().all();
+        assert_eq!(events2.len(), 1);
+        let e2 = events2.get(0).unwrap();
+        let (p2, ps2, ret2, tot2, addrs2) =
+            <(u32, u32, u32, u32, Vec<Address>)>::from_val(&env, &e2.2);
+        assert_eq!((p2, ps2, ret2, tot2), (2, 2, 0, 3));
+        assert_eq!(addrs2, vec![&env]);
     }
 }
