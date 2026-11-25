@@ -7,9 +7,7 @@ use soroban_sdk::{
 
 const MAX_TTL: u32 = 3110400;
 
-// Minimum number of ledgers that must elapse before the same agent may vote on
-// the same service again. ~1 hour at 5 s/ledger. This caps how fast any single
-// identity can move a service's reputation, blocking automated inflation loops.
+
 const VOTE_COOLDOWN_LEDGERS: u64 = 720;
 
 const MAX_REPUTATION: i32 = 10_000;
