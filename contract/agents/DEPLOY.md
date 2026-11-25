@@ -109,6 +109,7 @@ values. The discriminants are part of the contract ABI and must stay stable.
 | 4 | `AgentListOverflow` | Agent list exceeded the maximum supported length |
 | 5 | `AgentCountOverflow` | Agent count exceeded the maximum supported value |
 | 6 | `AgentNotFound` | `get_score` called for an agent that is not registered |
+| 11 | `CategoryNotAllowed` | Service category does not exactly match any entry in a non-empty `allowed_categories` list |
 
 `RegistryError` (the service registry contract) is a separate `#[repr(u32)]`
 enum whose discriminants overlap these values. A numeric code must always be
