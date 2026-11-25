@@ -1339,9 +1339,11 @@ mod test {
         env.ledger().with_mut(|li| li.sequence_number += 500_000);
 
         let policy_after = client.get_policy(&agent_addr);
-        assert!(policy_after.is_some(), "policy entry must remain readable after TTL boundary");
+        assert!(
+            policy_after.is_some(),
+            "policy entry must remain readable after TTL boundary"
+        );
     }
-
 
     #[test]
     fn test_admin_deactivate_agent_succeeds() {
@@ -1423,7 +1425,10 @@ mod test {
         let impostor = Address::generate(&env);
 
         assert_eq!(
-            client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
+            client
+                .try_transfer_admin(&new_admin, &impostor)
+                .unwrap_err()
+                .unwrap(),
             AgentError::Unauthorized
         );
     }
@@ -3458,7 +3463,14 @@ mod test {
 
         // Set a tight daily policy (max_per_tx = 500, max_per_day = 1_000) and
         // place the agent right on the Building tier boundary (score = 300).
-        client.update_policy(&agent_addr, &500i128, &1_000i128, &vec![&env], &0i32, &owner);
+        client.update_policy(
+            &agent_addr,
+            &500i128,
+            &1_000i128,
+            &vec![&env],
+            &0i32,
+            &owner,
+        );
         env.as_contract(&contract_id, || {
             let key = DataKey::Agent(agent_addr.clone());
             let mut agent: AgentEntry = env.storage().persistent().get(&key).unwrap();
@@ -3490,7 +3502,10 @@ mod test {
             client.record_payment(&agent_addr, &1u64, &200i128, &true, &provider);
         }
         assert_eq!(client.get_agent(&agent_addr).unwrap().score, 305);
-        assert_eq!(client.get_policy(&agent_addr).unwrap().daily_spent_stroops, 600);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            600
+        );
         assert!(client.is_eligible(&agent_addr, &300));
         assert!(client.check_spending_allowed(&agent_addr, &400i128));
         assert!(!client.check_spending_allowed(&agent_addr, &401i128));
@@ -3522,7 +3537,10 @@ mod test {
         });
         client.record_payment(&agent_addr, &1u64, &400i128, &false, &provider);
         assert_eq!(client.get_agent(&agent_addr).unwrap().score, 0);
-        assert_eq!(client.get_policy(&agent_addr).unwrap().daily_spent_stroops, 600);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            600
+        );
     }
 
     /// Flagging an agent across a score tier boundary (and below FLAG_PENALTY)
@@ -3554,7 +3572,10 @@ mod test {
         let agent = client.get_agent(&agent_addr).unwrap();
         assert_eq!(agent.score, 150);
         assert!(agent.flagged);
-        assert_eq!(client.get_policy(&agent_addr).unwrap().daily_spent_stroops, 0);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            0
+        );
 
         // Flagging again from 150 must clamp cleanly at 0 (no underflow or corruption).
         client.flag_agent(
@@ -3563,6 +3584,9 @@ mod test {
             &admin,
         );
         assert_eq!(client.get_agent(&agent_addr).unwrap().score, 0);
-        assert_eq!(client.get_policy(&agent_addr).unwrap().daily_spent_stroops, 0);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            0
+        );
     }
 }
