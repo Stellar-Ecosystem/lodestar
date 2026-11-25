@@ -1385,7 +1385,7 @@ mod test {
 
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -3309,5 +3309,229 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    fn set_agent_score(env: &Env, contract_id: &Address, agent_addr: &Address, score: i32) {
+        env.as_contract(contract_id, || {
+            let key = DataKey::Agent(agent_addr.clone());
+            let mut agent: AgentEntry = env.storage().persistent().get(&key).unwrap();
+            agent.score = score;
+            env.storage().persistent().set(&key, &agent);
+        });
+    }
+
+    #[test]
+    fn test_update_policy_requires_auth_and_owner_role() {
+        let env = Env::default();
+        let (contract_id, admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&1u64, &provider);
+
+        let initial_policy = client.get_policy(&agent_addr).unwrap();
+
+        // Unsigned call must fail even when caller is the owner.
+        env.set_auths(&[]);
+        assert!(client
+            .try_update_policy(
+                &agent_addr,
+                &500i128,
+                &1_000i128,
+                &vec![&env],
+                &300i32,
+                &owner,
+            )
+            .is_err());
+
+        // Signed calls from non-owners (attacker, admin, provider) must fail with Unauthorized.
+        env.mock_all_auths();
+        for unauthorized in [&attacker, &admin, &provider] {
+            let res = client.try_update_policy(
+                &agent_addr,
+                &500i128,
+                &1_000i128,
+                &vec![&env],
+                &300i32,
+                unauthorized,
+            );
+            assert_eq!(res, Err(Ok(AgentError::Unauthorized.into())));
+        }
+
+        // Policy remains unchanged after all unauthorized attempts.
+        let unchanged_policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(
+            unchanged_policy.max_per_tx_stroops,
+            initial_policy.max_per_tx_stroops
+        );
+        assert_eq!(
+            unchanged_policy.max_per_day_stroops,
+            initial_policy.max_per_day_stroops
+        );
+        assert_eq!(
+            unchanged_policy.min_score_to_earn,
+            initial_policy.min_score_to_earn
+        );
+
+        // Signed owner call succeeds.
+        client.update_policy(
+            &agent_addr,
+            &500i128,
+            &1_000i128,
+            &vec![&env],
+            &300i32,
+            &owner,
+        );
+        let updated_policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(updated_policy.max_per_tx_stroops, 500i128);
+        assert_eq!(updated_policy.max_per_day_stroops, 1_000i128);
+        assert_eq!(updated_policy.min_score_to_earn, 300i32);
+    }
+
+    #[test]
+    fn test_record_payment_requires_signed_configured_provider() {
+        let env = Env::default();
+        let (contract_id, admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let other_provider = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&10u64, &provider);
+        registry_client.set_service(&20u64, &other_provider);
+
+        // Unsigned call must fail even for the configured provider.
+        env.set_auths(&[]);
+        assert!(client
+            .try_record_payment(&agent_addr, &10u64, &100i128, &true, &provider)
+            .is_err());
+
+        // Signed calls from non-provider roles must fail with Unauthorized.
+        env.mock_all_auths();
+        for unauthorized in [&owner, &admin, &agent_addr, &other_provider] {
+            let res = client.try_record_payment(&agent_addr, &10u64, &100i128, &true, unauthorized);
+            assert_eq!(res, Err(Ok(AgentError::Unauthorized)));
+        }
+
+        // Score remains unchanged at INITIAL_SCORE (100).
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE);
+
+        // Configured provider succeeds and updates score.
+        client.record_payment(&agent_addr, &10u64, &100i128, &true, &provider);
+        assert_eq!(client.get_score(&agent_addr), INITIAL_SCORE + SCORE_SUCCESS);
+    }
+
+    #[test]
+    fn test_score_tier_boundaries_299_300_and_899_900() {
+        let env = Env::default();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&1u64, &provider);
+
+        // 299 / 300 boundary (New -> Building)
+        set_agent_score(&env, &contract_id, &agent_addr, 299);
+        assert!(client.is_eligible(&agent_addr, &299));
+        assert!(!client.is_eligible(&agent_addr, &300));
+
+        // Unauthorized caller cannot push score across 299 -> 300 boundary.
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &100i128, &true, &attacker),
+            Err(Ok(AgentError::Unauthorized))
+        );
+        assert_eq!(client.get_score(&agent_addr), 299);
+
+        // Configured provider pushes score across 299 -> 309 (Building tier).
+        client.record_payment(&agent_addr, &1u64, &100i128, &true, &provider);
+        assert_eq!(client.get_score(&agent_addr), 309);
+        assert!(client.is_eligible(&agent_addr, &300));
+
+        // Exact 300 boundary is eligible for Building tier (min_score = 300).
+        set_agent_score(&env, &contract_id, &agent_addr, 300);
+        assert!(client.is_eligible(&agent_addr, &300));
+
+        // 899 / 900 boundary (Established -> Trusted)
+        set_agent_score(&env, &contract_id, &agent_addr, 899);
+        assert!(client.is_eligible(&agent_addr, &899));
+        assert!(!client.is_eligible(&agent_addr, &900));
+
+        // Unauthorized caller cannot push score across 899 -> 900 boundary.
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &100i128, &true, &attacker),
+            Err(Ok(AgentError::Unauthorized))
+        );
+        assert_eq!(client.get_score(&agent_addr), 899);
+
+        // Configured provider pushes score across 899 -> 909 (Trusted tier).
+        client.record_payment(&agent_addr, &1u64, &100i128, &true, &provider);
+        assert_eq!(client.get_score(&agent_addr), 909);
+        assert!(client.is_eligible(&agent_addr, &900));
+
+        // Exact 900 boundary is eligible for Trusted tier (min_score = 900).
+        set_agent_score(&env, &contract_id, &agent_addr, 900);
+        assert!(client.is_eligible(&agent_addr, &900));
+    }
+
+    #[test]
+    fn test_negative_outcome_crosses_tier_boundary() {
+        let env = Env::default();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        env.mock_all_auths();
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        registry_client.set_service(&1u64, &provider);
+
+        // Cross Building (300) -> New (<300) via failed payment (-25).
+        set_agent_score(&env, &contract_id, &agent_addr, 300);
+        assert!(client.is_eligible(&agent_addr, &300));
+
+        // Unauthorized caller cannot inflict negative outcome.
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &100i128, &false, &attacker),
+            Err(Ok(AgentError::Unauthorized))
+        );
+        assert_eq!(client.get_score(&agent_addr), 300);
+
+        // Configured provider records failed payment: 300 - 25 = 275.
+        client.record_payment(&agent_addr, &1u64, &100i128, &false, &provider);
+        assert_eq!(client.get_score(&agent_addr), 275);
+        assert!(!client.is_eligible(&agent_addr, &300));
+        assert!(client.is_eligible(&agent_addr, &275));
+
+        // Cross Trusted (900) -> Established (<900) via failed payment (-25).
+        set_agent_score(&env, &contract_id, &agent_addr, 900);
+        assert!(client.is_eligible(&agent_addr, &900));
+
+        client.record_payment(&agent_addr, &1u64, &100i128, &false, &provider);
+        assert_eq!(client.get_score(&agent_addr), 875);
+        assert!(!client.is_eligible(&agent_addr, &900));
+        assert!(client.is_eligible(&agent_addr, &600));
     }
 }
