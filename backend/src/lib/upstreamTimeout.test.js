@@ -71,4 +71,34 @@ describe('withUpstreamTimeout (#671)', () => {
       }),
     ).rejects.toThrow('boom');
   });
+
+  it('safely catches a late rejection after the deadline expires', async () => {
+    vi.useFakeTimers();
+    let rejectLate;
+    const lateRejecting = new Promise((_, reject) => {
+      rejectLate = reject;
+    });
+
+    const pending = withUpstreamTimeout(lateRejecting, {
+      timeoutMs: 1_000,
+      label: 'reputation',
+    });
+    const settled = pending.catch((err) => err);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    const err = await settled;
+    expect(err).toBeInstanceOf(UpstreamTimeoutError);
+
+    // Rejecting after expiry must not surface as an unhandledRejection.
+    const unhandled = vi.fn();
+    process.once('unhandledRejection', unhandled);
+    try {
+      rejectLate(new Error('late rpc failure'));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.removeListener('unhandledRejection', unhandled);
+    }
+  });
 });
