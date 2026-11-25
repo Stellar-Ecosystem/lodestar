@@ -8,6 +8,7 @@
 
 ## Running with Docker
 
+
 Docker Desktop (or Docker Engine with the Compose plugin) is the only prerequisite
 for the web application stack. From the repository root, run:
 
