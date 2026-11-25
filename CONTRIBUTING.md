@@ -4,7 +4,7 @@
 
 - Node.js ≥ 22
 - Rust (stable) with `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
-- Stellar CLI: `cargo install --locked stellar-cli --features opt`
+`
 
 ## Running with Docker
 
