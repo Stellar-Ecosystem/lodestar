@@ -925,7 +925,17 @@ impl LodestarAgents {
         );
     }
 
-    // List agents (paginated by limit)
+    /// List agents in stable registration order, capped at `limit`.
+    ///
+    /// # Pagination Boundaries
+    /// - **`limit == 0`** or empty registry: returns an empty `Vec<AgentEntry>`.
+    /// - **`limit >= total`**: returns all registered agents without error.
+    ///
+    /// # Ordering & Uniqueness
+    /// Reads `DataKey::AgentIds` in append-only registration order. Because
+    /// `register_agent` rejects duplicate addresses with
+    /// `AgentError::AgentAlreadyRegistered`, every returned entry has a unique
+    /// `Address` and deterministic ordering across calls.
     pub fn list_agents(env: Env, limit: u32) -> Vec<AgentEntry> {
         let ids_key = DataKey::AgentIds;
         let ids: Vec<Address> = env
@@ -949,7 +959,28 @@ impl LodestarAgents {
         result
     }
 
-    // List a single page of agents in registration order (avoids O(n) reads for large sets)
+    /// List a single page of agents in stable registration order (avoids O(n)
+    /// reads for large sets).
+    ///
+    /// # Pagination Boundaries
+    /// - **Zero `page_size`**: returns an empty `Vec<AgentEntry>` for any `page`.
+    /// - **Empty registry (`total == 0`)**: returns an empty `Vec<AgentEntry>` for
+    ///   any `(page, page_size)`.
+    /// - **Out-of-range `page`**: when `start = page.saturating_mul(page_size) >= total`
+    ///   (including `u32` multiplication overflow), returns an empty `Vec<AgentEntry>`.
+    /// - **Final partial page**: when `start < total < start.saturating_add(page_size)`,
+    ///   returns the remaining `total - start` entries without padding or error.
+    /// - **Large `page_size` (e.g. `u32::MAX`)**: `end = start.saturating_add(page_size).min(total)`
+    ///   clamps safely without arithmetic overflow.
+    ///
+    /// # Ordering & Uniqueness
+    /// Reads slice `start..end` of append-only `DataKey::AgentIds`, where
+    /// `start = page.saturating_mul(page_size)` and
+    /// `end = start.saturating_add(page_size).min(total)`.
+    /// Because `register_agent` rejects duplicate addresses, addresses are unique
+    /// within each page and disjoint across consecutive non-overlapping pages,
+    /// preserving stable registration order and exact ledger (`registered_at`,
+    /// `last_active`) and stroop (`total_volume_stroops`) fields.
     pub fn list_agents_page(env: Env, page: u32, page_size: u32) -> Vec<AgentEntry> {
         let ids_key = DataKey::AgentIds;
         let ids: Vec<Address> = env
@@ -964,7 +995,7 @@ impl LodestarAgents {
         if start >= total {
             return result;
         }
-        let end = (start + page_size as usize).min(total);
+        let end = start.saturating_add(page_size as usize).min(total);
         for i in start..end {
             let addr = ids.get(i as u32).unwrap();
             if let Some(agent) = env
@@ -3309,5 +3340,87 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    #[test]
+    fn test_list_agents_page_boundaries_empty_and_final_partial_page_with_ledger_and_stroops() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // Empty registry boundary: every (page, page_size) yields an empty page.
+        for (page, page_size) in [(0u32, 0u32), (0, 2), (1, 2), (u32::MAX, u32::MAX)] {
+            let empty_page = client.list_agents_page(&page, &page_size);
+            assert_eq!(empty_page.len(), 0);
+        }
+
+        // Register 5 agents at exact ledger sequences and record exact stroop amounts.
+        let owner = Address::generate(&env);
+        let specs: [(u32, u32, i128); 5] = [
+            (100, 101, 1_000_000), // 0.1 USDC in stroops
+            (110, 112, 2_500_000), // 0.25 USDC in stroops
+            (120, 123, 3_750_000), // 0.375 USDC in stroops
+            (130, 134, 5_000_000), // 0.5 USDC in stroops
+            (140, 145, 7_250_000), // 0.725 USDC in stroops
+        ];
+
+        let mut expected_addrs = vec![&env];
+        for (reg_ledger, pay_ledger, amount_stroops) in specs {
+            env.ledger().with_mut(|l| {
+                l.sequence_number = reg_ledger;
+            });
+            let addr = Address::generate(&env);
+            setup_agent(&env, &contract_id, &addr, &owner);
+
+            env.ledger().with_mut(|l| {
+                l.sequence_number = pay_ledger;
+            });
+            client.record_payment(&addr, &1u64, &amount_stroops, &true, &owner);
+            expected_addrs.push_back(addr);
+        }
+
+        // Zero page_size and overflow boundaries on non-empty registry.
+        assert_eq!(client.list_agents_page(&0, &0).len(), 0);
+        assert_eq!(client.list_agents_page(&1, &0).len(), 0);
+        assert_eq!(client.list_agents_page(&1, &u32::MAX).len(), 0);
+        assert_eq!(client.list_agents_page(&u32::MAX, &u32::MAX).len(), 0);
+        assert_eq!(client.list_agents_page(&0, &u32::MAX).len(), 5);
+
+        // Walk pages of size 2: full page 0 (2), full page 1 (2), final partial page 2 (1),
+        // and out-of-range empty page 3 (0).
+        let page0 = client.list_agents_page(&0, &2);
+        let page1 = client.list_agents_page(&1, &2);
+        let page2 = client.list_agents_page(&2, &2);
+        let page3 = client.list_agents_page(&3, &2);
+
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page3.len(), 0);
+
+        // Concatenate all paginated entries and verify stable order, unique addresses,
+        // and exact ledger and stroop units.
+        let mut collected = vec![&env];
+        for page in [&page0, &page1, &page2] {
+            for entry in page.iter() {
+                collected.push_back(entry);
+            }
+        }
+        assert_eq!(collected.len(), 5);
+
+        let mut seen = vec![&env];
+        for (idx, (reg_ledger, pay_ledger, amount_stroops)) in specs.iter().enumerate() {
+            let entry = collected.get(idx as u32).unwrap();
+            let expected_addr = expected_addrs.get(idx as u32).unwrap();
+            assert_eq!(entry.address, expected_addr);
+            assert!(!seen.contains(&entry.address));
+            seen.push_back(entry.address.clone());
+
+            assert_eq!(entry.registered_at, *reg_ledger as u64);
+            assert_eq!(entry.last_active, *pay_ledger as u64);
+            assert_eq!(entry.total_volume_stroops, *amount_stroops);
+        }
     }
 }
