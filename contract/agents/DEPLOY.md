@@ -108,7 +108,21 @@ values. The discriminants are part of the contract ABI and must stay stable.
 | 3 | `AgentAlreadyRegistered` | `register_agent` called for an existing agent |
 | 4 | `AgentListOverflow` | Agent list exceeded the maximum supported length |
 | 5 | `AgentCountOverflow` | Agent count exceeded the maximum supported value |
-| 6 | `AgentNotFound` | `get_score` called for an agent that is not registered |
+| 6 | `AgentNotFound` | Agent is not registered |
+| 7 | `Unauthorized` | Caller lacks required role (`owner`, configured `provider`, or `admin`) |
+| 8 | `PolicyNotFound` | Spending policy record is missing for the agent |
+| 9 | `NotInitialized` | Required contract configuration (`RegistryContract` or `Admin`) is not set |
+| 10 | `AlreadyInitialized` | `init` was already called |
+
+## Authority Model
+
+State-mutating operations on spending policies and agent scores enforce both Soroban signature authorization (`caller.require_auth()`) and role checks:
+
+- `update_policy`: requires signed `caller == agent.owner`.
+- `record_payment`: requires signed `caller == service.provider` as returned by the configured registry contract's `get_service(service_id)`.
+- `flag_agent`: requires signed `caller == admin`.
+
+Unauthorized callers fail with `AgentError::Unauthorized` (code `7`) without modifying policy or score state.
 
 `RegistryError` (the service registry contract) is a separate `#[repr(u32)]`
 enum whose discriminants overlap these values. A numeric code must always be
