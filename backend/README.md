@@ -18,6 +18,12 @@ To enforce limits in aggregate across multiple instances, configure a shared Red
 
 `POST /api/reputation/:id` gives up on a slow RPC node after `REPUTATION_TIMEOUT_MS` (default 20000) and answers `504 UPSTREAM_TIMEOUT`; the expiry is counted and exposed at `GET /api/metrics`. `GET /api/health` is cached for `HEALTH_CACHE_TTL_SECONDS` (default 5, Redis-backed when `REDIS_URL` is set), serves `Cache-Control` + `ETag`, answers a matching `If-None-Match` with `304`, and replays a repeat carrying the same `Idempotency-Key` for `HEALTH_IDEMPOTENCY_TTL_SECONDS` (default 300). `GET /demo/weather` is throttled by the shared limiter at `WEATHER_RATE_LIMIT_MAX` per `WEATHER_RATE_LIMIT_WINDOW_MS` (default 30 per 60 s per IP) and answers `429` with `Retry-After`.
 
+## Reputation vote response contract
+
+`POST /api/reputation/:id` accepts `{ "positive": boolean, "agent": "<stellar address>" }` from an allowlisted agent. A successful vote answers `200` with exactly `{ "success": true, "newReputation": <number> }`, where `newReputation` is the value read back from the contract after submission; boundary values such as `0` and `1000` are returned as-is. Each accepted vote records exactly one point at `GET /api/services/:id/history`, whose `newValue` matches `newReputation`.
+
+Failures never include `success` or `newReputation`: `400 INVALID_ID`, `400 INVALID_BODY`, `403 AGENT_NOT_ALLOWED`, `400 <contract code>` for on-chain rejections, `504 UPSTREAM_TIMEOUT` when the RPC exceeds `REPUTATION_TIMEOUT_MS`, and `500 UPDATE_ERROR` for unexpected errors. A timed-out vote records no history point and is logged once with `outcome: timeout`, the `requestId`, the service ID and the error code, without the request body or credentials. Retried votes are distinct votes: each accepted request records its own point, so clients must not replay a vote they intended to submit once.
+
 ## Demo Scripts
 
 `scripts/demo/boost-scores.js` is a demo-only utility that inflates agent scores for UI demonstrations. It refuses to run unless `DEMO_MODE=true` and rejects any contract ID listed in `contract/deployments.json`. Do not use this script against a real deployment.
