@@ -60,7 +60,8 @@ let AGENT_SECRET = loadSecret();
 function isValidHttpUrl(value) {
   try {
     const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username && !url.password;
   } catch {
     return false;
   }
@@ -112,6 +113,14 @@ export function validateAgentConfig(env = process.env) {
   const minReputation = Number(env.AGENT_MIN_SERVICE_REPUTATION ?? '0');
   if (!Number.isInteger(minReputation) || minReputation < 0) {
     errors.push('Invalid AGENT_MIN_SERVICE_REPUTATION: expected a non-negative integer');
+  }
+
+  const categories = env.AGENT_ALLOWED_CATEGORIES;
+  if (categories !== undefined) {
+    const values = categories.split(',').map((value) => value.trim()).filter(Boolean);
+    if (!values.length || values.some((value) => !/^[-a-zA-Z0-9]+$/.test(value))) {
+      errors.push('Invalid AGENT_ALLOWED_CATEGORIES: expected comma-separated category names');
+    }
   }
 
   const timeout = env.AGENT_FETCH_TIMEOUT_MS;
@@ -462,6 +471,22 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     }
 
     const endpointUrl = buildUrl(selected.endpoint);
+    if (!isValidHttpUrl(endpointUrl)) {
+      logger.error(
+        {
+          event: EVENT.PAYMENT_FAILED,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+          taskDurationMs: Date.now() - taskStart,
+        },
+        'Payment failed — invalid service endpoint'
+      );
+      failed.add(selected.id);
+      continue;
+    }
+
     logger.debug(
       { event: EVENT.TASK_START, category, serviceId: selected.id, endpointUrl },
       'Sending x402 payment on Stellar'

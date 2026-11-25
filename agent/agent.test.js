@@ -634,6 +634,28 @@ describe('agent 402 configuration validation', () => {
       AGENT_MAX_SERVICE_RETRIES: '11',
     })).toThrow('Invalid AGENT_MAX_PER_TX');
   });
+
+  it('rejects URLs containing embedded credentials', () => {
+    expect(() => validateAgentConfig({
+      ...validEnv,
+      STELLAR_RPC_URL: 'https://user:secret@rpc.example.com',
+    })).toThrow('Invalid STELLAR_RPC_URL');
+  });
+
+  it('rejects invalid allowed categories', () => {
+    expect(() => validateAgentConfig({
+      ...validEnv,
+      AGENT_ALLOWED_CATEGORIES: 'weather, bad category',
+    })).toThrow('Invalid AGENT_ALLOWED_CATEGORIES');
+  });
+
+  it('does not include configuration values in validation errors', () => {
+    try {
+      validateAgentConfig({ ...validEnv, STELLAR_NETWORK: 'invalid-secret-network' });
+    } catch (err) {
+      expect(err.message).not.toContain('invalid-secret-network');
+    }
+  });
 });
 
 describe('x402 payment challenge validation', () => {

@@ -65,3 +65,5 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_MIN_SERVICE_REPUTATION` | No | `0` | Minimum reputation to consider a service |
 | `AGENT_MAX_SERVICE_RETRIES` | No | `3` | Max weighted retry attempts per task |
 | `LOG_LEVEL` | No | `info` | pino log level |
+
+The agent validates network settings, HTTP URLs, spending limits, retry limits, and allowed categories before signing or retrying an x402 payment. Discovered service endpoints and 402 challenge requirements must use the configured Stellar network and USDC asset and remain within `AGENT_MAX_PER_TX`.
