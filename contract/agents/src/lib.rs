@@ -33,6 +33,7 @@ pub enum AgentError {
     PolicyNotFound = 8,
     NotInitialized = 9,
     AlreadyInitialized = 10,
+    CategoryNotAllowed = 11,
 }
 
 #[contracttype]
@@ -129,6 +130,111 @@ impl LodestarAgents {
             .ok_or(AgentError::ArithmeticOverflow)?;
         policy.last_reset_ledger = last_reset;
         Ok(policy)
+    }
+
+    /// Returns `true` when `policy.allowed_categories` is empty (all categories allowed)
+    /// or contains an exact `String` match for `category`.
+    fn is_category_allowed_in_policy(policy: &SpendingPolicy, category: &String) -> bool {
+        if policy.allowed_categories.is_empty() {
+            return true;
+        }
+        for allowed in policy.allowed_categories.iter() {
+            if &allowed == category {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn check_spending_internal(
+        env: &Env,
+        agent_address: Address,
+        amount_stroops: i128,
+        category: Option<&String>,
+    ) -> bool {
+        let key = DataKey::Policy(agent_address.clone());
+        let policy = match env
+            .storage()
+            .persistent()
+            .get::<DataKey, SpendingPolicy>(&key)
+        {
+            Some(p) => p,
+            None => {
+                env.events().publish(
+                    (
+                        Symbol::new(env, "agents"),
+                        Symbol::new(env, "spending_checked"),
+                        agent_address,
+                    ),
+                    (false, amount_stroops, 0i128, 0i128, 0i128, 0u64),
+                );
+                return false;
+            }
+        };
+        let agent = match env
+            .storage()
+            .persistent()
+            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address.clone()))
+        {
+            Some(a) => a,
+            None => {
+                env.events().publish(
+                    (
+                        Symbol::new(env, "agents"),
+                        Symbol::new(env, "spending_checked"),
+                        agent_address,
+                    ),
+                    (
+                        false,
+                        amount_stroops,
+                        0i128,
+                        policy.max_per_tx_stroops,
+                        policy.max_per_day_stroops,
+                        policy.last_reset_ledger,
+                    ),
+                );
+                return false;
+            }
+        };
+
+        let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(env, &policy);
+
+        let category_allowed = match category {
+            Some(cat) => Self::is_category_allowed_in_policy(&policy, cat),
+            None => true,
+        };
+
+        let allowed = if !agent.active
+            || agent.flagged
+            || !category_allowed
+            || amount_stroops <= 0
+            || amount_stroops > policy.max_per_tx_stroops
+        {
+            false
+        } else {
+            match daily_spent.checked_add(amount_stroops) {
+                Some(total) => total <= policy.max_per_day_stroops,
+                None => false,
+            }
+        };
+
+        env.events().publish(
+            (
+                Symbol::new(env, "agents"),
+                Symbol::new(env, "spending_checked"),
+                agent_address,
+            ),
+            (
+                allowed,
+                amount_stroops,
+                daily_spent,
+                policy.max_per_tx_stroops,
+                policy.max_per_day_stroops,
+                last_reset,
+            ),
+        );
+
+        allowed
     }
 }
 
@@ -435,83 +541,24 @@ impl LodestarAgents {
     /// The payload is self-sufficient: consumers can observe spending checks and determine
     /// allowance, limits, and window resets without follow-up reads.
     pub fn check_spending_allowed(env: Env, agent_address: Address, amount_stroops: i128) -> bool {
-        let key = DataKey::Policy(agent_address.clone());
-        let policy = match env
-            .storage()
-            .persistent()
-            .get::<DataKey, SpendingPolicy>(&key)
-        {
-            Some(p) => p,
-            None => {
-                env.events().publish(
-                    (
-                        Symbol::new(&env, "agents"),
-                        Symbol::new(&env, "spending_checked"),
-                        agent_address,
-                    ),
-                    (false, amount_stroops, 0i128, 0i128, 0i128, 0u64),
-                );
-                return false;
-            }
-        };
-        let agent = match env
-            .storage()
-            .persistent()
-            .get::<DataKey, AgentEntry>(&DataKey::Agent(agent_address.clone()))
-        {
-            Some(a) => a,
-            None => {
-                env.events().publish(
-                    (
-                        Symbol::new(&env, "agents"),
-                        Symbol::new(&env, "spending_checked"),
-                        agent_address,
-                    ),
-                    (
-                        false,
-                        amount_stroops,
-                        0i128,
-                        policy.max_per_tx_stroops,
-                        policy.max_per_day_stroops,
-                        policy.last_reset_ledger,
-                    ),
-                );
-                return false;
-            }
-        };
+        Self::check_spending_internal(&env, agent_address, amount_stroops, None)
+    }
 
-        let (daily_spent, last_reset) = Self::get_daily_spend_with_reset(&env, &policy);
-
-        let allowed = if !agent.active
-            || agent.flagged
-            || amount_stroops <= 0
-            || amount_stroops > policy.max_per_tx_stroops
-        {
-            false
-        } else {
-            match daily_spent.checked_add(amount_stroops) {
-                Some(total) => total <= policy.max_per_day_stroops,
-                None => false,
-            }
-        };
-
-        env.events().publish(
-            (
-                Symbol::new(&env, "agents"),
-                Symbol::new(&env, "spending_checked"),
-                agent_address,
-            ),
-            (
-                allowed,
-                amount_stroops,
-                daily_spent,
-                policy.max_per_tx_stroops,
-                policy.max_per_day_stroops,
-                last_reset,
-            ),
-        );
-
-        allowed
+    /// Check if a transaction for a specific service category is allowed under the spending policy.
+    ///
+    /// Category boundaries:
+    /// - When `allowed_categories` is empty, all service categories are permitted.
+    /// - When `allowed_categories` is non-empty, `category` must exactly match an entry
+    ///   in `allowed_categories` (exact `String` equality, no normalization or approximation).
+    /// - Enforces the same `amount_stroops` (`i128`) and daily reset (`DAY_LEDGERS`) rules
+    ///   and emits the `("agents", "spending_checked", agent_address)` event.
+    pub fn check_spending_for_category(
+        env: Env,
+        agent_address: Address,
+        amount_stroops: i128,
+        category: String,
+    ) -> bool {
+        Self::check_spending_internal(&env, agent_address, amount_stroops, Some(&category))
     }
 
     /// Record a payment outcome for an agent's service.
@@ -527,6 +574,8 @@ impl LodestarAgents {
     /// # Returns
     /// Returns `Ok(())` after persisting the updated agent and policy state.
     /// Returns `Err(AgentError::InvalidAmount)` if `amount_stroops <= 0`.
+    /// Returns `Err(AgentError::CategoryNotAllowed)` if `policy.allowed_categories` is
+    /// non-empty and does not contain an exact match for `service.category`.
     /// Returns `Err(AgentError::ArithmeticOverflow)` if updating the agent's total volume or the
     /// policy's daily spend overflows `i128`.
     ///
@@ -588,13 +637,17 @@ impl LodestarAgents {
             .get(&agent_key)
             .unwrap_or_else(|| panic_with_error!(&env, AgentError::AgentNotFound));
 
-        // Load policy for min_score_to_earn enforcement and daily spend update
+        // Load policy for allowed_categories, min_score_to_earn, and daily spend update
         let policy_key = DataKey::Policy(agent_address.clone());
         let policy: SpendingPolicy = env
             .storage()
             .persistent()
             .get(&policy_key)
             .unwrap_or_else(|| panic_with_error!(&env, AgentError::PolicyNotFound));
+
+        if !Self::is_category_allowed_in_policy(&policy, &service.category) {
+            return Err(AgentError::CategoryNotAllowed);
+        }
 
         let old_score = agent.score;
 
@@ -1075,6 +1128,7 @@ mod test {
     #[derive(Clone)]
     pub enum MockDataKey {
         Provider,
+        ServiceCategory(u64),
     }
 
     #[contractimpl]
@@ -1097,6 +1151,14 @@ mod test {
                 .extend_ttl(&id, TEST_MAX_TTL, TEST_MAX_TTL);
         }
 
+        pub fn set_service_category(env: Env, id: u64, category: String) {
+            let key = MockDataKey::ServiceCategory(id);
+            env.storage().persistent().set(&key, &category);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TEST_MAX_TTL, TEST_MAX_TTL);
+        }
+
         pub fn get_service(env: Env, id: u64) -> ServiceEntry {
             let provider: Address = env
                 .storage()
@@ -1104,13 +1166,18 @@ mod test {
                 .get::<u64, Address>(&id)
                 .or_else(|| env.storage().persistent().get(&MockDataKey::Provider))
                 .unwrap_or_else(|| Address::generate(&env));
+            let category: String = env
+                .storage()
+                .persistent()
+                .get(&MockDataKey::ServiceCategory(id))
+                .unwrap_or_else(|| String::from_str(&env, "test"));
             ServiceEntry {
                 id,
                 name: String::from_str(&env, "Test Service"),
                 description: String::from_str(&env, "Test Description"),
                 endpoint: String::from_str(&env, "http://test.com"),
                 price_usdc: String::from_str(&env, "100"),
-                category: String::from_str(&env, "test"),
+                category,
                 provider,
                 reputation: 100,
                 active: true,
@@ -1385,7 +1452,7 @@ mod test {
 
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -3309,5 +3376,226 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    #[test]
+    fn test_allowed_categories_empty_list_allows_all_categories() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let provider = Address::generate(&env);
+        registry.set_service(&1u64, &provider);
+        registry.set_service_category(&1u64, &String::from_str(&env, "weather"));
+        registry.set_service(&2u64, &provider);
+        registry.set_service_category(&2u64, &String::from_str(&env, "finance"));
+
+        // Default policy has empty allowed_categories -> all categories allowed.
+        let default_policy = client.get_policy(&agent_addr).unwrap();
+        assert!(default_policy.allowed_categories.is_empty());
+
+        assert!(client.check_spending_for_category(
+            &agent_addr,
+            &500_000i128,
+            &String::from_str(&env, "weather"),
+        ));
+        assert!(client.check_spending_for_category(
+            &agent_addr,
+            &500_000i128,
+            &String::from_str(&env, "finance"),
+        ));
+
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &500_000i128, &true, &provider),
+            Ok(Ok(()))
+        );
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &2u64, &250_000i128, &true, &provider),
+            Ok(Ok(()))
+        );
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.daily_spent_stroops, 750_000i128);
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.total_volume_stroops, 750_000i128);
+        assert_eq!(agent.successful_payments, 2);
+    }
+
+    #[test]
+    fn test_allowed_categories_exact_match_and_ledger_amount_units() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 10;
+            li.min_persistent_entry_ttl = TEST_MAX_TTL;
+            li.min_temp_entry_ttl = TEST_MAX_TTL;
+        });
+
+        let allowed = vec![
+            &env,
+            String::from_str(&env, "weather"),
+            String::from_str(&env, "search"),
+        ];
+        client.update_policy(&agent_addr, &1_000i128, &1_500i128, &allowed, &0, &owner);
+
+        // Exact matches succeed within stroop limits
+        assert!(client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "weather"),
+        ));
+        assert!(client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "search"),
+        ));
+
+        // Non-exact variants are denied (no case-folding, trimming, or prefix matching)
+        assert!(!client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "Weather"),
+        ));
+        assert!(!client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "weather "),
+        ));
+        assert!(!client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "weath"),
+        ));
+        assert!(!client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, ""),
+        ));
+
+        // Record payment for exact match consumes exact stroop budget
+        let provider = Address::generate(&env);
+        registry.set_service(&1u64, &provider);
+        registry.set_service_category(&1u64, &String::from_str(&env, "weather"));
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &1u64, &1_000i128, &true, &provider),
+            Ok(Ok(()))
+        );
+
+        // Remaining daily budget is 500 stroops
+        assert!(client.check_spending_for_category(
+            &agent_addr,
+            &500i128,
+            &String::from_str(&env, "search"),
+        ));
+        assert!(!client.check_spending_for_category(
+            &agent_addr,
+            &501i128,
+            &String::from_str(&env, "search"),
+        ));
+
+        // Daily reset at exact DAY_LEDGERS threshold restores budget while keeping category bounds
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 10 + DAY_LEDGERS as u32;
+        });
+        assert!(client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "search"),
+        ));
+        assert!(!client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "finance"),
+        ));
+    }
+
+    #[test]
+    fn test_denied_category_cannot_consume_funds_or_mutate_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let allowed = vec![&env, String::from_str(&env, "weather")];
+        client.update_policy(&agent_addr, &1_000i128, &1_500i128, &allowed, &0, &owner);
+
+        let provider = Address::generate(&env);
+        registry.set_service(&10u64, &provider);
+        registry.set_service_category(&10u64, &String::from_str(&env, "finance"));
+        registry.set_service(&11u64, &provider);
+        registry.set_service_category(&11u64, &String::from_str(&env, "Weather"));
+
+        let _ = env.events().all();
+
+        // Pre-payment spending check rejects denied category and emits allowed=false
+        assert!(!client.check_spending_for_category(
+            &agent_addr,
+            &500i128,
+            &String::from_str(&env, "finance"),
+        ));
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event_data =
+            <(bool, i128, i128, i128, i128, u64)>::from_val(&env, &events.get(0).unwrap().2);
+        assert!(!event_data.0);
+        assert_eq!(event_data.1, 500i128);
+        assert_eq!(event_data.2, 0i128);
+
+        // record_payment rejects denied categories for both success=true and success=false
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &10u64, &500i128, &true, &provider),
+            Err(Ok(AgentError::CategoryNotAllowed))
+        );
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &11u64, &500i128, &false, &provider),
+            Err(Ok(AgentError::CategoryNotAllowed))
+        );
+
+        // Authorization and amount validation remain enforced
+        let impostor = Address::generate(&env);
+        assert!(client
+            .try_record_payment(&agent_addr, &10u64, &500i128, &true, &impostor)
+            .is_err());
+        assert_eq!(
+            client.try_record_payment(&agent_addr, &10u64, &0i128, &true, &provider),
+            Err(Ok(AgentError::InvalidAmount))
+        );
+
+        // Agent state and daily spending budget are completely untouched
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE);
+        assert_eq!(agent.total_payments, 0);
+        assert_eq!(agent.successful_payments, 0);
+        assert_eq!(agent.failed_payments, 0);
+        assert_eq!(agent.total_volume_stroops, 0i128);
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.daily_spent_stroops, 0i128);
+
+        // Allowed category still has the full daily budget available
+        assert!(client.check_spending_for_category(
+            &agent_addr,
+            &1_000i128,
+            &String::from_str(&env, "weather"),
+        ));
     }
 }

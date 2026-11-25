@@ -92,6 +92,14 @@ without requiring a follow-up contract read.
 - Topics: `("agents", "spending_checked", "CAAAAA...HK3M")`
 - Data: `(true, 500, 0, 10000000000, 100000000000, 12345)`
 
+### Allowed service category boundaries
+
+`LodestarAgents` enforces `SpendingPolicy.allowed_categories` on-chain in `check_spending_for_category` and `record_payment`:
+
+- **Empty `allowed_categories` list (`[]`):** All service categories are permitted (the default policy on `register_agent`), subject to `amount_stroops` (`i128`) and daily reset (`DAY_LEDGERS`) limits.
+- **Non-empty `allowed_categories` list:** Only service categories that **exactly match** an entry in `allowed_categories` (exact `String` equality, case-sensitive, with no trimming or approximate matching) are permitted.
+- **Denied categories:** A category outside the permitted boundaries cannot consume funds or budget — `check_spending_for_category` returns `false` (emitting `spending_checked` with `allowed = false`), and `record_payment` returns `Err(AgentError::CategoryNotAllowed)` without updating `daily_spent_stroops`, `total_volume_stroops`, payment counts, or credit score.
+
 ## Trust Boundaries
 
 - **Providers vs. Registry:** Providers are untrusted. They can register any endpoint. The registry relies on the x402 payment success/failure feedback loop (reputation) from agents to bubble up good services and bury bad ones.
