@@ -15,7 +15,7 @@ function createApp() {
  
   app.get('/api/services', (_req, res) => res.json({ route: 'registry' }));
 
-  // Demo route gating — same logic as index.js
+ 
   const nodeEnv = process.env.NODE_ENV ?? 'development';
   const enableDemoRoutes =
     process.env.ENABLE_DEMO_ROUTES === 'true' ||
@@ -32,13 +32,13 @@ function createApp() {
   return app;
 }
 
-// Store original env values so we can restore them
+
 const originalEnableDemoRoutes = process.env.ENABLE_DEMO_ROUTES;
 const originalNodeEnv = process.env.NODE_ENV;
 
 describe('Demo route gating', () => {
   afterEach(() => {
-    // Restore env after each test
+    
     if (originalEnableDemoRoutes === undefined) {
       delete process.env.ENABLE_DEMO_ROUTES;
     } else {
