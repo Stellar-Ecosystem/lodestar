@@ -72,6 +72,20 @@ This will register three demo agents with varying scores:
 - **EstablishedAgent**: ~600 score
 - **TrustedAgent**: ~1000 score (max)
 
+## Score Tiers
+
+Agent credit scores are clamped to `0..=1000` (`INITIAL_SCORE = 100`, `SCORE_SUCCESS = +10`, `SCORE_FAILURE = -25`, `FLAG_PENALTY = -200`) and map to the canonical tiers used across discovery, x402 payment, and trust flows:
+
+| Score Range | Tier | Eligibility Gate (`min_score`) |
+| --- | --- | --- |
+| `0..=299` | New | `0` |
+| `300..=599` | Building | `300` |
+| `600..=899` | Established | `600` |
+| `900..=999` | Trusted | `900` |
+| `1000` | Elite | `1000` |
+
+`is_eligible(agent_address, min_score)` enforces that the agent is active, unflagged, and meets the tier threshold. `SpendingPolicy.min_score_to_earn` gates whether successful payments increase an agent's score.
+
 ## Agent Events
 
 The agents contract emits structured Soroban events for all state-mutating operations.
