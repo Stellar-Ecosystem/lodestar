@@ -25,6 +25,7 @@ import {
   SimulationError,
   TransactionFailedError,
   TransactionTimeoutError,
+  UpstreamTimeoutError,
   AGENT_ERROR,
   AGENT_ERROR_SCOPE,
   REGISTRY_ERROR_SCOPE,
@@ -1056,6 +1057,10 @@ export async function checkSpendingAllowed(agentAddress, amountStroops) {
     if (!retval) return false;
     return Boolean(scValToNative(retval));
   } catch (err) {
+    // #635: a timeout means the answer is unknown, not "not allowed". Rethrowing
+    // lets the route answer 504 instead of reporting a denial that was never
+    // decided upstream.
+    if (err instanceof UpstreamTimeoutError) throw err;
     logger.error({ err, agentAddress }, 'checkSpendingAllowed failed');
     return false;
   }
