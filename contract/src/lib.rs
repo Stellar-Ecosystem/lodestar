@@ -31,7 +31,7 @@ pub enum RegistryError {
     ServiceCounterNotFound = 12,
 }
 
-// Canonical category list. Keep in sync with `frontend/lib/categoryMeta.tsx`.
+
 // Existing mixed-case entries are not migrated automatically; providers should
 // re-register under a canonical category returned by `list_categories()`.
 const VALID_CATEGORIES: &[&str] = &["search", "weather", "finance", "ai", "data", "compute"];
