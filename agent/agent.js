@@ -10,6 +10,23 @@ import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { buildRunSummary, writeRunSummary } from './runSummary.js';
 import { stroopsToUsdcDisplay } from '../packages/stroops/index.js';
+import { loadAgentConfig, readServiceSelection, ConfigError } from './config.js';
+
+// Validate configuration before the wallet secret is read and before any
+// signing key is derived. Invalid configuration stops the agent here with a
+// deterministic config_error record naming the variable, never its value
+// (LDS-2026-191 / LDS-2026-193).
+let config;
+try {
+  config = loadAgentConfig(process.env);
+} catch (err) {
+  if (err instanceof ConfigError) {
+    process.stderr.write(
+      JSON.stringify({ event: 'config_error', key: err.key, reason: err.reason }) + '\n'
+    );
+  }
+  throw err;
+}
 
 
 
@@ -53,22 +70,15 @@ function loadSecret() {
 
 let AGENT_SECRET = loadSecret();
 
-const required = ['STELLAR_RPC_URL', 'LODESTAR_API_URL'];
-for (const key of required) {
-  if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
-}
+const RPC_URL              = config.rpcUrl;
+const LODESTAR_API_URL     = config.apiUrl;
+const LODESTAR_HMAC_SECRET = config.hmacSecret;
 
-const RPC_URL              = process.env.STELLAR_RPC_URL;
-const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
-const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
-
-const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
-const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
-const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
-const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
-const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
-  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
-  : ['weather', 'search'];
+const AGENT_NAME           = config.agentName;
+const AGENT_DESC           = config.agentDesc;
+const MAX_PER_TX           = config.maxPerTx;
+const MAX_PER_DAY          = config.maxPerDay;
+const ALLOWED_CATS         = config.allowedCategories;
 
 let agentKeypair;
 try {
@@ -243,7 +253,7 @@ function buildHttpClient() {
   // Re-read the secret for the x402 signer since the module-level reference
   // has already been zeroed. loadSecret() re-reads from the env var or file.
   const secretForSigner = loadSecret();
-  const signer = createEd25519Signer(secretForSigner, 'stellar:testnet');
+  const signer = createEd25519Signer(secretForSigner, config.networkCaip2);
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
@@ -312,8 +322,8 @@ function selectWeighted(services) {
 // ── Agent task ────────────────────────────────────────────────────────────────
 
 export async function runTask(category, buildUrl, scoringEnabled, client = httpClient) {
-  const minReputation = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
-  const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
+  const { minServiceReputation: minReputation, maxServiceRetries: maxRetries } =
+    readServiceSelection(process.env);
 
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');

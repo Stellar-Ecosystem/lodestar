@@ -53,6 +53,10 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_STELLAR_SECRET` | Yes | — | Stellar secret key for the agent |
 | `STELLAR_RPC_URL` | Yes | — | Horizon RPC URL |
 | `LODESTAR_API_URL` | Yes | — | Base URL of the Lodestar backend |
+| `STELLAR_NETWORK` | No | `testnet` | `testnet` or `mainnet` |
+| `STELLAR_NETWORK_PASSPHRASE` | No | passphrase of `STELLAR_NETWORK` | Network passphrase; a set-but-empty value is rejected, and a custom value that differs from the network's well-known passphrase is rejected because the signer derives it from the network name |
+| `AGENTS_CONTRACT_ID` | No | — | Agents contract ID; if set, must be `"C"` + 55 base32 characters |
+| `USDC_CONTRACT_ID` | No | — | USDC contract ID; if set, must be `"C"` + 55 base32 characters |
 | `LODESTAR_HMAC_SECRET` | No | `""` | HMAC secret for signing payment-record requests |
 | `AGENT_NAME` | No | `LodestarAgent` | Display name |
 | `AGENT_DESC` | No | `""` | Agent description |
@@ -62,3 +66,22 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_MIN_SERVICE_REPUTATION` | No | `0` | Minimum reputation to consider a service |
 | `AGENT_MAX_SERVICE_RETRIES` | No | `3` | Max weighted retry attempts per task |
 | `LOG_LEVEL` | No | `info` | pino log level |
+
+## Configuration boundary behavior
+
+Configuration is validated once at startup (`agent/config.js`), before the
+wallet secret is read and before any signing key is derived. Invalid
+configuration stops the agent deterministically with a structured
+`config_error` record that names the offending variable and the reason; values
+are never included, so a misconfigured setting cannot leak secrets into logs.
+
+- Missing `STELLAR_NETWORK_PASSPHRASE` falls back to the passphrase of the
+  selected `STELLAR_NETWORK`. A passphrase that is set but empty is an error,
+  and a custom passphrase is rejected: the x402 signer derives the passphrase
+  from the network name, so a custom value could never take effect.
+- Contract IDs are optional for the agent (it reaches contracts through the
+  Lodestar backend). When set, each must have the Stellar contract ID shape; a
+  set-but-empty or malformed ID is an error.
+- `STELLAR_RPC_URL` and `LODESTAR_API_URL` must be valid http(s) URLs, spend
+  limits must be positive numbers, and `AGENT_ALLOWED_CATEGORIES` must list at
+  least one category.
