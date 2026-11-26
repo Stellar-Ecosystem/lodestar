@@ -1306,13 +1306,73 @@ describe('GET /api/health — caching and idempotency (#672, #673)', () => {
     expect(res.headers.etag).toMatch(/^W\/".+"$/);
   });
 
-  it('answers a conditional request with 304', async () => {
+  it('answers a conditional request with 304 and preserves headers and cache counters', async () => {
     const first = await request(app).get('/api/health');
     const res = await request(app)
       .get('/api/health')
       .set('If-None-Match', first.headers.etag);
 
     expect(res.status).toBe(304);
+    expect(res.text).toBe('');
+    expect(res.headers.etag).toBe(first.headers.etag);
+    expect(res.headers['cache-control']).toBe(first.headers['cache-control']);
+
+    const metrics = await request(app).get('/api/metrics');
+    expect(metrics.status).toBe(200);
+    expect(metrics.body.healthCache).toMatchObject({
+      lookups: 2,
+      hits: 1,
+      misses: 1,
+      loads: 1,
+      hitRate: 0.5,
+      enabled: false,
+      ttlSeconds: expect.any(Number),
+      key: expect.any(String),
+    });
+  });
+
+  it('matches If-None-Match using RFC 9110 weak comparison, lists, and wildcard *', async () => {
+    const first = await request(app).get('/api/health');
+    const strongEtag = first.headers.etag.replace(/^W\//, '');
+
+    const strongMatch = await request(app)
+      .get('/api/health')
+      .set('If-None-Match', strongEtag);
+    expect(strongMatch.status).toBe(304);
+    expect(strongMatch.text).toBe('');
+
+    const listMatch = await request(app)
+      .get('/api/health')
+      .set('If-None-Match', `"other-etag", ${first.headers.etag}`);
+    expect(listMatch.status).toBe(304);
+
+    const wildcardMatch = await request(app)
+      .get('/api/health')
+      .set('If-None-Match', '*');
+    expect(wildcardMatch.status).toBe(304);
+
+    const nonMatch = await request(app)
+      .get('/api/health')
+      .set('If-None-Match', '"different-etag"');
+    expect(nonMatch.status).toBe(200);
+    expect(nonMatch.body).toEqual(first.body);
+  });
+
+  it('answers 304 with Idempotent-Replay on a replayed conditional request without extra cache lookups', async () => {
+    const first = await request(app).get('/api/health').set('Idempotency-Key', 'cond-replay-1');
+    const replay = await request(app)
+      .get('/api/health')
+      .set('Idempotency-Key', 'cond-replay-1')
+      .set('If-None-Match', first.headers.etag);
+
+    expect(replay.status).toBe(304);
+    expect(replay.text).toBe('');
+    expect(replay.headers['idempotent-replay']).toBe('true');
+    expect(replay.headers.etag).toBe(first.headers.etag);
+
+    const metrics = await request(app).get('/api/metrics');
+    expect(metrics.body.healthCache.lookups).toBe(1);
+    expect(metrics.body.healthCache.loads).toBe(1);
   });
 
   it('serves a repeated read from the cache instead of rebuilding it', async () => {
@@ -1342,11 +1402,45 @@ describe('GET /api/health — caching and idempotency (#672, #673)', () => {
     expect(getHealthCacheMetrics().lookups).toBe(1);
   });
 
-  it('rejects a malformed Idempotency-Key', async () => {
+  it('rejects a malformed Idempotency-Key without altering cache status or counters', async () => {
     const res = await request(app).get('/api/health').set('Idempotency-Key', 'not a key');
 
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe('IDEMPOTENCY_KEY_INVALID');
+    expect(res.body).toEqual({
+      error: 'Idempotency-Key must be 1-255 printable ASCII characters (no spaces)',
+      code: 'IDEMPOTENCY_KEY_INVALID',
+    });
+
+    const metrics = await request(app).get('/api/metrics');
+    expect(metrics.status).toBe(200);
+    expect(metrics.body.healthCache).toMatchObject({
+      lookups: 0,
+      hits: 0,
+      misses: 0,
+      loads: 0,
+      errors: 0,
+      hitRate: 0,
+    });
+  });
+
+  it('returns 409 IDEMPOTENCY_CONFLICT for an in-flight key without altering cache counters', async () => {
+    const { markPending } = await import('../lib/idempotency.js');
+    markPending('health:inflight-key-1', 60_000);
+
+    const res = await request(app)
+      .get('/api/health')
+      .set('Idempotency-Key', 'inflight-key-1');
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: 'A health check with this idempotency key is already in flight',
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+
+    const metrics = await request(app).get('/api/metrics');
+    expect(metrics.status).toBe(200);
+    expect(metrics.body.healthCache.lookups).toBe(0);
+    expect(metrics.body.healthCache.loads).toBe(0);
   });
 
   it('exposes the cache hit rate and the timeout counters as metrics', async () => {

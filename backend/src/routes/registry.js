@@ -596,6 +596,29 @@ function buildHealthPayload() {
 }
 
 /**
+ * Evaluate an HTTP `If-None-Match` header against a current ETag using
+ * RFC 9110 weak comparison (and wildcard `*`).
+ *
+ * @param {string | undefined} ifNoneMatchHeader
+ * @param {string} etag
+ * @returns {boolean}
+ */
+function matchesIfNoneMatch(ifNoneMatchHeader, etag) {
+  if (!ifNoneMatchHeader || typeof ifNoneMatchHeader !== "string") {
+    return false;
+  }
+
+  const normalizeWeak = (tag) => tag.trim().replace(/^W\//, "");
+  const normalizedTarget = normalizeWeak(etag);
+
+  return ifNoneMatchHeader
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .some((candidate) => candidate === "*" || normalizeWeak(candidate) === normalizedTarget);
+}
+
+/**
  * Send a health payload with its caching headers, honouring conditional
  * requests with 304.
  *
@@ -612,13 +635,7 @@ function sendHealthResponse(req, res, body, etag, replayed) {
     res.set("Idempotent-Replay", "true");
   }
 
-  const ifNoneMatch = req.get("If-None-Match");
-  if (
-    ifNoneMatch
-      ?.split(",")
-      .map((value) => value.trim())
-      .includes(etag)
-  ) {
+  if (matchesIfNoneMatch(req.get("If-None-Match"), etag)) {
     return res.status(304).end();
   }
 
