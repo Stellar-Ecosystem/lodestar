@@ -9,6 +9,11 @@ import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { buildRunSummary, writeRunSummary } from './runSummary.js';
+import {
+  createPaymentFetch,
+  isPaymentBoundaryError,
+  PAYMENT_STATE,
+} from './paymentRetry.js';
 import { stroopsToUsdcDisplay } from '../packages/stroops/index.js';
 
 
@@ -61,6 +66,8 @@ for (const key of required) {
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
+const USDC_CONTRACT_ID     = process.env.USDC_CONTRACT_ID ?? process.env.USDC_TOKEN;
+const FACILITATOR_URL      = process.env.FACILITATOR_URL;
 
 const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
 const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
@@ -112,6 +119,7 @@ export const EVENT = {
   SPEND_CHECK_BLOCKED: 'spend_check_blocked',
   PAYMENT_SUCCESS:     'payment_success',
   PAYMENT_FAILED:      'payment_failed',
+  PAYMENT_UNKNOWN:     'payment_unknown',
   SCORE_UPDATED:       'score_updated',
   AGENT_COMPLETE:      'agent_complete',
 };
@@ -248,23 +256,14 @@ function buildHttpClient() {
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
 
-  // Implement fetch manually — x402HTTPClient.fetch() was removed in this version
-  httpClient.fetch = async (url, init = {}) => {
-    const probe = await fetchWithTimeout(url, init);
-    if (probe.status !== 402) return probe;
-
-    const paymentRequired = httpClient.getPaymentRequiredResponse(
-      (name) => probe.headers.get(name),
-      probe.status === 402 ? await probe.json().catch(() => undefined) : undefined
-    );
-
-    const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
-    const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
-    return fetchWithTimeout(url, {
-      ...init,
-      headers: { ...(init.headers ?? {}), ...paymentHeaders },
-    });
-  };
+  // Implement fetch manually — x402HTTPClient.fetch() was removed in this version.
+  // Wrap with createPaymentFetch so invalid USDC token/facilitator config or
+  // response loss after signing transitions to an explicit unknown state and
+  // retries never sign a second payment.
+  httpClient.fetch = createPaymentFetch(httpClient, fetchWithTimeout, {
+    usdcToken: USDC_CONTRACT_ID,
+    facilitatorUrl: FACILITATOR_URL,
+  });
 
   return httpClient;
 }
@@ -402,6 +401,40 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     try {
       response = await fetchWithTimeout(endpointUrl, { headers: paymentHeaders, keepalive: true });
     } catch (err) {
+      if (isPaymentBoundaryError(err)) {
+        const taskDurationMs = Date.now() - taskStart;
+        const paymentState = err.paymentState ?? PAYMENT_STATE.UNKNOWN;
+        logger.error(
+          {
+            event: EVENT.PAYMENT_UNKNOWN,
+            category,
+            serviceId: selected.id,
+            serviceName: selected.name,
+            priceUsdc: selected.price_usdc,
+            paymentState,
+            code: err.code,
+            err,
+            taskDurationMs,
+          },
+          'Payment outcome unknown — stopping retries to prevent double payment'
+        );
+        return {
+          success: false,
+          paymentState,
+          priceUsdc: selected.price_usdc,
+          servicesDiscovered: services.length,
+          servicesEligible: eligible.length,
+          attempts: attempt,
+          durationMs: taskDurationMs,
+          failureReason: 'payment_state_unknown',
+          _unresolved: {
+            serviceId: selected.id,
+            serviceName: selected.name,
+            endpointUrl,
+            reason: err.message,
+          },
+        };
+      }
       logger.error(
         {
           event: EVENT.PAYMENT_FAILED,
