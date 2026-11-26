@@ -62,3 +62,24 @@ against a backend that has not finished booting.
 
 In an orchestrator that distinguishes the two (Kubernetes, ECS), wire the
 liveness probe to `/healthz` and the readiness probe to `/readyz`.
+
+## Health & Metrics Route Boundary Behavior
+
+### `GET /api/health`
+
+`GET /api/health` caches its JSON payload for `HEALTH_CACHE_TTL_SECONDS` (default 5s, Redis-backed when `REDIS_URL` is configured, in-process fallback otherwise) and emits `Cache-Control: public, max-age=<ttl>, must-revalidate` plus a weak `ETag` (`W/"<sha256>"`).
+
+- **Conditional requests (`If-None-Match`)**: Evaluated at the route boundary using RFC 9110 weak comparison (matching weak or strong forms of the current ETag, comma-separated lists, or wildcard `*`). A match returns **`304 Not Modified`** with an empty body while preserving `ETag`, `Cache-Control`, and (on idempotent replay) `Idempotent-Replay: true`.
+- **Status & error shapes**:
+  - `200 OK`: `{ status, network, contractId, uptimeSeconds, timestamp }`
+  - `304 Not Modified`: empty body (cache hit is still recorded on non-replayed requests; replayed `Idempotency-Key` requests do not perform an extra cache lookup)
+  - `400 Bad Request`: `{ error, code: "IDEMPOTENCY_KEY_INVALID" }` — rejected before cache lookup; cache status and counters are unchanged
+  - `409 Conflict`: `{ error, code: "IDEMPOTENCY_CONFLICT" }` — returned when the same `Idempotency-Key` is already in flight; cache status and counters are unchanged
+  - `500 Internal Server Error`: `{ error: "Health check failed", code: "HEALTH_ERROR" }`
+
+### `GET /api/metrics`
+
+`GET /api/metrics` responds with `Cache-Control: no-store` and returns the live process-local request counters alongside the health cache configuration:
+
+- `upstreamTimeouts`: `{ total, byLabel }`
+- `healthCache`: `{ lookups, hits, misses, errors, loads, hitRate, enabled, ttlSeconds, key }`
