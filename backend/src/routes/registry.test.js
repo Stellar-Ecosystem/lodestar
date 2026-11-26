@@ -1313,6 +1313,10 @@ describe('GET /api/health — caching and idempotency (#672, #673)', () => {
       .set('If-None-Match', first.headers.etag);
 
     expect(res.status).toBe(304);
+    expect(res.text).toBe('');
+    expect(res.headers.etag).toBe(first.headers.etag);
+    expect(res.headers['cache-control']).toBe(first.headers['cache-control']);
+    expect(res.headers['content-type']).toBeUndefined();
   });
 
   it('serves a repeated read from the cache instead of rebuilding it', async () => {
@@ -1360,6 +1364,138 @@ describe('GET /api/health — caching and idempotency (#672, #673)', () => {
     expect(res.body.healthCache.lookups).toBe(2);
     expect(res.body.healthCache.hits).toBe(1);
     expect(res.body.healthCache.hitRate).toBe(0.5);
+    expect(res.body.requests.health).toBe(2);
     expect(res.body.upstreamTimeouts.total).toBe(0);
+  });
+
+  describe('conditional GET boundary (#1183)', () => {
+    const STALE = `W/"${'0'.repeat(64)}"`;
+
+    function headerFor(kind, etag) {
+      const strong = etag.slice(2);
+      if (kind === 'exact') return etag;
+      if (kind === 'strong') return strong;
+      if (kind === 'list') return `${STALE}, ${strong}`;
+      return '*';
+    }
+
+    it.each([
+      ['/api/health', 'exact'],
+      ['/api/health', 'strong'],
+      ['/api/health', 'list'],
+      ['/api/health', 'star'],
+      ['/api/metrics', 'exact'],
+      ['/api/metrics', 'strong'],
+      ['/api/metrics', 'list'],
+      ['/api/metrics', 'star'],
+    ])('%s returns 304 for a %s If-None-Match', async (path, kind) => {
+      const first = await request(app).get(path);
+      const res = await request(app)
+        .get(path)
+        .set('If-None-Match', headerFor(kind, first.headers.etag));
+
+      expect(res.status).toBe(304);
+      expect(res.text).toBe('');
+      expect(res.headers.etag).toBe(first.headers.etag);
+      expect(res.headers['cache-control']).toBe(first.headers['cache-control']);
+      expect(res.headers['content-type']).toBeUndefined();
+    });
+
+    it.each(['/api/health', '/api/metrics'])(
+      '%s returns 200 for a stale If-None-Match',
+      async (path) => {
+        const first = await request(app).get(path);
+        const res = await request(app).get(path).set('If-None-Match', STALE);
+
+        expect(res.status).toBe(200);
+        expect(res.headers.etag).toBe(first.headers.etag);
+        expect(res.text).toBe(first.text);
+      },
+    );
+
+    it.each(['/api/health', '/api/metrics'])(
+      '%s returns 200 when If-None-Match is absent',
+      async (path) => {
+        const res = await request(app).get(path);
+
+        expect(res.status).toBe(200);
+        expect(res.headers.etag).toMatch(/^W\/"[0-9a-f]{64}"$/);
+        expect(res.text.length).toBeGreaterThan(0);
+      },
+    );
+
+    it('treats a malformed If-None-Match as a miss', async () => {
+      const res = await request(app).get('/api/health').set('If-None-Match', 'not-a-validator');
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+    });
+
+    it('increments request and cache counters when health answers 304', async () => {
+      const { getRouteMetrics } = await import('../lib/routeMetrics.js');
+      const first = await request(app).get('/api/health');
+      const before = getRouteMetrics();
+
+      const res = await request(app).get('/api/health').set('If-None-Match', first.headers.etag);
+
+      expect(res.status).toBe(304);
+      const after = getRouteMetrics();
+      expect(after.requests.health).toBe(before.requests.health + 1);
+      expect(after.healthCache.lookups).toBe(before.healthCache.lookups + 1);
+      expect(after.healthCache.hits).toBe(before.healthCache.hits + 1);
+      expect(after.healthCache.misses).toBe(before.healthCache.misses);
+    });
+
+    it('preserves cache status and request counters across a metrics 304', async () => {
+      const { getRouteMetrics } = await import('../lib/routeMetrics.js');
+      await request(app).get('/api/health');
+      const first = await request(app).get('/api/metrics');
+      const before = getRouteMetrics();
+
+      const notModified = await request(app)
+        .get('/api/metrics')
+        .set('If-None-Match', first.headers.etag);
+
+      expect(notModified.status).toBe(304);
+      expect(getRouteMetrics()).toEqual(before);
+
+      const again = await request(app).get('/api/metrics');
+      expect(again.status).toBe(200);
+      expect(again.body.healthCache).toEqual(first.body.healthCache);
+      expect(again.body.requests).toEqual(first.body.requests);
+      expect(again.body.healthCache).toMatchObject({
+        enabled: first.body.healthCache.enabled,
+        ttlSeconds: first.body.healthCache.ttlSeconds,
+        key: 'lodestar:health:v1',
+      });
+    });
+
+    it('keeps the error shape and does not reset counters when the idempotency key is rejected', async () => {
+      const { getRouteMetrics } = await import('../lib/routeMetrics.js');
+      await request(app).get('/api/health');
+      const before = getRouteMetrics();
+
+      const res = await request(app).get('/api/health').set('Idempotency-Key', 'not a key');
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        error: 'Idempotency-Key must be 1-255 printable ASCII characters (no spaces)',
+        code: 'IDEMPOTENCY_KEY_INVALID',
+      });
+      expect(getRouteMetrics()).toEqual(before);
+    });
+
+    it('keeps Idempotent-Replay when a replay is also a 304', async () => {
+      const first = await request(app).get('/api/health').set('Idempotency-Key', 'etag-replay');
+      const res = await request(app)
+        .get('/api/health')
+        .set('Idempotency-Key', 'etag-replay')
+        .set('If-None-Match', first.headers.etag);
+
+      expect(res.status).toBe(304);
+      expect(res.text).toBe('');
+      expect(res.headers.etag).toBe(first.headers.etag);
+      expect(res.headers['idempotent-replay']).toBe('true');
+    });
   });
 });

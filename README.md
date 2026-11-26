@@ -31,8 +31,8 @@ Lodestar is currently an early-stage, demo-ready project for the Stellar ecosyst
 
 ### API hardening
 - `POST /api/reputation/:id` is bounded by a deadline (`REPUTATION_TIMEOUT_MS`, default 20 s) and answers `504 UPSTREAM_TIMEOUT` on expiry, so a hanging RPC node cannot exhaust the connection pool.
-- `GET /api/health` serves `Cache-Control` + `ETag`, honours `If-None-Match` with `304`, caches for `HEALTH_CACHE_TTL_SECONDS` (default 5 s), and replays a repeat carrying the same `Idempotency-Key`.
-- `GET /demo/weather` is throttled at `WEATHER_RATE_LIMIT_MAX` (default 30/min per IP) and answers `429` with `Retry-After`; counters for timeouts and cache hit rate are exposed at `GET /api/metrics`.
+- `GET /api/health` and `GET /api/metrics` serve a weak `ETag`. `If-None-Match` (weak or strong validator, a list, or `*`) is answered with an empty `304` that keeps `ETag` and `Cache-Control`. Health is cached for `HEALTH_CACHE_TTL_SECONDS` (default 5 s) and replays a repeat carrying the same `Idempotency-Key`. A health 304 still increments the request and cache counters; a metrics 304 leaves that status unchanged. Health errors use `{ "error", "code" }` and do not reset the counters. See [Health and readiness](docs/health-and-readiness.md).
+- `GET /demo/weather` is throttled at `WEATHER_RATE_LIMIT_MAX` (default 30/min per IP) and answers `429` with `Retry-After`; counters for timeouts, health requests, and cache hit rate are exposed at `GET /api/metrics`.
 - `GET /demo/weather` validates params, query and body against a zod schema and answers `400` with a catalogued code (`INVALID_COORDINATES`, `INVALID_QUERY`, `INVALID_BODY`) before any upstream or contract call.
 - `POST /api/reputation/:id` logs one structured line per request — request id, caller address, contract-call duration and outcome — and never logs the request body.
 - `GET /api/services/:id/history` and `GET /demo/search` are covered by integration tests that drive the routes as they are mounted, against a mocked contract layer.

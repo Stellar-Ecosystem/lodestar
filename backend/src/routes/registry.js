@@ -22,6 +22,7 @@ import { writeRateLimiter } from "../middleware/rateLimiter.js";
 import { isValidStellarAddress } from "../middleware/addressValidator.js";
 import { withUpstreamTimeout } from "../lib/upstreamTimeout.js";
 import { getCachedHealth, getHealthCacheStatus } from "../lib/healthCache.js";
+import { computeWeakEtag, sendConditionalJson } from "../lib/conditionalRequest.js";
 import {
   getEntry,
   isValidIdempotencyKey,
@@ -29,7 +30,7 @@ import {
   markFailed,
   markPending,
 } from "../lib/idempotency.js";
-import { getRouteMetrics } from "../lib/routeMetrics.js";
+import { getRouteMetrics, recordHealthRequest } from "../lib/routeMetrics.js";
 import { getRouteLogger } from "../lib/routeLogger.js";
 
 const router = Router();
@@ -597,32 +598,23 @@ function buildHealthPayload() {
 
 /**
  * Send a health payload with its caching headers, honouring conditional
- * requests with 304.
+ * requests with 304 (#1183).
+ *
+ * If-None-Match is compared weakly: the strong form of the current tag, a
+ * list containing it, or "*" all match. The 304 keeps ETag and Cache-Control
+ * and has no body. Both 200 and 304 count as a served health request.
  *
  * The ETag is computed over the exact bytes that are sent, so a client that
  * already holds the body can revalidate without downloading it again.
  */
 function sendHealthResponse(req, res, body, etag, replayed) {
-  res.set(
-    "Cache-Control",
-    `public, max-age=${config.health.cacheTtlSeconds}, must-revalidate`,
-  );
-  res.set("ETag", etag);
-  if (replayed) {
-    res.set("Idempotent-Replay", "true");
-  }
-
-  const ifNoneMatch = req.get("If-None-Match");
-  if (
-    ifNoneMatch
-      ?.split(",")
-      .map((value) => value.trim())
-      .includes(etag)
-  ) {
-    return res.status(304).end();
-  }
-
-  return res.type("application/json").send(body);
+  recordHealthRequest();
+  return sendConditionalJson(req, res, {
+    body,
+    etag,
+    cacheControl: `public, max-age=${config.health.cacheTtlSeconds}, must-revalidate`,
+    headers: replayed ? { "Idempotent-Replay": "true" } : undefined,
+  });
 }
 
 /**
@@ -635,8 +627,9 @@ function sendHealthResponse(req, res, body, etag, replayed) {
  * The payload changes far more slowly than it is read, so it is cached for a
  * few seconds (HEALTH_CACHE_TTL_SECONDS) and served with `Cache-Control` and
  * `ETag`: a conditional request is answered with 304 instead of a refetch
- * (#672). An `Idempotency-Key` makes a client retry replay the stored
- * response instead of re-executing the check (#673).
+ * (#672, #1183). Comparison is weak and accepts a list or "*". An
+ * `Idempotency-Key` makes a client retry replay the stored response instead
+ * of re-executing the check (#673).
  */
 router.get("/health", async (req, res) => {
   const idempotencyKey = req.get("idempotency-key") ?? req.get("x-idempotency-key");
@@ -699,17 +692,30 @@ router.get("/health", async (req, res) => {
   }
 });
 
-/**
- * Route counters: upstream timeouts (#671) and the health cache hit rate
- * (#672). Cheap to read, and the only way to tell "slow upstream" apart from
- * "cold cache" without reading logs.
- */
-router.get("/metrics", (req, res) => {
-  res.set("Cache-Control", "no-store");
+function buildMetricsPayload() {
   const metrics = getRouteMetrics();
-  res.json({
+  return {
     ...metrics,
     healthCache: { ...metrics.healthCache, ...getHealthCacheStatus() },
+  };
+}
+
+/**
+ * Route counters: upstream timeouts (#671), served health requests, and the
+ * health cache hit rate (#672). Cheap to read, and the only way to tell
+ * "slow upstream" apart from "cold cache" without reading logs.
+ *
+ * The snapshot is a conditional representation (#1183). Cache-Control stays
+ * `no-store`. A matching If-None-Match is a 304 with the same ETag and no
+ * body. Reading this route does not change the counters, so a 304 and the
+ * next 200 describe the same cache status and request counters.
+ */
+router.get("/metrics", (req, res) => {
+  const body = JSON.stringify(buildMetricsPayload());
+  return sendConditionalJson(req, res, {
+    body,
+    etag: computeWeakEtag(body),
+    cacheControl: "no-store",
   });
 });
 
