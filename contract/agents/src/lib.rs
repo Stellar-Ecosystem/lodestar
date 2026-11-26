@@ -1385,7 +1385,7 @@ mod test {
 
         assert_eq!(
             client.try_transfer_admin(&new_admin, &impostor).unwrap_err().unwrap(),
-            AgentError::Unauthorized
+            AgentError::Unauthorized.into()
         );
     }
 
@@ -3309,5 +3309,174 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    // ── Authority enforcement tests ───────────────────────────────────────────
+    //
+    // These tests verify that only the registered service provider can record a
+    // payment outcome and only the agent owner can modify the spending policy.
+    // The contract must reject any other caller — no score or policy change must
+    // be persisted on an unauthorised attempt.
+
+    /// A caller that is not the service's registered provider must be rejected
+    /// by `record_payment` with `Unauthorized`.  The agent's score and payment
+    /// counters must be unchanged after the failed call.
+    #[test]
+    fn test_record_payment_rejects_non_provider_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 10u64;
+        let provider = Address::generate(&env);
+        let unrelated_caller = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        // unrelated_caller is not the provider for service_id — must be rejected.
+        let result = client.try_record_payment(
+            &agent_addr,
+            &service_id,
+            &1_000_000i128,
+            &true,
+            &unrelated_caller,
+        );
+        assert_eq!(
+            result.unwrap_err().unwrap(),
+            AgentError::Unauthorized.into()
+        );
+
+        // Score and payment counters must be untouched.
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE);
+        assert_eq!(agent.total_payments, 0);
+    }
+
+    /// The registered service provider can record a successful payment outcome.
+    /// Score must increase and the payment counter must be incremented.
+    #[test]
+    fn test_record_payment_succeeds_for_registered_provider() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 11u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        client.record_payment(&agent_addr, &service_id, &1_000_000i128, &true, &provider);
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(agent.total_payments, 1);
+        assert_eq!(agent.successful_payments, 1);
+    }
+
+    /// The registered service provider can record a failed payment outcome.
+    /// Score must decrease and the failed-payment counter must be incremented.
+    #[test]
+    fn test_record_payment_failure_by_provider_decreases_score() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 12u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        client.record_payment(&agent_addr, &service_id, &500_000i128, &false, &provider);
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, (INITIAL_SCORE + SCORE_FAILURE).max(0));
+        assert_eq!(agent.total_payments, 1);
+        assert_eq!(agent.failed_payments, 1);
+        // Daily spend must not be credited for a failed payment.
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.daily_spent_stroops, 0);
+    }
+
+    /// A caller that is not the agent owner must be rejected by `update_policy`
+    /// with `Unauthorized`.  The existing policy must remain unchanged.
+    #[test]
+    fn test_update_policy_rejects_non_owner_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let original_policy = client.get_policy(&agent_addr).unwrap();
+        let non_owner = Address::generate(&env);
+
+        let result = client.try_update_policy(
+            &agent_addr,
+            &1_000i128,
+            &10_000i128,
+            &vec![&env],
+            &0,
+            &non_owner,
+        );
+        assert_eq!(
+            result.unwrap_err().unwrap(),
+            AgentError::Unauthorized.into()
+        );
+
+        // Policy must be identical to the original.
+        let policy_after = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy_after.max_per_tx_stroops, original_policy.max_per_tx_stroops);
+        assert_eq!(policy_after.max_per_day_stroops, original_policy.max_per_day_stroops);
+        assert_eq!(policy_after.min_score_to_earn, original_policy.min_score_to_earn);
+    }
+
+    /// The agent owner can update the spending policy.  All fields must reflect
+    /// the new values.
+    #[test]
+    fn test_update_policy_succeeds_for_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let new_max_tx = 2_000_000i128;
+        let new_max_day = 20_000_000i128;
+        let new_min_score = 50i32;
+        let categories = vec![&env, String::from_str(&env, "weather")];
+
+        client.update_policy(
+            &agent_addr,
+            &new_max_tx,
+            &new_max_day,
+            &categories,
+            &new_min_score,
+            &owner,
+        );
+
+        let policy = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy.max_per_tx_stroops, new_max_tx);
+        assert_eq!(policy.max_per_day_stroops, new_max_day);
+        assert_eq!(policy.min_score_to_earn, new_min_score);
     }
 }
