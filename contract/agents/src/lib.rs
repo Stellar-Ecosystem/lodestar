@@ -527,20 +527,21 @@ impl LodestarAgents {
     /// # Returns
     /// Returns `Ok(())` after persisting the updated agent and policy state.
     /// Returns `Err(AgentError::InvalidAmount)` if `amount_stroops <= 0`.
+    /// Returns `Err(AgentError::Unauthorized)` if the registry's provider does not match `caller`.
     /// Returns `Err(AgentError::ArithmeticOverflow)` if updating the agent's total volume or the
     /// policy's daily spend overflows `i128`.
     ///
     /// # Authorisation
     /// `caller` must satisfy `require_auth()` and must equal the provider returned by the
-    /// registry contract's `get_service(service_id)` call.
+    /// registry contract's `get_service(service_id)` call. Failed or unauthorized invocations
+    /// return before mutating storage, so they cannot consume spending allowance or alter the
+    /// agent's credit score.
     ///
     /// # Panics
-    /// - `expect("registry contract not set — call init() first")` if the registry contract
+    /// - `panic_with_error!(&env, AgentError::NotInitialized)` if the registry contract
     ///   address has not been initialized.
-    /// - `panic_with_error!(&env, AgentError::Unauthorized)` if the registry's provider
-    ///   does not match `caller`.
-    /// - `expect("agent not found")` if `DataKey::Agent(agent_address)` is missing.
-    /// - `expect("policy not found")` if `DataKey::Policy(agent_address)` is missing.
+    /// - `panic_with_error!(&env, AgentError::AgentNotFound)` if `DataKey::Agent(agent_address)` is missing.
+    /// - `panic_with_error!(&env, AgentError::PolicyNotFound)` if `DataKey::Policy(agent_address)` is missing.
     /// - Any panic or revert raised by the registry contract's `get_service` implementation.
     ///
     /// # Storage
@@ -578,7 +579,7 @@ impl LodestarAgents {
             vec![&env, service_id.into_val(&env)],
         );
         if service.provider != caller {
-            panic_with_error!(&env, AgentError::Unauthorized);
+            return Err(AgentError::Unauthorized);
         }
 
         let agent_key = DataKey::Agent(agent_address.clone());
@@ -3309,5 +3310,131 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    /// An unrelated caller attempting to record a payment failure (or success)
+    /// both before and after legitimate state changes must be rejected with
+    /// `AgentError::Unauthorized` without spending extra allowance or corrupting
+    /// the agent's credit score.
+    #[test]
+    fn test_record_payment_unauthorized_caller_safe_before_and_after_state_changes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let unrelated_caller = Address::generate(&env);
+
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        MockRegistryClient::new(&env, &registry_id).set_service(&1u64, &provider);
+
+        // Configure a tight daily allowance (1,500 stroops/day, 1,000 stroops/tx)
+        // so any unintended allowance consumption is immediately observable.
+        client.update_policy(
+            &agent_addr,
+            &1_000i128,
+            &1_500i128,
+            &vec![&env],
+            &0i32,
+            &owner,
+        );
+
+        // --- Before state changes: unrelated caller records failure & success ---
+        for success in [false, true] {
+            let res = client.try_record_payment(
+                &agent_addr,
+                &1u64,
+                &600i128,
+                &success,
+                &unrelated_caller,
+            );
+            assert_eq!(res, Err(Ok(AgentError::Unauthorized)));
+        }
+
+        let agent_before = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent_before.score, INITIAL_SCORE);
+        assert_eq!(agent_before.total_payments, 0);
+        assert_eq!(agent_before.successful_payments, 0);
+        assert_eq!(agent_before.failed_payments, 0);
+        assert_eq!(agent_before.total_volume_stroops, 0);
+
+        let policy_before = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy_before.daily_spent_stroops, 0);
+        assert!(client.check_spending_allowed(&agent_addr, &1_000i128));
+
+        // --- Legitimate state change by the registered service provider ---
+        client.record_payment(&agent_addr, &1u64, &1_000i128, &true, &provider);
+
+        let agent_mid = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent_mid.score, INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(agent_mid.total_payments, 1);
+        assert_eq!(agent_mid.successful_payments, 1);
+        assert_eq!(agent_mid.failed_payments, 0);
+        assert_eq!(agent_mid.total_volume_stroops, 1_000);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            1_000
+        );
+        assert!(client.check_spending_allowed(&agent_addr, &500i128));
+        assert!(!client.check_spending_allowed(&agent_addr, &501i128));
+
+        // --- After state changes: unrelated caller, agent, and owner attempt failure ---
+        for unauthorized in [&unrelated_caller, &agent_addr, &owner] {
+            let res = client.try_record_payment(
+                &agent_addr,
+                &1u64,
+                &500i128,
+                &false,
+                unauthorized,
+            );
+            assert_eq!(res, Err(Ok(AgentError::Unauthorized)));
+        }
+        let res_success =
+            client.try_record_payment(&agent_addr, &1u64, &500i128, &true, &unrelated_caller);
+        assert_eq!(res_success, Err(Ok(AgentError::Unauthorized)));
+
+        // Verify score, counters, volume, and remaining allowance are completely untouched.
+        let agent_after = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent_after.score, INITIAL_SCORE + SCORE_SUCCESS);
+        assert_eq!(agent_after.total_payments, 1);
+        assert_eq!(agent_after.successful_payments, 1);
+        assert_eq!(agent_after.failed_payments, 0);
+        assert_eq!(agent_after.total_volume_stroops, 1_000);
+
+        let policy_after = client.get_policy(&agent_addr).unwrap();
+        assert_eq!(policy_after.daily_spent_stroops, 1_000);
+        assert!(client.check_spending_allowed(&agent_addr, &500i128));
+        assert!(!client.check_spending_allowed(&agent_addr, &501i128));
+    }
+
+    /// Without caller authorization, `record_payment` must fail before mutating
+    /// agent score or spending policy allowance.
+    #[test]
+    fn test_record_payment_requires_caller_auth_without_state_mutation() {
+        let env = Env::default();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        MockRegistryClient::new(&env, &registry_id).set_service(&1u64, &provider);
+
+        let res = client.try_record_payment(&agent_addr, &1u64, &500i128, &false, &provider);
+        assert!(res.is_err());
+
+        let agent = client.get_agent(&agent_addr).unwrap();
+        assert_eq!(agent.score, INITIAL_SCORE);
+        assert_eq!(agent.total_payments, 0);
+        assert_eq!(agent.failed_payments, 0);
+        assert_eq!(
+            client.get_policy(&agent_addr).unwrap().daily_spent_stroops,
+            0
+        );
     }
 }
