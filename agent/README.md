@@ -61,4 +61,13 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_ALLOWED_CATEGORIES` | No | `weather,search` | Comma-separated allowed categories |
 | `AGENT_MIN_SERVICE_REPUTATION` | No | `0` | Minimum reputation to consider a service |
 | `AGENT_MAX_SERVICE_RETRIES` | No | `3` | Max weighted retry attempts per task |
+| `AGENT_USDC_TOKEN` | No | — | Optional USDC Soroban contract ID (`C...`) or Stellar asset (`CODE:G...`); invalid values emit `config_invalid` |
+| `FACILITATOR_URL` | No | — | Optional x402 facilitator `http(s)` URL; invalid values emit `config_invalid` |
 | `LOG_LEVEL` | No | `info` | pino log level |
+
+## Observability & Traceability
+
+Every run generates a `runId` (UUID) included across structured log events (`agent_start`, `config_validated`, `config_invalid`, `agent_registered`, `task_start`, `service_selected`, `spend_check_passed`, `spend_check_blocked`, `payment_success`, `payment_failed`, `score_updated`, `agent_complete`) and the JSON run summary, allowing a single run to be traced from configuration and discovery to verified result.
+
+- **Configuration outcomes**: `config_validated` logs a redacted summary of active endpoints/tokens; invalid `AGENT_USDC_TOKEN` (`USDC_TOKEN_ADDRESS`) or `FACILITATOR_URL` (`X402_FACILITATOR_URL`) values emit `config_invalid` with redacted values.
+- **Redacted references**: `serviceRef` strips credentials, query strings, and fragments from service URLs, and `paymentRef` redacts payment transaction references while preserving correlation.
