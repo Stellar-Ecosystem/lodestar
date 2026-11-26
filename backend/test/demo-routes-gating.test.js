@@ -12,7 +12,7 @@ function createApp() {
   const app = express();
   app.use(express.json());
 
-  // Always-mounted non-demo route (specific path so it doesn't shadow demo routes)
+ 
   app.get('/api/services', (_req, res) => res.json({ route: 'registry' }));
 
   // Demo route gating — same logic as index.js
