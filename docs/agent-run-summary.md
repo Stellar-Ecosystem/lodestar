@@ -89,6 +89,7 @@ run all passed — the remaining ones never got a chance.
 | `no_services_found` | The registry returned nothing for the category |
 | `no_services_meet_min_reputation` | Services exist but all fall below `AGENT_MIN_SERVICE_REPUTATION` |
 | `all_candidates_exhausted` | Every candidate was tried and failed |
+| `payment_state_unknown` | Response was lost after signing/submitting an x402 payment; retries stopped to prevent double payment |
 | `skipped_due_to_shutdown` | Shutdown began before the task started |
 
 ### Notes for consumers
