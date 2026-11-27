@@ -42,7 +42,7 @@ const mockHttpClient = {
   fetch: (...args) => global.fetch(...args),
 };
 
-const { runTask, main, EVENT } = await import('./agent.js');
+const { runTask, main, EVENT, rankCandidates, selectCandidate } = await import('./agent.js');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -538,6 +538,88 @@ describe('runTask — min reputation threshold', () => {
 
     const result = await runTask('weather', (ep) => ep, false);
     expect(result).toMatchObject({ success: false, priceUsdc: null });
+  });
+});
+
+describe('autonomous service selection — equal reputation and unequal price boundary', () => {
+  const expensiveSvc = { id: 10, name: 'ExpensiveWeather', price_usdc: '0.005', endpoint: 'https://expensive.example.com/weather', reputation: 100 };
+  const midSvc       = { id: 11, name: 'MidWeather',       price_usdc: '0.002', endpoint: 'https://mid.example.com/weather',       reputation: 100 };
+  const cheapSvc     = { id: 12, name: 'CheapWeather',     price_usdc: '0.0005', endpoint: 'https://cheap.example.com/weather',    reputation: 100 };
+
+  it('deterministically selects the lowest-priced service regardless of registry order or Math.random', async () => {
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9999);
+    try {
+      global.fetch = buildFetch({ services: [expensiveSvc, midSvc, cheapSvc] });
+
+      const result = await runTask('weather', (ep) => ep, false, mockHttpClient);
+
+      expect(result).toMatchObject({
+        success: true,
+        priceUsdc: cheapSvc.price_usdc,
+        selection: {
+          serviceId: cheapSvc.id,
+          serviceName: cheapSvc.name,
+          reputation: 100,
+          priceUsdc: cheapSvc.price_usdc,
+          strategy: 'deterministic_price_tiebreak',
+          rankingReason: 'equal_reputation_lowest_price',
+        },
+      });
+
+      const selectedCall = logInfo.mock.calls.find(([f]) => f?.event === EVENT.SERVICE_SELECTED);
+      expect(selectedCall).toBeDefined();
+      expect(selectedCall[0]).toMatchObject({
+        event: 'service_selected',
+        serviceId: cheapSvc.id,
+        priceUsdc: cheapSvc.price_usdc,
+        strategy: 'deterministic_price_tiebreak',
+        rankingReason: 'equal_reputation_lowest_price',
+      });
+    } finally {
+      randomSpy.mockRestore();
+    }
+  });
+
+  it('keeps the lowest-priced equal-reputation services when slicing to maxRetries', () => {
+    const ranked = rankCandidates([expensiveSvc, midSvc, cheapSvc], 2);
+    expect(ranked.map((s) => s.id)).toEqual([cheapSvc.id, midSvc.id]);
+  });
+
+  it('breaks equal reputation and equal price ties deterministically by lowest serviceId', () => {
+    const svcHighId = { id: 20, name: 'Svc20', price_usdc: '0.001000', reputation: 80 };
+    const svcLowId  = { id: 5,  name: 'Svc5',  price_usdc: '0.001',    reputation: 80 };
+
+    const choice = selectCandidate([svcHighId, svcLowId]);
+    expect(choice).toEqual({
+      service: svcLowId,
+      strategy: 'deterministic_price_tiebreak',
+      rankingReason: 'equal_reputation_and_price_lowest_id',
+    });
+  });
+
+  it('records single_eligible_candidate when only one service is available', () => {
+    const choice = selectCandidate([MOCK_SERVICE]);
+    expect(choice).toEqual({
+      service: MOCK_SERVICE,
+      strategy: 'reputation_weighted_random',
+      rankingReason: 'single_eligible_candidate',
+    });
+  });
+
+  it('preserves reputation_weighted_random when reputations are unequal', () => {
+    const highRep = { id: 1, name: 'HighRep', price_usdc: '0.005', reputation: 100 };
+    const lowRep  = { id: 2, name: 'LowRep',  price_usdc: '0.001', reputation: 50 };
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      const choice = selectCandidate([lowRep, highRep]);
+      expect(choice).toEqual({
+        service: highRep,
+        strategy: 'reputation_weighted_random',
+        rankingReason: 'reputation_weighted_random',
+      });
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 });
 

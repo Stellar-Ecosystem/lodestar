@@ -62,3 +62,18 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_MIN_SERVICE_REPUTATION` | No | `0` | Minimum reputation to consider a service |
 | `AGENT_MAX_SERVICE_RETRIES` | No | `3` | Max weighted retry attempts per task |
 | `LOG_LEVEL` | No | `info` | pino log level |
+
+## Service Selection
+
+Eligible services (`reputation >= AGENT_MIN_SERVICE_REPUTATION`) are ranked by:
+
+1. Higher `reputation` first
+2. Lower `price_usdc` first (compared in exact stroops)
+3. Lower `serviceId` first
+
+The top `AGENT_MAX_SERVICE_RETRIES` candidates are considered:
+
+- **Equal reputation, unequal price:** selection is deterministic — the lowest-priced candidate is chosen, recording `strategy: "deterministic_price_tiebreak"` and `rankingReason: "equal_reputation_lowest_price"` on `service_selected` logs and in the run summary.
+- **Equal reputation, equal price:** selection is deterministic — the lowest `serviceId` is chosen, recording `rankingReason: "equal_reputation_and_price_lowest_id"`.
+- **Single eligible candidate:** records `rankingReason: "single_eligible_candidate"`.
+- **Unequal reputation:** preserves reputation-weighted random selection (`strategy: "reputation_weighted_random"`, `rankingReason: "reputation_weighted_random"`).
