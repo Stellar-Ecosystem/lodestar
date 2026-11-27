@@ -5,6 +5,8 @@ import { ExactStellarScheme } from '@x402/stellar/exact/server';
 import config from '../config.js';
 import logger from '../lib/logger.js';
 import { recordPaymentOnChain, getAgent } from '../lib/contract.js';
+import { ContractError } from '../lib/ContractError.js';
+import { AGENT_ERROR_CODES, ROUTE_ERROR_CODES } from '../lib/contractErrors.js';
 import { usdcToStroops } from '../lib/stroops.js';
 import { isValidStellarAddress } from '../middleware/addressValidator.js';
 import { createRateLimiter } from '../middleware/rateLimiter.js';
@@ -17,6 +19,19 @@ const router = Router();
 // so a forged or bypass-injected x-payment-address header is silently discarded.
 const WEATHER_SERVICE_ID = 1;
 const SEARCH_SERVICE_ID = 2;
+
+const SEARCH_CONTRACT_ERROR_STATUS = Object.freeze({
+  ...Object.fromEntries(
+    Object.values(AGENT_ERROR_CODES).map(({ code, status }) => [code, status])
+  ),
+  UPSTREAM_TIMEOUT: ROUTE_ERROR_CODES.UPSTREAM_TIMEOUT.status,
+  RPC_THROTTLED: 503,
+  RPC_TIMEOUT: 503,
+  TRANSACTION_TIMEOUT: 504,
+  SIMULATION_FAILED: 400,
+  TRANSACTION_FAILED: 502,
+  RETURN_VALUE_PARSE_FAILED: 502,
+});
 
 // Validates and records a payment on-chain. All three guards (txHash presence,
 // address format, and agent registration) must pass before touching the contract,
@@ -235,15 +250,26 @@ router.get('/search', async (req, res) => {
 
     if (searchAgentAddress && config.contract.agentsId) {
       const priceStroops = usdcToStroops(config.x402.searchPrice);
-      creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search').catch((err) =>
-        logger.warn({ err, agentAddress: searchAgentAddress }, 'Failed to record search payment for agent')
-      );
+      await creditPayment(searchAgentAddress, searchTxHash, SEARCH_SERVICE_ID, priceStroops, 'search');
     }
 
     logger.info({ q: sanitizedQ }, 'Search request fulfilled');
     if (searchTxHash) res.setHeader('x-payment-transaction', searchTxHash);
     res.json({ query: sanitizedQ, results });
   } catch (err) {
+    if (err instanceof ContractError) {
+      const variant = err.code ?? err.name ?? 'UNKNOWN_CONTRACT_ERROR';
+      const status = SEARCH_CONTRACT_ERROR_STATUS[err.code];
+      if (status !== undefined) {
+        logger.warn({ err, variant, status }, 'GET /demo/search contract error');
+        return res.status(status).json({ error: err.message, code: err.code });
+      }
+      logger.error(
+        { err, variant },
+        `GET /demo/search encountered unmapped contract error variant: ${variant}`
+      );
+      return res.status(500).json({ error: 'Search failed', code: 'SEARCH_ERROR' });
+    }
     logger.error({ err }, 'GET /demo/search failed');
     res.status(500).json({ error: 'Search failed', code: 'SEARCH_ERROR' });
   }

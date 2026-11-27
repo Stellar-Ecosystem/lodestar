@@ -1,6 +1,17 @@
 import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { ContractError } from '../lib/ContractError.js';
+import {
+  AGENT_ERROR,
+  agentErrorFromCode,
+  RpcThrottledError,
+  SimulationError,
+  TransactionFailedError,
+  TransactionTimeoutError,
+  ReturnValueParseError,
+  UpstreamTimeoutError,
+} from '../lib/contractErrors.js';
 
 const mockRecordPaymentOnChain = vi.fn();
 const mockGetAgent = vi.fn();
@@ -295,5 +306,118 @@ describe('payment header validation — search', () => {
       expect.objectContaining({ agentAddress: VALID_STELLAR_ADDRESS, txHash: 'searchtx99' }),
       expect.stringContaining('search payment credited to registered agent')
     );
+  });
+});
+
+describe('GET /demo/search contract error mapping', () => {
+  const mockSearchFetch = () =>
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ organic: [{ title: 'r', link: 'u', snippet: 's' }] }),
+    });
+
+  const agentErrorCases = [
+    ['INVALID_AMOUNT', AGENT_ERROR.INVALID_AMOUNT, 400],
+    ['ARITHMETIC_OVERFLOW', AGENT_ERROR.ARITHMETIC_OVERFLOW, 400],
+    ['AGENT_ALREADY_REGISTERED', AGENT_ERROR.AGENT_ALREADY_REGISTERED, 409],
+    ['AGENT_LIST_FULL', AGENT_ERROR.AGENT_LIST_FULL, 503],
+    ['AGENT_COUNT_OVERFLOW', AGENT_ERROR.AGENT_COUNT_OVERFLOW, 503],
+    ['AGENT_NOT_FOUND', AGENT_ERROR.AGENT_NOT_FOUND, 404],
+    ['UNAUTHORIZED', AGENT_ERROR.UNAUTHORIZED, 403],
+    ['POLICY_NOT_FOUND', AGENT_ERROR.POLICY_NOT_FOUND, 404],
+    ['NOT_INITIALIZED', AGENT_ERROR.NOT_INITIALIZED, 500],
+    ['ALREADY_INITIALIZED', AGENT_ERROR.ALREADY_INITIALIZED, 500],
+  ];
+
+  it.each(agentErrorCases)(
+    'maps %s (code %i) from recordPaymentOnChain to HTTP %i',
+    async (expectedCode, numericCode, expectedStatus) => {
+      global.fetch = mockSearchFetch();
+      mockGetAgent.mockResolvedValue(MOCK_AGENT);
+      mockRecordPaymentOnChain.mockRejectedValue(agentErrorFromCode(numericCode));
+
+      const res = await request(app)
+        .get('/demo/search?q=hello')
+        .set('x-payment-address', VALID_STELLAR_ADDRESS)
+        .set('x-payment-transaction', 'searchtx99');
+
+      expect(res.status).toBe(expectedStatus);
+      expect(res.body.code).toBe(expectedCode);
+    }
+  );
+
+  it('maps AGENT_NOT_FOUND from getAgent to HTTP 404', async () => {
+    global.fetch = mockSearchFetch();
+    mockGetAgent.mockRejectedValue(agentErrorFromCode(AGENT_ERROR.AGENT_NOT_FOUND));
+
+    const res = await request(app)
+      .get('/demo/search?q=hello')
+      .set('x-payment-address', VALID_STELLAR_ADDRESS)
+      .set('x-payment-transaction', 'searchtx99');
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('AGENT_NOT_FOUND');
+  });
+
+  const transportErrorCases = [
+    ['RPC_THROTTLED', () => new RpcThrottledError('RPC throttled', 3), 503],
+    ['RPC_TIMEOUT', () => new ContractError('RPC timed out', 'RPC_TIMEOUT', 503), 503],
+    ['TRANSACTION_TIMEOUT', () => new TransactionTimeoutError('Transaction timed out', 'txhash'), 504],
+    ['UPSTREAM_TIMEOUT', () => new UpstreamTimeoutError('Upstream timed out', 5000), 504],
+    ['SIMULATION_FAILED', () => new SimulationError('Simulation failed'), 400],
+    ['TRANSACTION_FAILED', () => new TransactionFailedError('Transaction failed', 'txhash'), 502],
+    ['RETURN_VALUE_PARSE_FAILED', () => new ReturnValueParseError('Parse failed', 'txhash'), 502],
+  ];
+
+  it.each(transportErrorCases)(
+    'maps %s to HTTP %i',
+    async (expectedCode, makeError, expectedStatus) => {
+      global.fetch = mockSearchFetch();
+      mockGetAgent.mockResolvedValue(MOCK_AGENT);
+      mockRecordPaymentOnChain.mockRejectedValue(makeError());
+
+      const res = await request(app)
+        .get('/demo/search?q=hello')
+        .set('x-payment-address', VALID_STELLAR_ADDRESS)
+        .set('x-payment-transaction', 'searchtx99');
+
+      expect(res.status).toBe(expectedStatus);
+      expect(res.body.code).toBe(expectedCode);
+    }
+  );
+
+  it('falls back to 500 and logs at error level with variant name for unmapped ContractError', async () => {
+    global.fetch = mockSearchFetch();
+    mockGetAgent.mockResolvedValue(MOCK_AGENT);
+    mockRecordPaymentOnChain.mockRejectedValue(
+      new ContractError('Unexpected variant', 'UNMAPPED_FUTURE_VARIANT')
+    );
+
+    const res = await request(app)
+      .get('/demo/search?q=hello')
+      .set('x-payment-address', VALID_STELLAR_ADDRESS)
+      .set('x-payment-transaction', 'searchtx99');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Search failed', code: 'SEARCH_ERROR' });
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'UNMAPPED_FUTURE_VARIANT' }),
+      expect.stringContaining('UNMAPPED_FUTURE_VARIANT')
+    );
+  });
+
+  it('returns 500 SEARCH_ERROR for non-ContractError failures', async () => {
+    global.fetch = mockSearchFetch();
+    mockGetAgent.mockResolvedValue(MOCK_AGENT);
+    mockRecordPaymentOnChain.mockRejectedValue(new Error('unexpected crash'));
+
+    const res = await request(app)
+      .get('/demo/search?q=hello')
+      .set('x-payment-address', VALID_STELLAR_ADDRESS)
+      .set('x-payment-transaction', 'searchtx99');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Search failed', code: 'SEARCH_ERROR' });
+    expect(mockLogger.error).toHaveBeenCalled();
   });
 });
