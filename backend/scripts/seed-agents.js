@@ -5,9 +5,19 @@ import { getAgentCount, getAgent, registerAgentOnChain, recordPaymentOnChain } f
 import config from '../src/config.js';
 import logger from '../src/lib/logger.js';
 
-if (!process.env.AGENTS_CONTRACT_ID) {
-  logger.error('AGENTS_CONTRACT_ID not set — deploy the agents contract first');
-  process.exit(1);
+const TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015';
+const MAINNET_PASSPHRASE = 'Public Global Stellar Network ; September 2015';
+
+export function validateDemoSeedingConfig(env = process.env) {
+  if (!env.AGENTS_CONTRACT_ID) {
+    throw new Error('AGENTS_CONTRACT_ID not set — deploy the agents contract first');
+  }
+  if (env.STELLAR_NETWORK === 'mainnet' || env.STELLAR_NETWORK_PASSPHRASE === MAINNET_PASSPHRASE) {
+    throw new Error('Refusing to seed demo agents on mainnet');
+  }
+  if (env.STELLAR_NETWORK_PASSPHRASE !== TESTNET_PASSPHRASE) {
+    throw new Error('Demo agent seeding requires the Stellar testnet network');
+  }
 }
 
 // Register the server key as an agent so it can cast reputation votes for the
@@ -30,93 +40,100 @@ async function ensureServerVoterRegistered() {
 
 // Use env secrets if provided, otherwise generate ephemeral keypairs.
 // Re-runs are idempotent via the agent count check.
-function resolveKeypair(envKey) {
+function resolveKeypair(envKey, index) {
   const secret = process.env[envKey];
   if (secret) {
     try {
       return Keypair.fromSecret(secret);
     } catch {
-      logger.warn({ envKey }, 'Invalid secret in env — generating random keypair');
+      logger.warn({ envKey }, 'Invalid secret in env — generating deterministic keypair');
     }
   }
-  return Keypair.random();
+  const seed = new Uint8Array(32);
+  seed.fill(index + 1);
+  return Keypair.fromRawEd25519Seed(seed);
 }
 
-const AGENTS = [
-  {
-    keypair: resolveKeypair('DEMO_AGENT_1_SECRET'),
-    name: 'NewAgent',
-    description: 'A freshly registered agent. Just getting started on the Lodestar network.',
-    successPayments: 1,   // score → 110
+export const AGENTS = Array.from({ length: 100 }, (_, index) => {
+  if (index === 0) {
+    return {
+      keypair: resolveKeypair('DEMO_AGENT_1_SECRET', index),
+      name: 'NewAgent',
+      description: 'A freshly registered agent. Just getting started on the Lodestar network.',
+      successPayments: 1,
+      failPayments: 0,
+    };
+  }
+  if (index === 1) {
+    return {
+      keypair: resolveKeypair('DEMO_AGENT_2_SECRET', index),
+      name: 'EstablishedAgent',
+      description: 'Mid-tier agent with a solid track record of successful x402 payments.',
+      successPayments: 50,
+      failPayments: 0,
+    };
+  }
+  if (index === 2) {
+    return {
+      keypair: resolveKeypair('DEMO_AGENT_3_SECRET', index),
+      name: 'TrustedAgent',
+      description: 'High-trust agent. Consistent payment history across weather, search, and finance services.',
+      successPayments: 90,
+      failPayments: 0,
+    };
+  }
+  return {
+    keypair: resolveKeypair(`DEMO_AGENT_${index + 1}_SECRET`, index),
+    name: `DemoAgent${index + 1}`,
+    description: 'Deterministic demo agent used for testnet score seeding.',
+    successPayments: (index * 7) % 91,
     failPayments: 0,
-  },
-  {
-    keypair: resolveKeypair('DEMO_AGENT_2_SECRET'),
-    name: 'EstablishedAgent',
-    description: 'Mid-tier agent with a solid track record of successful x402 payments.',
-    successPayments: 50,  // score → 600
-    failPayments: 0,
-  },
-  {
-    keypair: resolveKeypair('DEMO_AGENT_3_SECRET'),
-    name: 'TrustedAgent',
-    description: 'High-trust agent. Consistent payment history across weather, search, and finance services.',
-    successPayments: 90,  // score → 1000 (capped)
-    failPayments: 0,
-  },
-];
+  };
+});
 
-async function seed() {
+export async function seed() {
   try {
-    // Always ensure the demo voter exists, even if the demo agents are seeded.
+    validateDemoSeedingConfig();
     await ensureServerVoterRegistered();
 
     const count = await getAgentCount();
     logger.info({ count }, 'Current agent count');
 
-    // count now includes the server voter registered above, so the demo agents
-    // are fully seeded only once the count reaches AGENTS.length + 1.
-    const expectedCount = AGENTS.length + 1;
-    if (count >= expectedCount) {
-      logger.info('Agents already seeded — skipping');
-      process.exit(0);
-    }
-
     for (const agent of AGENTS) {
       const address = agent.keypair.publicKey();
       try {
-        logger.info({ name: agent.name, address }, 'Registering agent…');
-        await registerAgentOnChain(address, agent.name, agent.description);
-        logger.info({ name: agent.name }, 'Registered — building payment history…');
+        const existing = await getAgent(address);
+        const targetScore = Math.min(1000, Math.max(0, 100 + agent.successPayments * 10 - agent.failPayments * 25));
 
-        const AMOUNT = 10_000n; // 0.001 USDC in stroops
-
-        for (let i = 0; i < agent.successPayments; i++) {
-          await recordPaymentOnChain(address, AMOUNT, true);
-        }
-        for (let i = 0; i < agent.failPayments; i++) {
-          await recordPaymentOnChain(address, AMOUNT, false);
+        if (!existing) {
+          await registerAgentOnChain(address, agent.name, agent.description);
+        } else if (existing.score >= targetScore) {
+          logger.info({ name: agent.name, address, score: existing.score }, 'Agent already seeded — skipping');
+          continue;
         }
 
-        const finalScore = Math.min(
-          1000,
-          Math.max(0, 100 + agent.successPayments * 10 - agent.failPayments * 25)
-        );
-        logger.info(
-          { name: agent.name, payments: agent.successPayments + agent.failPayments, finalScore },
-          'Payment history recorded'
-        );
+        const currentScore = existing?.score ?? 100;
+        const needed = Math.max(0, Math.ceil((targetScore - currentScore) / 10));
+        const AMOUNT = 10_000n;
+        for (let i = 0; i < needed; i++) {
+          await recordPaymentOnChain(address, 1, AMOUNT, true);
+        }
+
+        logger.info({ name: agent.name, targetScore, payments: needed }, 'Agent seeding complete');
       } catch (err) {
         logger.error({ err, name: agent.name }, 'Failed to seed agent');
       }
     }
 
     logger.info('Agent seed complete');
-    process.exit(0);
   } catch (err) {
     logger.error({ err }, 'Seed-agents script failed');
-    process.exit(1);
+    throw err;
   }
 }
 
-seed();
+if (process.argv[1]?.endsWith('/scripts/seed-agents.js') || process.argv[1]?.endsWith('\\scripts\\seed-agents.js')) {
+  seed()
+    .then(() => process.exit(0))
+    .catch(() => process.exit(1));
+}
