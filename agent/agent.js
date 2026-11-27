@@ -9,7 +9,7 @@ import { x402Client, x402HTTPClient } from '@x402/core/client';
 import { createEd25519Signer } from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { buildRunSummary, writeRunSummary } from './runSummary.js';
-import { stroopsToUsdcDisplay } from '../packages/stroops/index.js';
+import { stroopsToUsdcDisplay, usdcToStroops } from '../packages/stroops/index.js';
 
 
 
@@ -293,6 +293,49 @@ async function submitReputation(id, positive) {
   }
 }
 
+function comparePriceUsdc(priceA, priceB) {
+  try {
+    const stroopsA = usdcToStroops(priceA);
+    const stroopsB = usdcToStroops(priceB);
+    if (stroopsA < stroopsB) return -1;
+    if (stroopsA > stroopsB) return 1;
+    return 0;
+  } catch {
+    const numA = Number.parseFloat(String(priceA));
+    const numB = Number.parseFloat(String(priceB));
+    if (Number.isFinite(numA) && Number.isFinite(numB)) {
+      return numA - numB;
+    }
+    return 0;
+  }
+}
+
+function compareServiceId(idA, idB) {
+  const numA = Number(idA);
+  const numB = Number(idB);
+  if (Number.isFinite(numA) && Number.isFinite(numB)) {
+    return numA - numB;
+  }
+  return String(idA).localeCompare(String(idB));
+}
+
+function compareCandidates(a, b) {
+  if (b.reputation !== a.reputation) {
+    return b.reputation - a.reputation;
+  }
+  const priceDiff = comparePriceUsdc(a.price_usdc, b.price_usdc);
+  if (priceDiff !== 0) {
+    return priceDiff;
+  }
+  return compareServiceId(a.id, b.id);
+}
+
+// Rank eligible services deterministically: higher reputation first, then lower
+// USDC price (exact stroop comparison), then lower service ID as a final tie-breaker.
+export function rankCandidates(eligible, maxRetries) {
+  return [...eligible].sort(compareCandidates).slice(0, maxRetries);
+}
+
 // Weighted random selection: higher reputation = proportionally more likely to be chosen.
 // Falls back to uniform random when all weights are zero.
 function selectWeighted(services) {
@@ -307,6 +350,40 @@ function selectWeighted(services) {
     if (r <= 0) return services[i];
   }
   return services[services.length - 1];
+}
+
+// Select the next candidate from available services and record why it was chosen.
+// When all available candidates share the same reputation, selection is deterministic:
+// lowest USDC price wins (with lowest service ID breaking any price tie).
+// When reputations differ, weighted random selection is preserved.
+export function selectCandidate(available) {
+  const sorted = [...available].sort(compareCandidates);
+
+  if (sorted.length === 1) {
+    return {
+      service: sorted[0],
+      strategy: 'reputation_weighted_random',
+      rankingReason: 'single_eligible_candidate',
+    };
+  }
+
+  const allEqualReputation = sorted.every(s => s.reputation === sorted[0].reputation);
+  if (allEqualReputation) {
+    const strictlyCheaper = comparePriceUsdc(sorted[0].price_usdc, sorted[1].price_usdc) < 0;
+    return {
+      service: sorted[0],
+      strategy: 'deterministic_price_tiebreak',
+      rankingReason: strictlyCheaper
+        ? 'equal_reputation_lowest_price'
+        : 'equal_reputation_and_price_lowest_id',
+    };
+  }
+
+  return {
+    service: selectWeighted(sorted),
+    strategy: 'reputation_weighted_random',
+    rankingReason: 'reputation_weighted_random',
+  };
 }
 
 // ── Agent task ────────────────────────────────────────────────────────────────
@@ -344,15 +421,15 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     };
   }
 
-  // Top-N candidates by reputation; weighted random selection reduces single-point manipulation.
-  const candidates = [...eligible].sort((a, b) => b.reputation - a.reputation).slice(0, maxRetries);
+  // Top-N candidates by reputation, then lowest price, then lowest service ID.
+  const candidates = rankCandidates(eligible, maxRetries);
   const failed = new Set();
 
   for (let attempt = 1; attempt <= candidates.length; attempt++) {
     const available = candidates.filter(s => !failed.has(s.id));
     if (!available.length) break;
 
-    const selected = selectWeighted(available);
+    const { service: selected, strategy, rankingReason } = selectCandidate(available);
 
     logger.info(
       {
@@ -360,7 +437,10 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
         category,
         serviceId: selected.id,
         serviceName: selected.name,
+        reputation: selected.reputation,
         priceUsdc: selected.price_usdc,
+        strategy,
+        rankingReason,
         servicesFound: services.length,
         attempt,
       },
@@ -473,9 +553,8 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
         serviceName: selected.name,
         reputation: selected.reputation,
         priceUsdc: selected.price_usdc,
-        // Why this service: top-N by reputation, then reputation-weighted random
-        // pick among the candidates still untried.
-        strategy: 'reputation_weighted_random',
+        strategy,
+        rankingReason,
         candidatesConsidered: candidates.length,
         minReputation,
       },

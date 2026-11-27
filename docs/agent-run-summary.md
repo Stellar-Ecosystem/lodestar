@@ -49,7 +49,8 @@ change, so a consumer can refuse a file it does not understand.
         "serviceName": "Weather API",
         "reputation": 90,
         "priceUsdc": "0.010000",
-        "strategy": "reputation_weighted_random",
+        "strategy": "reputation_weighted_random", // or "deterministic_price_tiebreak"
+        "rankingReason": "reputation_weighted_random", // deterministic reason for this pick
         "candidatesConsidered": 3,
         "minReputation": 0
       }
@@ -90,6 +91,15 @@ run all passed — the remaining ones never got a chance.
 | `no_services_meet_min_reputation` | Services exist but all fall below `AGENT_MIN_SERVICE_REPUTATION` |
 | `all_candidates_exhausted` | Every candidate was tried and failed |
 | `skipped_due_to_shutdown` | Shutdown began before the task started |
+
+### `selection.rankingReason`
+
+| Value | Meaning |
+| --- | --- |
+| `equal_reputation_lowest_price` | All available candidates had equal reputation; the strictly lowest-priced service was chosen deterministically |
+| `equal_reputation_and_price_lowest_id` | Available candidates tied on both reputation and lowest price; the lowest service ID was chosen deterministically |
+| `single_eligible_candidate` | Only one candidate was available |
+| `reputation_weighted_random` | Available candidates had unequal reputation; chosen via reputation-weighted random selection |
 
 ### Notes for consumers
 
