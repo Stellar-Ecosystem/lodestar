@@ -20,4 +20,4 @@ To enforce limits in aggregate across multiple instances, configure a shared Red
 
 ## Demo Scripts
 
-`scripts/demo/boost-scores.js` is a demo-only utility that inflates agent scores for UI demonstrations. It refuses to run unless `DEMO_MODE=true` and rejects any contract ID listed in `contract/deployments.json`. Do not use this script against a real deployment.
+`scripts/demo/boost-scores.js` is a demo-only utility that inflates agent scores for UI demonstrations. It refuses to run unless `DEMO_MODE=true` and rejects mainnet passphrases and contract IDs listed in `contract/deployments.json`. `scripts/seed-agents.js` deterministically seeds 100 agents on testnet and only adds missing registrations or payments on rerun. Do not use these scripts against a real deployment.
