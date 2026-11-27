@@ -6,10 +6,14 @@ import pino from 'pino';
 import pkg from '@stellar/stellar-sdk';
 const { Keypair } = pkg;
 import { x402Client, x402HTTPClient } from '@x402/core/client';
-import { createEd25519Signer } from '@x402/stellar';
+import {
+  createEd25519Signer,
+  getUsdcAddress,
+  validateStellarDestinationAddress,
+} from '@x402/stellar';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { buildRunSummary, writeRunSummary } from './runSummary.js';
-import { stroopsToUsdcDisplay } from '../packages/stroops/index.js';
+import { stroopsToUsdcDisplay, usdcToStroops } from '../packages/stroops/index.js';
 
 
 
@@ -53,13 +57,86 @@ function loadSecret() {
 
 let AGENT_SECRET = loadSecret();
 
-const required = ['STELLAR_RPC_URL', 'LODESTAR_API_URL'];
-for (const key of required) {
-  if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
+function isValidHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
+
+function isPositiveDecimal(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return false;
+  const text = String(value).trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return false;
+  return Number(text) > 0;
+}
+
+export function validateAgentConfig(env = process.env) {
+  const required = ['STELLAR_RPC_URL', 'LODESTAR_API_URL'];
+  const errors = required
+    .filter((key) => !env[key])
+    .map((key) => `Missing required env var: ${key}`);
+
+  if (env.STELLAR_RPC_URL && !isValidHttpUrl(env.STELLAR_RPC_URL)) {
+    errors.push('Invalid STELLAR_RPC_URL: expected an HTTP(S) URL');
+  }
+  if (env.LODESTAR_API_URL && !isValidHttpUrl(env.LODESTAR_API_URL)) {
+    errors.push('Invalid LODESTAR_API_URL: expected an HTTP(S) URL');
+  }
+
+  const network = env.STELLAR_NETWORK ?? 'testnet';
+  if (!['testnet', 'mainnet'].includes(network)) {
+    errors.push('Invalid STELLAR_NETWORK: expected testnet or mainnet');
+  }
+
+  const expectedPassphrase = network === 'mainnet'
+    ? 'Public Global Stellar Network ; September 2015'
+    : 'Test SDF Network ; September 2015';
+  const passphrase = env.STELLAR_NETWORK_PASSPHRASE ?? expectedPassphrase;
+  if (passphrase !== expectedPassphrase) {
+    errors.push('Invalid STELLAR_NETWORK_PASSPHRASE: does not match STELLAR_NETWORK');
+  }
+
+  for (const key of ['AGENT_MAX_PER_TX', 'AGENT_MAX_PER_DAY']) {
+    const value = env[key] ?? (key === 'AGENT_MAX_PER_TX' ? '0.001' : '1.00');
+    if (!isPositiveDecimal(value)) errors.push(`Invalid ${key}: expected a positive decimal`);
+  }
+
+  const maxRetries = Number(env.AGENT_MAX_SERVICE_RETRIES ?? '3');
+  if (!Number.isInteger(maxRetries) || maxRetries < 1 || maxRetries > 10) {
+    errors.push('Invalid AGENT_MAX_SERVICE_RETRIES: expected an integer from 1 to 10');
+  }
+
+  const minReputation = Number(env.AGENT_MIN_SERVICE_REPUTATION ?? '0');
+  if (!Number.isInteger(minReputation) || minReputation < 0) {
+    errors.push('Invalid AGENT_MIN_SERVICE_REPUTATION: expected a non-negative integer');
+  }
+
+  const categories = env.AGENT_ALLOWED_CATEGORIES;
+  if (categories !== undefined) {
+    const values = categories.split(',').map((value) => value.trim()).filter(Boolean);
+    if (!values.length || values.some((value) => !/^[-a-zA-Z0-9]+$/.test(value))) {
+      errors.push('Invalid AGENT_ALLOWED_CATEGORIES: expected comma-separated category names');
+    }
+  }
+
+  const timeout = env.AGENT_FETCH_TIMEOUT_MS;
+  if (timeout !== undefined && (!Number.isInteger(Number(timeout)) || Number(timeout) < 1)) {
+    errors.push('Invalid AGENT_FETCH_TIMEOUT_MS: expected a positive integer');
+  }
+
+  if (errors.length) throw new Error(errors.join('; '));
+  return true;
+}
+
+validateAgentConfig();
 
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
+const STELLAR_NETWORK      = process.env.STELLAR_NETWORK ?? 'testnet';
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
 
 const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
@@ -243,7 +320,8 @@ function buildHttpClient() {
   // Re-read the secret for the x402 signer since the module-level reference
   // has already been zeroed. loadSecret() re-reads from the env var or file.
   const secretForSigner = loadSecret();
-  const signer = createEd25519Signer(secretForSigner, 'stellar:testnet');
+  const network = STELLAR_NETWORK === 'mainnet' ? 'stellar:pubnet' : 'stellar:testnet';
+  const signer = createEd25519Signer(secretForSigner, network);
   const scheme = new ExactStellarScheme(signer, { url: RPC_URL });
   const x402 = new x402Client().register('stellar:*', scheme);
   const httpClient = new x402HTTPClient(x402);
@@ -255,8 +333,10 @@ function buildHttpClient() {
 
     const paymentRequired = httpClient.getPaymentRequiredResponse(
       (name) => probe.headers.get(name),
-      probe.status === 402 ? await probe.json().catch(() => undefined) : undefined
+      await probe.json().catch(() => undefined)
     );
+
+    validateX402Challenge(paymentRequired, network, MAX_PER_TX);
 
     const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
     const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
@@ -391,16 +471,30 @@ export async function runTask(category, buildUrl, scoringEnabled, client = httpC
     }
 
     const endpointUrl = buildUrl(selected.endpoint);
+    if (!isValidHttpUrl(endpointUrl)) {
+      logger.error(
+        {
+          event: EVENT.PAYMENT_FAILED,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+          taskDurationMs: Date.now() - taskStart,
+        },
+        'Payment failed — invalid service endpoint'
+      );
+      failed.add(selected.id);
+      continue;
+    }
+
     logger.debug(
       { event: EVENT.TASK_START, category, serviceId: selected.id, endpointUrl },
       'Sending x402 payment on Stellar'
     );
 
-    const paymentPayload = { url: endpointUrl, method: 'GET' };
-    const paymentHeaders = client.encodePaymentSignatureHeader(paymentPayload);
     let response;
     try {
-      response = await fetchWithTimeout(endpointUrl, { headers: paymentHeaders, keepalive: true });
+      response = await client.fetch(endpointUrl, { keepalive: true });
     } catch (err) {
       logger.error(
         {
@@ -657,4 +751,41 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     );
     process.exit(1);
   });
+}
+
+export function validateX402Challenge(paymentRequired, network, maxPerTx) {
+  const candidates = paymentRequired?.accepts;
+  if (!Array.isArray(candidates)) throw new Error('Invalid x402 challenge: missing payment requirements');
+
+  let usdcAddress;
+  try {
+    usdcAddress = getUsdcAddress(network);
+  } catch {
+    throw new Error('Invalid x402 challenge: unsupported Stellar network');
+  }
+
+  const requirement = candidates.find((candidate) =>
+    candidate.scheme === 'exact' &&
+    candidate.network === network &&
+    candidate.asset === usdcAddress &&
+    validateStellarDestinationAddress(candidate.payTo)
+  );
+  if (!requirement) throw new Error('Invalid x402 challenge: no supported Stellar USDC payment requirement');
+
+  const atomicAmount = requirement.amount ?? requirement.maxAmountRequired;
+  if (!/^\d+$/.test(String(atomicAmount ?? '')) || BigInt(atomicAmount) <= 0n) {
+    throw new Error('Invalid x402 challenge: payment amount is not positive atomic USDC');
+  }
+
+  let maxPerTxStroops;
+  try {
+    maxPerTxStroops = usdcToStroops(maxPerTx);
+  } catch {
+    throw new Error('Invalid AGENT_MAX_PER_TX: expected a positive decimal');
+  }
+  if (BigInt(atomicAmount) > maxPerTxStroops) {
+    throw new Error('Invalid x402 challenge: payment amount exceeds AGENT_MAX_PER_TX');
+  }
+
+  return requirement;
 }

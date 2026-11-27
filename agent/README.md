@@ -51,6 +51,9 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `AGENT_STELLAR_SECRET` | Yes | — | Stellar secret key for the agent |
+| `AGENT_STELLAR_SECRET_FILE` | Alternative | — | Path to a secret key file; do not set together with `AGENT_STELLAR_SECRET`; the file must not be group/world-readable on Unix |
+| `STELLAR_NETWORK` | No | `testnet` | Stellar network: `testnet` or `mainnet` |
+| `STELLAR_NETWORK_PASSPHRASE` | No | Testnet passphrase | Must match the selected network |
 | `STELLAR_RPC_URL` | Yes | — | Horizon RPC URL |
 | `LODESTAR_API_URL` | Yes | — | Base URL of the Lodestar backend |
 | `LODESTAR_HMAC_SECRET` | No | `""` | HMAC secret for signing payment-record requests |
@@ -62,3 +65,5 @@ All candidate services exhausted {"event":"payment_failed","category":"weather",
 | `AGENT_MIN_SERVICE_REPUTATION` | No | `0` | Minimum reputation to consider a service |
 | `AGENT_MAX_SERVICE_RETRIES` | No | `3` | Max weighted retry attempts per task |
 | `LOG_LEVEL` | No | `info` | pino log level |
+
+The agent validates network settings, HTTP URLs, spending limits, retry limits, and allowed categories before signing or retrying an x402 payment. Discovered service endpoints and 402 challenge requirements must use the configured Stellar network and USDC asset and remain within `AGENT_MAX_PER_TX`.
