@@ -71,4 +71,34 @@ describe('withUpstreamTimeout (#671)', () => {
       }),
     ).rejects.toThrow('boom');
   });
+
+  it('passes an AbortSignal to a task factory and aborts it on deadline expiry', async () => {
+    vi.useFakeTimers();
+    let capturedSignal;
+    let rejectTask;
+
+    const pending = withUpstreamTimeout(
+      (signal) => {
+        capturedSignal = signal;
+        return new Promise((_resolve, reject) => {
+          rejectTask = reject;
+        });
+      },
+      { timeoutMs: 2_000, label: 'reputation' },
+    );
+    const settled = pending.catch((err) => err);
+
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(2_001);
+
+    const err = await settled;
+    expect(err).toBeInstanceOf(UpstreamTimeoutError);
+    expect(capturedSignal.aborted).toBe(true);
+
+    // Late rejection from the abandoned task must not cause an unhandled rejection.
+    rejectTask(new Error('late failure'));
+    await Promise.resolve();
+  });
 });

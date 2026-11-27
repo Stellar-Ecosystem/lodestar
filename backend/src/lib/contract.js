@@ -25,6 +25,7 @@ import {
   SimulationError,
   TransactionFailedError,
   TransactionTimeoutError,
+  UpstreamTimeoutError,
   AGENT_ERROR,
   AGENT_ERROR_SCOPE,
   REGISTRY_ERROR_SCOPE,
@@ -169,7 +170,14 @@ function getServerKeypair() {
   return Keypair.fromSecret(config.server.secret);
 }
 
-async function _simulateAndSubmit(operation, signer, retryCount = 0) {
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw new UpstreamTimeoutError('Contract operation aborted after upstream deadline');
+  }
+}
+
+async function _simulateAndSubmit(operation, signer, retryCount = 0, { signal } = {}) {
+  throwIfAborted(signal);
   const server = getStellarServer();
   const keypair = signer ?? getServerKeypair();
   const passphrase = getNetworkPassphrase();
@@ -183,6 +191,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
     lastSeqSyncTime = now;
   }
 
+  throwIfAborted(signal);
   const txAccount = new Account(keypair.publicKey(), currentSeqNum.toString());
 
   const tx = new TransactionBuilder(txAccount, {
@@ -202,6 +211,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
     throw new SimulationError(`Simulation failed: ${simResult.error}`, simResult.error);
   }
 
+  throwIfAborted(signal);
   const preparedTx = assembleTransactionForSubmit(tx, simResult).build();
   preparedTx.sign(keypair);
 
@@ -226,8 +236,9 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
     }
 
     if (isBadSeq && retryCount < 3) {
+      throwIfAborted(signal);
       logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
-      return _simulateAndSubmit(operation, signer, retryCount + 1);
+      return _simulateAndSubmit(operation, signer, retryCount + 1, { signal });
     }
     const details = sendResult.errorResult || sendResult;
     throwContractErrorIfPresent(details, REGISTRY_ERROR_SCOPE);
@@ -241,12 +252,14 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
 
   let getResult;
   for (let i = 0; i < 20; i++) {
+    throwIfAborted(signal);
     const txStart = Date.now();
     getResult = await server.getTransaction(sendResult.hash);
     logRpcCall('getTransaction', Date.now() - txStart);
     if (getResult.status !== 'NOT_FOUND') break;
     await new Promise((r) => setTimeout(r, 1500));
   }
+  throwIfAborted(signal);
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
     // Leave in pendingTransactions — the tx may still confirm on-chain
@@ -275,8 +288,11 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   return getResult;
 }
 
-export function simulateAndSubmit(operation, signer) {
-  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
+export function simulateAndSubmit(operation, signer, options = {}) {
+  return submitQueue.add(() => {
+    throwIfAborted(options.signal);
+    return _simulateAndSubmit(operation, signer, 0, options);
+  });
 }
 
 function prunePreparedRegistrySubmissions(now = Date.now()) {
@@ -757,8 +773,9 @@ export function validatePreparedRegistrySubmission(submitToken, signedXdr) {
  * @returns {Promise<number>} The new reputation value
  * @throws {ContractError} If the agent is not permitted, or the contract call fails
  */
-export async function updateReputation(id, positive, agentAddress) {
+export async function updateReputation(id, positive, agentAddress, { signal } = {}) {
   try {
+    throwIfAborted(signal);
     const voter = getReputationVoters().get(agentAddress);
     if (!voter) {
       throw new ContractError(
@@ -768,6 +785,7 @@ export async function updateReputation(id, positive, agentAddress) {
     }
 
     const before = await getService(id);
+    throwIfAborted(signal);
     if (!before) {
       throw new ContractError(`Service ${id} not found`, 'SERVICE_NOT_FOUND');
     }
@@ -779,7 +797,8 @@ export async function updateReputation(id, positive, agentAddress) {
       nativeToScVal(positive, { type: 'bool' }),
       nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
     );
-    await simulateAndSubmit(op, voter);
+    await simulateAndSubmit(op, voter, { signal });
+    throwIfAborted(signal);
 
     const after = await getService(id);
     if (!after) {

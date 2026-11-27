@@ -773,7 +773,12 @@ describe('POST /api/reputation/:id — authorization', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, newReputation: 5 });
-    expect(mockUpdateReputation).toHaveBeenCalledWith(1, true, VALID_AGENT);
+    expect(mockUpdateReputation).toHaveBeenCalledWith(
+      1,
+      true,
+      VALID_AGENT,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('should surface the on-chain cooldown rejection as an actionable 400', async () => {

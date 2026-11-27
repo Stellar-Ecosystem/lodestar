@@ -20,25 +20,41 @@ import logger from './logger.js';
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 20_000;
 
 /**
- * Run `promise` under a deadline.
+ * Run `task` (a promise or `(signal) => Promise<T>` factory) under a deadline.
  *
- * On expiry the returned promise rejects with an `UpstreamTimeoutError`
- * (`code: 'UPSTREAM_TIMEOUT'`, HTTP 504) and the timeout is counted as a
- * metric so its frequency is visible.
+ * On expiry the controller is aborted, the returned promise rejects with an
+ * `UpstreamTimeoutError` (`code: 'UPSTREAM_TIMEOUT'`, HTTP 504), and the
+ * timeout is counted as a metric so its frequency is visible. Passing a factory
+ * lets the underlying operation observe `signal.aborted` and stop before
+ * submitting or retrying on-chain side effects.
  *
  * @template T
- * @param {Promise<T>} promise The upstream call to bound.
+ * @param {Promise<T> | ((signal: AbortSignal) => Promise<T>)} task The upstream call to bound.
  * @param {{ timeoutMs?: number, label?: string }} [options]
  * @returns {Promise<T>}
  * @throws {UpstreamTimeoutError} when the deadline expires.
  */
-export async function withUpstreamTimeout(promise, options = {}) {
+export async function withUpstreamTimeout(task, options = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
   const label = options.label ?? 'upstream';
 
   // The controller makes the deadline explicit: the abort is what marks the
-  // call as abandoned, and it is handed to the caller through the error.
+  // call as abandoned, and it is handed to factory callers via `signal`.
   const controller = new AbortController();
+  let promise;
+  if (typeof task === 'function') {
+    try {
+      promise = Promise.resolve(task(controller.signal));
+    } catch (err) {
+      promise = Promise.reject(err);
+    }
+  } else {
+    promise = task;
+  }
+
+  // Prevent unhandled rejections if the abandoned call rejects after the
+  // deadline has already won the race.
+  promise.catch(() => {});
 
   let timer;
   const deadline = new Promise((_, reject) => {
