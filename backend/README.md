@@ -20,4 +20,6 @@ To enforce limits in aggregate across multiple instances, configure a shared Red
 
 ## Demo Scripts
 
-`scripts/demo/boost-scores.js` is a demo-only utility that inflates agent scores for UI demonstrations. It refuses to run unless `DEMO_MODE=true` and rejects any contract ID listed in `contract/deployments.json`. Do not use this script against a real deployment.
+`scripts/demo/boost-scores.js` is a demo-only utility that inflates agent scores for UI demonstrations. It refuses to run unless `DEMO_MODE=true` and rejects any contract ID listed in `contract/deployments.json` or a mainnet `STELLAR_NETWORK_PASSPHRASE`. Do not use this script against a real deployment.
+
+Each run emits structured logs correlated by `runId` across `boost_scores.started`, `boost_scores.discovered`, `boost_scores.agent_planned` / `boost_scores.agent_skipped`, `boost_scores.agent_result`, and `boost_scores.completed` (or `boost_scores.config_rejected` / `boost_scores.failed`). Contract, agent, and payment references are logged in redacted form (`contractRef`, `agentRef`, `paymentRef`), and partial reruns are flagged via `partialRerun: true`.
