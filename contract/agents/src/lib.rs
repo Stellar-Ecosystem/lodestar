@@ -19,6 +19,20 @@ const SCORE_SUCCESS: i32 = 10;
 const SCORE_FAILURE: i32 = -25;
 const FLAG_PENALTY: i32 = -200;
 
+/// Inclusive lower bounds for each agent credit score tier within `0..=1000`.
+///
+/// | Score Range | Tier          |
+/// |-------------|---------------|
+/// | `0..=299`   | `New`         |
+/// | `300..=599` | `Building`    |
+/// | `600..=899` | `Established` |
+/// | `900..=999` | `Trusted`     |
+/// | `1000`      | `Elite`       |
+const TIER_BUILDING_MIN: i32 = 300;
+const TIER_ESTABLISHED_MIN: i32 = 600;
+const TIER_TRUSTED_MIN: i32 = 900;
+const TIER_ELITE_MIN: i32 = MAX_SCORE;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -103,10 +117,49 @@ pub struct ScoringConfig {
     pub flag_penalty: i32,
 }
 
+/// Agent credit score tier derived from a score in `0..=1000`.
+///
+/// Boundaries are inclusive on the lower bound:
+/// - `New`: `0..=299`
+/// - `Building`: `300..=599`
+/// - `Established`: `600..=899`
+/// - `Trusted`: `900..=999`
+/// - `Elite`: `1000`
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ScoreTier {
+    New = 0,
+    Building = 1,
+    Established = 2,
+    Trusted = 3,
+    Elite = 4,
+}
+
 #[contract]
 pub struct LodestarAgents;
 
 impl LodestarAgents {
+    /// Map a credit score to its corresponding `ScoreTier`.
+    ///
+    /// Scores are clamped to `0..=MAX_SCORE` before tier classification so
+    /// every input maps to a defined tier consistent with the on-chain score
+    /// invariant (`0..=1000`).
+    fn tier_for_score(score: i32) -> ScoreTier {
+        let clamped = score.clamp(0, MAX_SCORE);
+        if clamped >= TIER_ELITE_MIN {
+            ScoreTier::Elite
+        } else if clamped >= TIER_TRUSTED_MIN {
+            ScoreTier::Trusted
+        } else if clamped >= TIER_ESTABLISHED_MIN {
+            ScoreTier::Established
+        } else if clamped >= TIER_BUILDING_MIN {
+            ScoreTier::Building
+        } else {
+            ScoreTier::New
+        }
+    }
+
     fn get_daily_spend_with_reset(env: &Env, policy: &SpendingPolicy) -> (i128, u64) {
         let now = env.ledger().sequence() as u64;
         if now >= policy.last_reset_ledger + DAY_LEDGERS {
@@ -1055,6 +1108,33 @@ impl LodestarAgents {
             score_success: SCORE_SUCCESS,
             score_failure: SCORE_FAILURE,
             flag_penalty: FLAG_PENALTY,
+        }
+    }
+
+    /// Classify a credit score into its `ScoreTier`.
+    ///
+    /// Boundaries (inclusive on lower bound, score clamped to `0..=1000`):
+    /// - `0..=299` -> `ScoreTier::New`
+    /// - `300..=599` -> `ScoreTier::Building`
+    /// - `600..=899` -> `ScoreTier::Established`
+    /// - `900..=999` -> `ScoreTier::Trusted`
+    /// - `1000` -> `ScoreTier::Elite`
+    pub fn score_tier(_env: Env, score: i32) -> ScoreTier {
+        Self::tier_for_score(score)
+    }
+
+    /// Read the current `ScoreTier` for a registered agent.
+    ///
+    /// # Returns
+    /// `Ok(ScoreTier)` matching the agent's stored credit score (always within `0..=1000`).
+    ///
+    /// # Errors
+    /// `AgentError::AgentNotFound` (`6`) if `agent_address` is not registered.
+    pub fn get_score_tier(env: Env, agent_address: Address) -> Result<ScoreTier, AgentError> {
+        let key = DataKey::Agent(agent_address);
+        match env.storage().persistent().get::<DataKey, AgentEntry>(&key) {
+            Some(entry) => Ok(Self::tier_for_score(entry.score)),
+            None => Err(AgentError::AgentNotFound),
         }
     }
 }
@@ -3309,5 +3389,184 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+
+    #[test]
+    fn test_score_tier_exact_boundaries() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(LodestarAgents, (admin,));
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        // Lower clamp and New tier (0..=299)
+        assert_eq!(client.score_tier(&-1), ScoreTier::New);
+        assert_eq!(client.score_tier(&0), ScoreTier::New);
+        assert_eq!(client.score_tier(&INITIAL_SCORE), ScoreTier::New);
+        assert_eq!(client.score_tier(&299), ScoreTier::New);
+
+        // 299 / 300 boundary -> Building (300..=599)
+        assert_eq!(client.score_tier(&300), ScoreTier::Building);
+        assert_eq!(client.score_tier(&599), ScoreTier::Building);
+
+        // 599 / 600 boundary -> Established (600..=899)
+        assert_eq!(client.score_tier(&600), ScoreTier::Established);
+        assert_eq!(client.score_tier(&899), ScoreTier::Established);
+
+        // 899 / 900 boundary -> Trusted (900..=999)
+        assert_eq!(client.score_tier(&900), ScoreTier::Trusted);
+        assert_eq!(client.score_tier(&999), ScoreTier::Trusted);
+
+        // 999 / 1000 boundary -> Elite (1000) and upper clamp
+        assert_eq!(client.score_tier(&1000), ScoreTier::Elite);
+        assert_eq!(client.score_tier(&1001), ScoreTier::Elite);
+    }
+
+    #[test]
+    fn test_get_score_tier_boundaries_299_300_and_899_900() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let service_id: u64 = 1;
+        let payment_stroops: i128 = 10_000_000; // 1 USDC (7 decimals)
+
+        registry_client.set_service(&service_id, &provider);
+
+        // Unregistered agent returns AgentNotFound
+        assert_eq!(
+            client.try_get_score_tier(&agent_addr).unwrap_err().unwrap(),
+            AgentError::AgentNotFound
+        );
+
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+        assert_eq!(client.get_score(&agent_addr), 100);
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::New);
+
+        // Helper to set an exact stored score for boundary inspection
+        let set_score = |score: i32| {
+            env.as_contract(&contract_id, || {
+                let key = DataKey::Agent(agent_addr.clone());
+                let mut entry: AgentEntry = env.storage().persistent().get(&key).unwrap();
+                entry.score = score;
+                env.storage().persistent().set(&key, &entry);
+            });
+        };
+
+        // Exercise 299 -> New, 300 -> Building
+        set_score(299);
+        let score_299 = client.get_score(&agent_addr);
+        assert!((0..=MAX_SCORE).contains(&score_299));
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::New);
+        assert_eq!(
+            client.get_score_tier(&agent_addr),
+            client.score_tier(&score_299)
+        );
+
+        set_score(300);
+        let score_300 = client.get_score(&agent_addr);
+        assert!((0..=MAX_SCORE).contains(&score_300));
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::Building);
+        assert_eq!(
+            client.get_score_tier(&agent_addr),
+            client.score_tier(&score_300)
+        );
+
+        // Exercise 899 -> Established, 900 -> Trusted
+        set_score(899);
+        let score_899 = client.get_score(&agent_addr);
+        assert!((0..=MAX_SCORE).contains(&score_899));
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::Established);
+        assert_eq!(
+            client.get_score_tier(&agent_addr),
+            client.score_tier(&score_899)
+        );
+
+        set_score(900);
+        let score_900 = client.get_score(&agent_addr);
+        assert!((0..=MAX_SCORE).contains(&score_900));
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::Trusted);
+        assert_eq!(
+            client.get_score_tier(&agent_addr),
+            client.score_tier(&score_900)
+        );
+
+        // Advance ledger and record successful payments from 900 -> 1000 -> 1000 (clamped)
+        for i in 1..=12u32 {
+            env.ledger().with_mut(|li| li.sequence_number = 100 + i);
+            client.record_payment(&agent_addr, &service_id, &payment_stroops, &true, &provider);
+            let score = client.get_score(&agent_addr);
+            assert!((0..=MAX_SCORE).contains(&score));
+            assert_eq!(client.get_score_tier(&agent_addr), client.score_tier(&score));
+        }
+        assert_eq!(client.get_score(&agent_addr), MAX_SCORE);
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::Elite);
+
+        // Failed payment from 1000 drops to 975 (Trusted)
+        env.ledger().with_mut(|li| li.sequence_number = 120);
+        client.record_payment(&agent_addr, &service_id, &payment_stroops, &false, &provider);
+        assert_eq!(client.get_score(&agent_addr), 975);
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::Trusted);
+    }
+
+    #[test]
+    fn test_score_stays_within_0_to_1000_and_tier_matches_across_payment_transitions() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+        let registry_client = MockRegistryClient::new(&env, &registry_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let service_id: u64 = 7;
+        let payment_stroops: i128 = 5_000_000; // 0.5 USDC in stroops
+
+        registry_client.set_service(&service_id, &provider);
+        env.ledger().with_mut(|li| li.sequence_number = 1_000);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        // 20 successful payments: 100 -> 300 (crosses New -> Building at 290 -> 300)
+        for i in 1..=20u32 {
+            env.ledger().with_mut(|li| li.sequence_number = 1_000 + i);
+            client.record_payment(&agent_addr, &service_id, &payment_stroops, &true, &provider);
+            let score = client.get_score(&agent_addr);
+            assert!((0..=MAX_SCORE).contains(&score));
+            assert_eq!(client.get_score_tier(&agent_addr), client.score_tier(&score));
+            if score < 300 {
+                assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::New);
+            } else {
+                assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::Building);
+            }
+        }
+        assert_eq!(client.get_score(&agent_addr), 300);
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::Building);
+
+        // One failure drops 300 -> 275 (Building -> New)
+        env.ledger().with_mut(|li| li.sequence_number = 1_025);
+        client.record_payment(&agent_addr, &service_id, &payment_stroops, &false, &provider);
+        assert_eq!(client.get_score(&agent_addr), 275);
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::New);
+
+        // Flagging (-200) drops 275 -> 75, then 4 failures clamp at 0 (never negative)
+        client.flag_agent(&agent_addr, &String::from_str(&env, "audit"), &admin);
+        assert_eq!(client.get_score(&agent_addr), 75);
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::New);
+
+        for i in 1..=4u32 {
+            env.ledger().with_mut(|li| li.sequence_number = 1_030 + i);
+            client.record_payment(&agent_addr, &service_id, &payment_stroops, &false, &provider);
+            let score = client.get_score(&agent_addr);
+            assert!((0..=MAX_SCORE).contains(&score));
+            assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::New);
+        }
+        assert_eq!(client.get_score(&agent_addr), 0);
+        assert_eq!(client.get_score_tier(&agent_addr), ScoreTier::New);
     }
 }
