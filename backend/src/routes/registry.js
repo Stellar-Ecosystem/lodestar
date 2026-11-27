@@ -540,7 +540,7 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
     }
 
     const newReputation = await withUpstreamTimeout(
-      updateReputation(id, positive, agent),
+      (signal) => updateReputation(id, positive, agent, { signal }),
       {
         timeoutMs: config.upstreamTimeout.reputationMs,
         label: "reputation",
