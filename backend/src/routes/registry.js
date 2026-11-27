@@ -480,13 +480,26 @@ router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) =
   }
 });
 
+// Tracks in-flight reputation updates keyed by `${serviceId}:${agent}` so a
+// client retry after a 504 UPSTREAM_TIMEOUT (or a concurrent duplicate request)
+// cannot submit a second on-chain vote while the first RPC call is still settling.
+const inFlightReputationUpdates = new Map();
+
+/** Clear in-flight reputation tracking (for tests). */
+export function _resetInFlightReputationUpdates() {
+  inFlightReputationUpdates.clear();
+}
+
 // POST /api/reputation/:id — Body: { positive: boolean, agent: string }
 // `agent` must be a registered agent the backend is allowed to sign for. The
 // on-chain contract enforces require_auth + agent registration + a per-agent
 // cooldown, so reputation can no longer be moved by anonymous callers.
 // The vote is bounded by a deadline (REPUTATION_TIMEOUT_MS): on expiry the
-// route answers 504 UPSTREAM_TIMEOUT so a hanging RPC node cannot hold
-// connections open until the pool is exhausted (#671).
+// route performs a clear stop (no automatic retry) and answers 504
+// UPSTREAM_TIMEOUT so a hanging RPC node cannot hold connections open until
+// the pool is exhausted (#671). While the timed-out call is still settling,
+// retries for the same (serviceId, agent) are rejected with 409
+// REPUTATION_UPDATE_IN_PROGRESS to prevent duplicate on-chain side effects.
 router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   const startedAt = process.hrtime.bigint();
   const durationMs = () =>
@@ -539,8 +552,24 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
       });
     }
 
+    const inFlightKey = `${id}:${agent}`;
+    if (inFlightReputationUpdates.has(inFlightKey)) {
+      return finish("warn", "in_progress", { serviceId: id, agent }, 409, {
+        error: "A reputation update for this service and agent is already in progress",
+        code: "REPUTATION_UPDATE_IN_PROGRESS",
+      });
+    }
+
+    const updatePromise = Promise.resolve().then(() => updateReputation(id, positive, agent));
+    inFlightReputationUpdates.set(inFlightKey, updatePromise);
+    updatePromise.finally(() => {
+      if (inFlightReputationUpdates.get(inFlightKey) === updatePromise) {
+        inFlightReputationUpdates.delete(inFlightKey);
+      }
+    });
+
     const newReputation = await withUpstreamTimeout(
-      updateReputation(id, positive, agent),
+      updatePromise,
       {
         timeoutMs: config.upstreamTimeout.reputationMs,
         label: "reputation",

@@ -55,6 +55,14 @@ export async function withUpstreamTimeout(promise, options = {}) {
     }, timeoutMs);
   });
 
+  // Ensure an abandoned upstream promise that rejects after the deadline
+  // expires does not trigger an unhandledRejection in Node.js.
+  promise.catch((err) => {
+    if (controller.signal.aborted) {
+      logger.warn({ err, label, timeoutMs }, 'Abandoned upstream call failed after deadline');
+    }
+  });
+
   try {
     return await Promise.race([promise, deadline]);
   } finally {

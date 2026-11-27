@@ -1199,7 +1199,9 @@ describe('GET /api/services/:id — ttl_warning annotation', () => {
 describe('POST /api/reputation/:id — upstream deadline (#671)', () => {
   const VALID_AGENT = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    const { _resetInFlightReputationUpdates } = await import('./registry.js');
+    _resetInFlightReputationUpdates();
     mockIsAllowedReputationAgent.mockReset();
     mockUpdateReputation.mockReset();
   });
@@ -1284,6 +1286,66 @@ describe('POST /api/reputation/:id — upstream deadline (#671)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, newReputation: 7 });
+  });
+
+  it('prevents duplicate on-chain calls when retried while a timed-out vote is still in flight, and recovers once settled', async () => {
+    const { default: config } = await import('../config.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+
+    let signalStarted;
+    const started = new Promise((resolve) => {
+      signalStarted = resolve;
+    });
+    let rejectInFlight;
+    mockUpdateReputation.mockImplementationOnce(() => {
+      signalStarted();
+      return new Promise((_, reject) => {
+        rejectInFlight = reject;
+      });
+    });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const pending = request(app)
+        .post('/api/reputation/1')
+        .send({ positive: true, agent: VALID_AGENT })
+        .then((res) => res);
+
+      await started;
+      await vi.advanceTimersByTimeAsync(config.upstreamTimeout.reputationMs + 1);
+
+      const firstRes = await pending;
+      expect(firstRes.status).toBe(504);
+      expect(firstRes.body.code).toBe('UPSTREAM_TIMEOUT');
+      // Clear stop: no automatic retry on timeout.
+      expect(mockUpdateReputation).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Client retries while the first Soroban RPC call is still in flight:
+    // must be rejected with 409 without invoking updateReputation again.
+    const retryRes = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(retryRes.status).toBe(409);
+    expect(retryRes.body.code).toBe('REPUTATION_UPDATE_IN_PROGRESS');
+    expect(mockUpdateReputation).toHaveBeenCalledTimes(1);
+
+    // Once the abandoned RPC call settles (even with a late error), the route
+    // recovers safely and allows a subsequent vote to succeed.
+    rejectInFlight(new Error('late rpc timeout'));
+    await new Promise((r) => setImmediate(r));
+
+    mockUpdateReputation.mockResolvedValueOnce(9);
+    const recoveredRes = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(recoveredRes.status).toBe(200);
+    expect(recoveredRes.body).toEqual({ success: true, newReputation: 9 });
+    expect(mockUpdateReputation).toHaveBeenCalledTimes(2);
   });
 });
 
