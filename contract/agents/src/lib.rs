@@ -1,10 +1,9 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, Env,
-    IntoVal, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, BytesN,
+    Env, IntoVal, String, Symbol, Vec,
 };
-
 // #570: production TTL — deliberate value, not the test-inflated one.
 const MAX_TTL: u32 = 100_000_000;
 #[cfg(not(test))]
@@ -33,6 +32,7 @@ pub enum AgentError {
     PolicyNotFound = 8,
     NotInitialized = 9,
     AlreadyInitialized = 10,
+    PaymentAlreadyRecorded = 11,
 }
 
 #[contracttype]
@@ -44,6 +44,7 @@ pub enum DataKey {
     Policy(Address),
     RegistryContract,
     Admin,
+    PaymentAlreadyRecorded = 11,
 }
 
 #[contracttype]
@@ -563,7 +564,25 @@ impl LodestarAgents {
         caller.require_auth();
 
         if amount_stroops <= 0 {
+pub fn record_payment(
+        env: Env,
+        agent_address: Address,
+        service_id: u64,
+        amount_stroops: i128,
+        success: bool,
+        caller: Address,
+        payment_id: BytesN<32>,
+    ) -> Result<(), AgentError> {
+        caller.require_auth();
+
+        if amount_stroops <= 0 {
             return Err(AgentError::InvalidAmount);
+        }
+
+        // Replay boundary: one score/volume/counter update per payment_id.
+        let payment_key = DataKey::Payment(payment_id.clone());
+        if env.storage().persistent().has(&payment_key) {
+            return Err(AgentError::PaymentAlreadyRecorded);
         }
 
         // Cross-contract check: caller must be the service's registered provider
@@ -642,6 +661,11 @@ impl LodestarAgents {
             .persistent()
             .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
 
+        env.storage().persistent().set(&payment_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&payment_key, MAX_TTL, MAX_TTL);
+
         env.events().publish(
             (
                 Symbol::new(&env, "agents"),
@@ -658,7 +682,7 @@ impl LodestarAgents {
             ),
         );
         Ok(())
-    }
+            }
 
     // Flag an agent (admin-only)
     //
@@ -3309,5 +3333,90 @@ mod test {
         assert_eq!(client.get_score(&agent_addr), 0);
 
         assert_eq!(reconstructed_scores, vec![&env, 100, 110, 120, 95, 0]);
+    }
+    #[test]
+    fn test_record_payment_replay_same_id_no_second_score_change() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 42u64;
+        let provider = Address::generate(&env);
+        let mock_client = MockRegistryClient::new(&env, &registry_id);
+        mock_client.set_service(&service_id, &provider);
+
+        let amount = 5_000_000i128;
+        let payment_id = pid(&env, 99);
+
+        client.record_payment(
+            &agent_addr,
+            &service_id,
+            &amount,
+            &true,
+            &provider,
+            &payment_id,
+        );
+        let score1 = client.get_score(&agent_addr).unwrap();
+        let agent1 = client.get_agent(&agent_addr);
+        let volume1 = agent1.total_volume_stroops;
+        let total1 = agent1.total_payments;
+
+        let replay = client.try_record_payment(
+            &agent_addr,
+            &service_id,
+            &amount,
+            &true,
+            &provider,
+            &payment_id,
+        );
+        assert_eq!(replay, Err(Ok(AgentError::PaymentAlreadyRecorded)));
+
+        let score2 = client.get_score(&agent_addr).unwrap();
+        let agent2 = client.get_agent(&agent_addr);
+        assert_eq!(score2, score1);
+        assert_eq!(agent2.total_volume_stroops, volume1);
+        assert_eq!(agent2.total_payments, total1);
+    }
+
+    #[test]
+    fn test_record_payment_distinct_ids_apply_twice() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, registry_id) = setup_with_mock_registry(&env);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let agent_addr = Address::generate(&env);
+        let owner = Address::generate(&env);
+        setup_agent(&env, &contract_id, &agent_addr, &owner);
+
+        let service_id = 1u64;
+        let provider = Address::generate(&env);
+        MockRegistryClient::new(&env, &registry_id).set_service(&service_id, &provider);
+
+        client.record_payment(
+            &agent_addr,
+            &service_id,
+            &100i128,
+            &true,
+            &provider,
+            &pid(&env, 1),
+        );
+        let s1 = client.get_score(&agent_addr).unwrap();
+
+        client.record_payment(
+            &agent_addr,
+            &service_id,
+            &100i128,
+            &true,
+            &provider,
+            &pid(&env, 2),
+        );
+        let s2 = client.get_score(&agent_addr).unwrap();
+        assert!(s2 > s1);
     }
 }
